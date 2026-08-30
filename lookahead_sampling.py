@@ -143,17 +143,7 @@ def main(args):
     prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
     output_dir = os.path.join(args.output_dir, f"{prefix}")
 
-    try:
-        os.makedirs(output_dir, exist_ok=False)
-    except FileExistsError:
-        # make file sleep for a random time
-        import time
-
-        print("Sleeping for a random time")
-        time.sleep(np.random.randint(1, 10))
-        prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
-        output_dir = os.path.join(args.output_dir, f"{prefix}")
-        os.makedirs(output_dir, exist_ok=False)
+    os.makedirs(output_dir, exist_ok=True)
 
     arg_path = os.path.join(output_dir, "args.json")
     with open(arg_path, "w") as f:
@@ -174,13 +164,28 @@ def main(args):
     n_samples = 0
     average_time = 0
 
-
-
     for prompt_idx, item in enumerate(tqdm(prompt_data)):
         prompt = [item["prompt"]] * args.num_particles
 
         prompt_path = os.path.join(output_dir, f"{prompt_idx:0>5}")
         os.makedirs(prompt_path, exist_ok=True)
+
+        results_file = os.path.join(prompt_path, "results.json")
+        latent_file = os.path.join(prompt_path, "samples", "latent.pt")
+        if args.resume and os.path.exists(results_file) and os.path.exists(latent_file):
+            try:
+                with open(results_file, "r") as f:
+                    res_cached = json.load(f)
+                for metric in metrics_to_compute:
+                    if metric in res_cached:
+                        metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
+                        metrics_arr[metric]["max"] += res_cached[metric]["max"]
+                        metrics_arr[metric]["min"] += res_cached[metric]["min"]
+                        metrics_arr[metric]["std"] += res_cached[metric]["std"]
+                n_samples += 1
+                continue
+            except Exception as e:
+                print(f"Error loading cached result for prompt {prompt_idx}: {e}")
 
         # dump metadata
         with open(os.path.join(prompt_path, "metadata.jsonl"), "w") as f:
@@ -300,6 +305,7 @@ def get_args():
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_prompt", type=int, default=1000)
+    parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
     args = parser.parse_args()
 
 
