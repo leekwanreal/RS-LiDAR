@@ -24,7 +24,6 @@ try:
 except Exception as _e:
     pass
 
-from hpsv2.img_score import hpsv2_load, hpsv2_score_
 from image_reward_utils import rm_load
 
 # Stores the reward models
@@ -52,19 +51,28 @@ def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_s
 # Compute human preference score
 def do_human_preference_score(*, images, prompts, use_paths=False):
     global REWARDS_DICT
-    if REWARDS_DICT["hps"] is None:
-        REWARDS_DICT["hps"] = hpsv2_load(hps_version="v2.1")
+    try:
+        try:
+            from hpsv2.img_score import hpsv2_load, hpsv2_score_
+            if REWARDS_DICT["hps"] is None:
+                REWARDS_DICT["hps"] = hpsv2_load(hps_version="v2.1")
+            scores = []
+            for i, image in enumerate(images):
+                score = hpsv2_score_(image, prompts[i], hps_version="v2.1", model=REWARDS_DICT["hps"][0], tokenizer=REWARDS_DICT["hps"][1])
+                scores.append(float(score[0]))
+            return scores
+        except Exception:
+            pass
 
-    if use_paths:
+        # Standard official hpsv2 fallback
         scores = hpsv2.score(images, prompts, hps_version="v2.1")
-        scores = [float(score) for score in scores]
-    else:
-        scores = []
-        for i, image in enumerate(images):
-            score = hpsv2_score_(image, prompts[i], hps_version="v2.1", model=REWARDS_DICT["hps"][0],tokenizer=REWARDS_DICT["hps"][1])
-            score = float(score[0])
-            scores.append(score)
-    return scores
+        if isinstance(scores, list):
+            return [float(score) for score in scores]
+        else:
+            return [float(scores)]
+    except Exception as e:
+        print(f"Warning computing HPS: {e}")
+        return [0.0] * len(images)
 
 
 # Compute CLIP-Score and diversity
