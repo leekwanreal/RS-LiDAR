@@ -1,8 +1,29 @@
+import os
+import shutil
+import urllib.request
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import clip
 import hpsv2
+
+# Auto-fix missing bpe_simple_vocab_16e6.txt.gz in hpsv2 wheel on Python 3.11/3.12
+try:
+    _hps_dir = os.path.join(os.path.dirname(hpsv2.__file__), "src", "open_clip")
+    _bpe_target = os.path.join(_hps_dir, "bpe_simple_vocab_16e6.txt.gz")
+    if not os.path.exists(_bpe_target):
+        os.makedirs(_hps_dir, exist_ok=True)
+        _clip_bpe = os.path.join(os.path.dirname(clip.__file__), "bpe_simple_vocab_16e6.txt.gz")
+        if os.path.exists(_clip_bpe):
+            shutil.copyfile(_clip_bpe, _bpe_target)
+        else:
+            urllib.request.urlretrieve(
+                "https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz",
+                _bpe_target,
+            )
+except Exception as _e:
+    pass
+
 from hpsv2.img_score import hpsv2_load, hpsv2_score_
 from image_reward_utils import rm_load
 
