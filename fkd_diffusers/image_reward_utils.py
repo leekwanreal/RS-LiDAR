@@ -36,12 +36,16 @@ except Exception as _patch_err:
     pass
 
 import sys
-from unittest.mock import MagicMock
+import types
+import importlib.machinery
 if "wandb" not in sys.modules:
     try:
         import wandb
     except Exception:
-        sys.modules["wandb"] = MagicMock()
+        _mock_wandb = types.ModuleType("wandb")
+        _mock_wandb.__spec__ = importlib.machinery.ModuleSpec("wandb", None)
+        _mock_wandb.__file__ = "wandb"
+        sys.modules["wandb"] = _mock_wandb
 
 from PIL import Image
 import ImageReward as RM
