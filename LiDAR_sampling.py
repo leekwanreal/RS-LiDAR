@@ -6,12 +6,45 @@ from PIL import Image
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
-
 import argparse
-
 from datetime import datetime
-
 import torch
+
+# Universal compatibility patch for transformers, diffusers, peft, and ImageReward
+try:
+    import transformers
+    if not hasattr(transformers, "EncoderDecoderCache"):
+        class EncoderDecoderCache:
+            pass
+        transformers.EncoderDecoderCache = EncoderDecoderCache
+    import transformers.modeling_utils
+    if not hasattr(transformers.modeling_utils, "apply_chunking_to_forward"):
+        def apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *args):
+            assert len(args) > 0
+            if chunk_size <= 0:
+                return forward_fn(*args)
+            num_chunks = args[0].shape[chunk_dim] // chunk_size
+            chunked_args = [torch.chunk(x, num_chunks, dim=chunk_dim) if isinstance(x, torch.Tensor) else [x] * num_chunks for x in args]
+            layer_outputs = [forward_fn(*[x[i] for x in chunked_args]) for i in range(num_chunks)]
+            return torch.cat(layer_outputs, dim=chunk_dim)
+        transformers.modeling_utils.apply_chunking_to_forward = apply_chunking_to_forward
+    import transformers.pytorch_utils
+    if not hasattr(transformers.pytorch_utils, "find_pruneable_heads_and_indices"):
+        def find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+            if len(heads) == 0:
+                return set(), torch.empty(0, dtype=torch.long)
+            heads = set(heads) - already_pruned_heads
+            mask = torch.ones(n_heads, head_size)
+            for head in heads:
+                head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
+                mask[head] = 0
+            mask = mask.view(-1).contiguous().eq(1)
+            index = torch.arange(len(mask))[mask].long()
+            return heads, index
+        transformers.pytorch_utils.find_pruneable_heads_and_indices = find_pruneable_heads_and_indices
+except Exception:
+    pass
+
 from diffusers import DDIMScheduler, UNet2DConditionModel
 
 import sys

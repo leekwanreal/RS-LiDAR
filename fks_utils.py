@@ -31,8 +31,11 @@ try:
             index = torch.arange(len(mask))[mask].long()
             return heads, index
         transformers.pytorch_utils.find_pruneable_heads_and_indices = find_pruneable_heads_and_indices
-        if not hasattr(transformers.modeling_utils, "find_pruneable_heads_and_indices"):
-            transformers.modeling_utils.find_pruneable_heads_and_indices = find_pruneable_heads_and_indices
+    import transformers
+    if not hasattr(transformers, "EncoderDecoderCache"):
+        class EncoderDecoderCache:
+            pass
+        transformers.EncoderDecoderCache = EncoderDecoderCache
 except Exception:
     pass
 
