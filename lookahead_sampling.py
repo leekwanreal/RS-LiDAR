@@ -1,5 +1,9 @@
 # primary generation script
 import os
+os.environ["USE_TF"] = "0"
+os.environ["USE_TORCH"] = "1"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 import json
 import numpy as np
 from PIL import Image
@@ -10,7 +14,16 @@ import argparse
 from datetime import datetime
 import torch
 
-# Universal compatibility patch for transformers, diffusers, peft, and ImageReward
+# Universal compatibility patch for transformers, diffusers, peft, protobuf, and ImageReward
+try:
+    import google.protobuf
+    if not hasattr(google.protobuf, "runtime_version"):
+        class _RuntimeVersion:
+            DOMAIN = "protobuf"
+        google.protobuf.runtime_version = _RuntimeVersion
+except Exception:
+    pass
+
 try:
     import transformers
     if not hasattr(transformers, "EncoderDecoderCache"):
