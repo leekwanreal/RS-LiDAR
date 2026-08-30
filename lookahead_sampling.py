@@ -13,6 +13,13 @@ import matplotlib.pyplot as plt
 import argparse
 from datetime import datetime
 import torch
+import sys
+from unittest.mock import MagicMock
+if "wandb" not in sys.modules:
+    try:
+        import wandb
+    except Exception:
+        sys.modules["wandb"] = MagicMock()
 
 # Universal compatibility patch for transformers, diffusers, peft, protobuf, and ImageReward
 try:
