@@ -138,6 +138,11 @@ def main(args):
     # set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
+    if hasattr(pipe, "enable_vae_slicing"):
+        try:
+            pipe.enable_vae_slicing()
+        except Exception:
+            pass
 
     # set output directory
     prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
@@ -214,10 +219,21 @@ def main(args):
             if "FLUX" in args.model_name:
                 latents = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
                 latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
-                images = pipe.vae.decode(latents, return_dict=False)[0]
+                vae_batch_size = 1
+                decoded_chunks = []
+                for v_i in range(0, latents.shape[0], vae_batch_size):
+                    chunk = latents[v_i : v_i + vae_batch_size]
+                    decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
+                images = torch.cat(decoded_chunks, dim=0)
                 images = pipe.image_processor.postprocess(images, output_type="pil")
             else:
-                images = pipe.vae.decode( latents / pipe.vae.config.scaling_factor,return_dict=False)[0]
+                scaled_latents = latents / pipe.vae.config.scaling_factor
+                vae_batch_size = 4  # Process in small chunks to prevent OOM on 16GB GPUs like T4 / P100
+                decoded_chunks = []
+                for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
+                    chunk = scaled_latents[v_i : v_i + vae_batch_size]
+                    decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
+                images = torch.cat(decoded_chunks, dim=0)
                 images = pipe.image_processor.postprocess(images, output_type="pil")
 
         results = do_eval(prompt=prompt, images=images, metrics_to_compute=metrics_to_compute)

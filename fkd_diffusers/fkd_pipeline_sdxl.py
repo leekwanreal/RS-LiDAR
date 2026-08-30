@@ -862,7 +862,12 @@ class FKDStableDiffusionXL(
             else:
                 latents = latents / self.vae.config.scaling_factor
 
-            image = self.vae.decode(latents, return_dict=False)[0]
+            vae_batch_size = 1
+            decoded_chunks = []
+            for v_i in range(0, latents.shape[0], vae_batch_size):
+                chunk = latents[v_i : v_i + vae_batch_size]
+                decoded_chunks.append(self.vae.decode(chunk, return_dict=False)[0])
+            image = torch.cat(decoded_chunks, dim=0)
 
             # cast back to fp16 if needed
             if needs_upcasting:

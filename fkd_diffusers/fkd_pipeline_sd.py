@@ -790,11 +790,15 @@ class FKDStableDiffusion(
 
 
         if not output_type == "latent":
-            image = self.vae.decode(
-                latents / self.vae.config.scaling_factor,
-                return_dict=False,
-                generator=generator,
-            )[0]
+            scaled_latents = latents / self.vae.config.scaling_factor
+            vae_batch_size = 4
+            decoded_chunks = []
+            for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
+                chunk = scaled_latents[v_i : v_i + vae_batch_size]
+                decoded_chunks.append(
+                    self.vae.decode(chunk, return_dict=False, generator=generator)[0]
+                )
+            image = torch.cat(decoded_chunks, dim=0)
             has_nsfw_concept = None
         else:
             image = latents

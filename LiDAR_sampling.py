@@ -93,6 +93,11 @@ def main(args):
     # set device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
+    if hasattr(pipe, "enable_vae_slicing"):
+        try:
+            pipe.enable_vae_slicing()
+        except Exception:
+            pass
 
     # set output directory
     cur_time = datetime.now().strftime("%Y%m%d-%H%M%S")
