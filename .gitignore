@@ -1,0 +1,29 @@
+# Context notes
+README_CONTEXT.md
+readme_context.md
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Jupyter & IDE
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Experiment outputs & weights
+Lookahead_samples/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# Environment & local files
+.env
