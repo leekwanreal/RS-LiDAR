@@ -134,17 +134,33 @@ def do_clip_score(*, images, prompts):
 def do_AS(*, images, prompts):
     global REWARDS_DICT
     if REWARDS_DICT["AS"] is None:
-        #state_dict = torch.load("path",map_location='cpu')
-        state_dict = torch.load("/home/aailab/data4/alsdudrla10/FifthArticle/Fk-Diffusion-Steering/text_to_image/sac+logos+ava1-l14-linearMSE.pth",map_location='cpu')
-        REWARDS_DICT["AS"] = AestheticScore(download_root=".", device="cuda")
-        REWARDS_DICT["AS"].mlp.load_state_dict(state_dict, strict=False)
-        REWARDS_DICT["AS"].mlp.to("cuda")
-    with torch.no_grad():
-        as_result = [
-            REWARDS_DICT["AS"].score(images[i])
-            for i, prompt in enumerate(prompts)
-        ]
-    return as_result
+        weight_path = "sac+logos+ava1-l14-linearMSE.pth"
+        if not os.path.exists(weight_path):
+            try:
+                urllib.request.urlretrieve(
+                    "https://github.com/christophschuhmann/improved-aesthetic-predictor/raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth",
+                    weight_path
+                )
+            except Exception as e:
+                print(f"Warning downloading Aesthetic weights: {e}")
+        try:
+            state_dict = torch.load(weight_path, map_location='cpu')
+            REWARDS_DICT["AS"] = AestheticScore(download_root=".", device="cuda" if torch.cuda.is_available() else "cpu")
+            REWARDS_DICT["AS"].mlp.load_state_dict(state_dict, strict=False)
+            REWARDS_DICT["AS"].mlp.to("cuda" if torch.cuda.is_available() else "cpu")
+        except Exception as e:
+            print(f"Warning initializing AestheticScore: {e}")
+            return [0.0] * len(images)
+    try:
+        with torch.no_grad():
+            as_result = [
+                REWARDS_DICT["AS"].score(images[i])
+                for i, prompt in enumerate(prompts)
+            ]
+        return as_result
+    except Exception as e:
+        print(f"Warning computing AS score: {e}")
+        return [0.0] * len(images)
 
 
 
