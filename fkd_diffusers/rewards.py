@@ -54,51 +54,26 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
     import numpy as np
     device = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     try:
-        if REWARDS_DICT["hps"] is None:
-            cache_dir = os.path.expanduser("~/.cache/hpsv2")
-            os.makedirs(cache_dir, exist_ok=True)
-            ckpt_path = os.path.join(cache_dir, "HPS_v2.1_compressed.pt")
-            if not os.path.exists(ckpt_path) or os.path.getsize(ckpt_path) < 1000000:
-                try:
-                    urllib.request.urlretrieve(
-                        "https://huggingface.co/spaces/xswu/HPSv2/resolve/main/HPS_v2.1_compressed.pt",
-                        ckpt_path,
-                    )
-                except Exception as _e_dl:
-                    pass
-            try:
-                from hpsv2.img_score import hpsv2_load
-                import inspect
-                sig = inspect.signature(hpsv2_load)
-                if "device" in sig.parameters:
-                    model, tokenizer = hpsv2_load(hps_version="v2.1", device=device)
-                else:
-                    model, tokenizer = hpsv2_load(hps_version="v2.1")
-                if hasattr(model, "to"):
-                    model = model.to(device)
-                REWARDS_DICT["hps"] = (model, tokenizer)
-            except Exception as _load_err:
-                pass
+        prompt_texts = []
+        for i in range(len(images)):
+            if isinstance(prompts, (list, tuple)):
+                p = prompts[i] if i < len(prompts) else prompts[0]
+            else:
+                p = prompts
+            while isinstance(p, (list, tuple)):
+                p = p[0]
+            prompt_texts.append(str(p))
 
-        if REWARDS_DICT["hps"] is not None:
-            from hpsv2.img_score import hpsv2_score_
-            model, tokenizer = REWARDS_DICT["hps"]
-            scores = []
-            for i, image in enumerate(images):
-                score = hpsv2_score_(image, prompts[i], hps_version="v2.1", model=model, tokenizer=tokenizer)
-                if isinstance(score, (list, tuple, np.ndarray, torch.Tensor)):
-                    val = float(score[0])
-                else:
-                    val = float(score)
-                scores.append(val)
-            return scores
-
-        # Standard official hpsv2 fallback
-        scores = hpsv2.score(images, prompts, hps_version="v2.1")
-        if isinstance(scores, list):
-            return [float(score) for score in scores]
-        else:
-            return [float(scores)]
+        scores = []
+        for i, img in enumerate(images):
+            p_text = prompt_texts[i]
+            score = hpsv2.score(img, p_text, hps_version="v2.1")
+            if isinstance(score, (list, tuple, np.ndarray, torch.Tensor)):
+                val = float(score[0])
+            else:
+                val = float(score)
+            scores.append(val)
+        return scores
     except Exception as e:
         print(f"Warning computing HPS on {device}: {e}")
         return [0.0] * len(images)
