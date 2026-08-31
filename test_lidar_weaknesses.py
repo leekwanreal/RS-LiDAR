@@ -4,8 +4,11 @@
    (DIMENSION-FREE LIPSCHITZ BOUND & RANDOMIZED SMOOTHING)
 ========================================================================================
 
-Module này được thiết kế ĐỘC LẬP, cấu hình số lượng prompt linh hoạt (--num_prompts),
-chọn bài test tùy ý (--test 1|2|3|all) để tiết kiệm thời gian hoặc chạy toàn bộ 553 prompt.
+Module này được thiết kế ĐỘC LẬP, hỗ trợ:
+- Chạy 1 GPU hoặc 2 GPU song song (--num_shards=2, --shard_id=0/1)
+- Cấu hình số lượng prompt linh hoạt (--num_prompts)
+- Chọn bài test tùy ý (--test 1|2|3|all) để tiết kiệm thời gian hoặc chạy toàn bộ 553 prompt.
+- Tự động lưu checkpoint và tổng hợp kết quả đa GPU.
 
 Bộ 3 Bài Test:
 1. TEST 1: Kháng Sai số Bộ giải (Solver Error Robustness & Theorem 1 Lipschitz Bound)
@@ -124,13 +127,31 @@ def generate_latents_batched(pipe, prompt, num_particles, num_inference_steps, s
 # ======================================================================================
 # 🔬 TEST 1: Kháng Sai số Bộ giải (Solver Error Robustness & Theorem 1 Lipschitz Bound)
 # ======================================================================================
-def run_test_1_solver_robustness(pipe, vae, ir_model, prompt_list, sigma=0.05, num_particles=20, device="cuda", output_dir="experiments/test_results"):
-    print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 1] ĐO KHÁNG SAI SỐ BỘ GIẢI TRÊN {len(prompt_list)} PROMPTS (THEORETICAL THEOREM 1)")
-    print(f"   • Số hạt: {num_particles} | Sigma làm mịn: {sigma}")
-    print("="*80)
+def run_test_1_solver_robustness(
+    pipe, vae, ir_model, prompt_list, sigma=0.05, num_particles=20,
+    device="cuda", output_dir="experiments/test_results", num_shards=1, shard_id=0
+):
+    total_prompts = len(prompt_list)
+    if num_shards > 1:
+        prompts_per_shard = math.ceil(total_prompts / num_shards)
+        start_p = shard_id * prompts_per_shard
+        end_p = min(start_p + prompts_per_shard, total_prompts)
+        prompt_slice = prompt_list[start_p:end_p]
+        offset = start_p
+        checkpoint_file = os.path.join(output_dir, f"test_1_checkpoint_shard_{shard_id}.json")
+        print("\n" + "="*80)
+        print(f"🔬 [BÀI TEST 1] Shard {shard_id + 1}/{num_shards}: Xử lý prompt {start_p} đến {end_p - 1} (Tổng: {len(prompt_slice)})")
+        print(f"   • Số hạt: {num_particles} | Sigma: {sigma} | Device: {device}")
+        print("="*80)
+    else:
+        prompt_slice = prompt_list
+        offset = 0
+        checkpoint_file = os.path.join(output_dir, "test_1_checkpoint.json")
+        print("\n" + "="*80)
+        print(f"🔬 [BÀI TEST 1] ĐO KHÁNG SAI SỐ BỘ GIẢI TRÊN {total_prompts} PROMPTS (THEORETICAL THEOREM 1)")
+        print(f"   • Số hạt: {num_particles} | Sigma: {sigma} | Device: {device}")
+        print("="*80)
 
-    checkpoint_file = os.path.join(output_dir, "test_1_checkpoint.json")
     os.makedirs(output_dir, exist_ok=True)
 
     delta_r_lidar_list = []
@@ -138,7 +159,7 @@ def run_test_1_solver_robustness(pipe, vae, ir_model, prompt_list, sigma=0.05, n
     error_norms = []
     kendall_lidar_list = []
     kendall_ours_list = []
-    start_idx = 0
+    start_local_idx = 0
 
     # Tự động đọc checkpoint nếu có
     if os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
@@ -150,24 +171,25 @@ def run_test_1_solver_robustness(pipe, vae, ir_model, prompt_list, sigma=0.05, n
                 error_norms = ckpt.get("error_norms", [])
                 kendall_lidar_list = ckpt.get("kendall_lidar", [])
                 kendall_ours_list = ckpt.get("kendall_ours", [])
-                start_idx = ckpt.get("processed_prompts", 0)
-                print(f"🔄 Đã khôi phục từ Checkpoint! Tiếp tục từ prompt thứ {start_idx + 1}/{len(prompt_list)}...")
+                start_local_idx = ckpt.get("processed_prompts", 0)
+                print(f"🔄 Shard {shard_id}: Đã khôi phục từ Checkpoint! Tiếp tục từ prompt thứ {start_local_idx + 1}/{len(prompt_slice)}...")
         except Exception as e:
             print(f"⚠️ Không đọc được checkpoint: {e}")
 
     dpm_scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     ddim_scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
-    for p_idx in tqdm(range(start_idx, len(prompt_list)), desc="Evaluating Test 1 Prompts"):
-        prompt = prompt_list[p_idx]
+    for p_local_idx in tqdm(range(start_local_idx, len(prompt_slice)), desc=f"Test 1 [Shard {shard_id}]"):
+        global_p_idx = offset + p_local_idx
+        prompt = prompt_slice[p_local_idx]
 
         # 1. Sinh hạt từ 5 bước DPM-Solver (hat{x}_0)
         pipe.scheduler = dpm_scheduler
-        latents_5step = generate_latents_batched(pipe, prompt, num_particles=num_particles, num_inference_steps=5, seed=100 + p_idx, device=device, batch_size=4)
+        latents_5step = generate_latents_batched(pipe, prompt, num_particles=num_particles, num_inference_steps=5, seed=100 + global_p_idx, device=device, batch_size=4)
 
         # 2. Sinh hạt chuẩn từ 50 bước DDIM (x_0) từ cùng seed
         pipe.scheduler = ddim_scheduler
-        latents_50step = generate_latents_batched(pipe, prompt, num_particles=num_particles, num_inference_steps=50, seed=100 + p_idx, device=device, batch_size=4)
+        latents_50step = generate_latents_batched(pipe, prompt, num_particles=num_particles, num_inference_steps=50, seed=100 + global_p_idx, device=device, batch_size=4)
 
         # Đo sai số hình học ||e_i||_2 = ||hat{x}_0 - x_0||_2
         e_norms = torch.linalg.norm((latents_5step - latents_50step).view(num_particles, -1), ord=2, dim=1).cpu().tolist()
@@ -209,7 +231,7 @@ def run_test_1_solver_robustness(pipe, vae, ir_model, prompt_list, sigma=0.05, n
         # Lưu checkpoint định kỳ
         with open(checkpoint_file, "w", encoding="utf-8") as f:
             json.dump({
-                "processed_prompts": p_idx + 1,
+                "processed_prompts": p_local_idx + 1,
                 "delta_r_lidar": delta_r_lidar_list,
                 "delta_r_ours": delta_r_ours_list,
                 "error_norms": error_norms,
@@ -225,7 +247,7 @@ def run_test_1_solver_robustness(pipe, vae, ir_model, prompt_list, sigma=0.05, n
     tau_lidar_mean = float(np.mean(kendall_lidar_list)) if kendall_lidar_list else 0.0
     tau_ours_mean = float(np.mean(kendall_ours_list)) if kendall_ours_list else 0.0
 
-    print(f"\n📊 KẾT QUẢ BÀI TEST 1 TRÊN {len(prompt_list)} PROMPTS:")
+    print(f"\n📊 KẾT QUẢ BÀI TEST 1 [Shard {shard_id}]:")
     print(f" • Sai số Reward trung bình của LiDAR gốc (sigma=0):   {mean_err_lidar:.4f}")
     print(f" • Sai số Reward của Phương pháp Bạn (sigma={sigma}):      {mean_err_ours:.4f} (Giảm {max(0, (mean_err_lidar - mean_err_ours)/max(1e-6, mean_err_lidar)*100):.1f}%)")
     print(f" • Tương quan Kendall's tau của LiDAR gốc:               {tau_lidar_mean:.4f} (Rất thấp do nhiễu)")
@@ -388,13 +410,42 @@ def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_d
 
 
 # ======================================================================================
-# 📊 XUẤT BIỂU ĐỒ & BÁO CÁO KHOA HỌC
+# 📊 XUẤT BIỂU ĐỒ & BÁO CÁO KHOA HỌC (TỰ ĐỘNG MERGE MULTI-SHARDS)
 # ======================================================================================
-def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/test_results"):
+def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/test_results", sigma=0.05):
     os.makedirs(output_dir, exist_ok=True)
-    n_plots = sum([1 for r in [res1, res2, res3] if r is not None])
-    if n_plots == 0:
-        return
+
+    # Tự động quét và gom kết quả Test 1 từ tất cả shard checkpoints nếu res1 chưa đủ
+    if res1 is None or len(res1.get("delta_r_lidar", [])) == 0:
+        shard_ckpts = sorted(glob.glob(os.path.join(output_dir, "test_1_checkpoint*.json")))
+        if shard_ckpts:
+            merged_delta_lidar = []
+            merged_delta_ours = []
+            merged_error_norms = []
+            merged_kendall_lidar = []
+            merged_kendall_ours = []
+            for ckpt_p in shard_ckpts:
+                try:
+                    with open(ckpt_p, "r", encoding="utf-8") as f:
+                        c_data = json.load(f)
+                        merged_delta_lidar.extend(c_data.get("delta_r_lidar", []))
+                        merged_delta_ours.extend(c_data.get("delta_r_ours", []))
+                        merged_error_norms.extend(c_data.get("error_norms", []))
+                        merged_kendall_lidar.extend(c_data.get("kendall_lidar", []))
+                        merged_kendall_ours.extend(c_data.get("kendall_ours", []))
+                except Exception:
+                    pass
+            if merged_delta_lidar:
+                delta_r_range = max(0.1, np.max(merged_delta_ours) - np.min(merged_delta_ours))
+                lipschitz_bound = delta_r_range / (sigma * np.sqrt(2 * np.pi))
+                res1 = {
+                    "error_norms": merged_error_norms,
+                    "delta_r_lidar": merged_delta_lidar,
+                    "delta_r_ours": merged_delta_ours,
+                    "tau_lidar": float(np.mean(merged_kendall_lidar)) if merged_kendall_lidar else 0.0,
+                    "tau_ours": float(np.mean(merged_kendall_ours)) if merged_kendall_ours else 0.0,
+                    "lipschitz_bound": float(lipschitz_bound)
+                }
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
@@ -483,6 +534,8 @@ def get_args():
     parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
     parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
+    parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards")
+    parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl", help="Prompt dataset path")
     return parser.parse_args()
 
@@ -535,7 +588,8 @@ if __name__ == "__main__":
         res1 = run_test_1_solver_robustness(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, num_particles=args.num_particles,
-            device=device, output_dir=args.output_dir
+            device=device, output_dir=args.output_dir,
+            num_shards=args.num_shards, shard_id=args.shard_id
         )
 
     if args.test in ["all", "2"]:
@@ -550,5 +604,5 @@ if __name__ == "__main__":
             lookahead_dir=args.lookahead_dir, prompt_list=test_prompts, device=device
         )
 
-    plot_and_save_all(res1, res2, res3, output_dir=args.output_dir)
+    plot_and_save_all(res1, res2, res3, output_dir=args.output_dir, sigma=args.sigma)
     print("\n🎉 HOÀN TẤT THỰC NGHIỆM! Toàn bộ kết quả đã được lưu tại:", args.output_dir)
