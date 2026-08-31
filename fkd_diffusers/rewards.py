@@ -82,8 +82,9 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
 # Compute CLIP-Score and diversity
 def do_clip_score_diversity(*, images, prompts):
     global REWARDS_DICT
+    dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["Clip-Score"] is None:
-        REWARDS_DICT["Clip-Score"] = CLIPScore(download_root=".", device="cuda")
+        REWARDS_DICT["Clip-Score"] = CLIPScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
     with torch.no_grad():
         arr_clip_result = []
         arr_img_features = []
@@ -110,8 +111,9 @@ def do_clip_score_diversity(*, images, prompts):
 # Compute ImageReward
 def do_image_reward(*, images, prompts, diff=False):
     global REWARDS_DICT
+    dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["ImageReward"] is None:
-        REWARDS_DICT["ImageReward"] = rm_load("ImageReward-v1.0")
+        REWARDS_DICT["ImageReward"] = rm_load("ImageReward-v1.0", device=dev)
 
     if diff:
         image_reward_result = REWARDS_DICT["ImageReward"].differentiable_score_batched(prompts, images)
@@ -125,8 +127,9 @@ def do_image_reward(*, images, prompts, diff=False):
 # Compute CLIP-Score
 def do_clip_score(*, images, prompts):
     global REWARDS_DICT
+    dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["Clip-Score"] is None:
-        REWARDS_DICT["Clip-Score"] = CLIPScore(download_root=".", device="cuda")
+        REWARDS_DICT["Clip-Score"] = CLIPScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
     with torch.no_grad():
         clip_result = [
             REWARDS_DICT["Clip-Score"].score(prompt, images[i])
@@ -137,6 +140,7 @@ def do_clip_score(*, images, prompts):
 
 def do_AS(*, images, prompts):
     global REWARDS_DICT
+    dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["AS"] is None:
         weight_path = "sac+logos+ava1-l14-linearMSE.pth"
         if not os.path.exists(weight_path):
@@ -149,9 +153,9 @@ def do_AS(*, images, prompts):
                 print(f"Warning downloading Aesthetic weights: {e}")
         try:
             state_dict = torch.load(weight_path, map_location='cpu')
-            REWARDS_DICT["AS"] = AestheticScore(download_root=".", device="cuda" if torch.cuda.is_available() else "cpu")
+            REWARDS_DICT["AS"] = AestheticScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
             REWARDS_DICT["AS"].mlp.load_state_dict(state_dict, strict=False)
-            REWARDS_DICT["AS"].mlp.to("cuda" if torch.cuda.is_available() else "cpu")
+            REWARDS_DICT["AS"].mlp.to(dev)
         except Exception as e:
             print(f"Warning initializing AestheticScore: {e}")
             return [0.0] * len(images)
@@ -169,12 +173,29 @@ def do_AS(*, images, prompts):
 
 
 class CLIPScore(nn.Module):
-    def __init__(self, download_root, device='cpu'):
+    def __init__(self, download_root=None, device='cpu'):
         super().__init__()
         self.device = device
-        self.clip_model, self.preprocess = clip.load(
-            "ViT-L/14", device=self.device, jit=False, download_root=download_root
-        )
+        cache_dir = download_root or os.path.expanduser("~/.cache/clip")
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        import time
+        loaded = False
+        last_err = None
+        for attempt in range(5):
+            try:
+                self.clip_model, self.preprocess = clip.load(
+                    "ViT-L/14", device=self.device, jit=False, download_root=cache_dir
+                )
+                loaded = True
+                break
+            except Exception as e:
+                last_err = e
+                print(f"⚠️ CLIP load attempt {attempt+1}/5 on {self.device} failed: {e}. Retrying in 2s...")
+                time.sleep(2)
+        if not loaded:
+            # Fallback to local or default
+            self.clip_model, self.preprocess = clip.load("ViT-L/14", device=self.device, jit=False)
 
         if device == "cpu":
             self.clip_model.float()
