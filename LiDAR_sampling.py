@@ -106,6 +106,15 @@ def load_geneval_metadata(prompt_path, max_prompts=None):
 
 
 def main(args):
+    if args.gpu_id is not None and torch.cuda.is_available():
+        torch.cuda.set_device(args.gpu_id)
+        device = f"cuda:{args.gpu_id}"
+        print(f"🎯 Assigned process explicitly to GPU {args.gpu_id}: {torch.cuda.get_device_name(args.gpu_id)}")
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
+
     # seed everything
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
@@ -370,6 +379,7 @@ def get_args():
     parser.add_argument("--max_prompt", type=int, default=1000)
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards to split prompts")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
+    parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID to run on (e.g. 0 or 1)")
     parser.add_argument("--reward_type", type=str, choices=["ImageReward", "Clip-Score-only", "HumanPreference", "AS", "mix"], default="ImageReward")
 
     parser.add_argument("--lookahead_path", type=str, default="100_50_5")
