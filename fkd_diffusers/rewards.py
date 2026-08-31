@@ -172,30 +172,27 @@ def do_AS(*, images, prompts):
 
 
 
+try:
+    from filelock import FileLock
+except ImportError:
+    class FileLock:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+
+
 class CLIPScore(nn.Module):
     def __init__(self, download_root=None, device='cpu'):
         super().__init__()
         self.device = device
         cache_dir = download_root or os.path.expanduser("~/.cache/clip")
         os.makedirs(cache_dir, exist_ok=True)
+        lock_path = os.path.join(cache_dir, "clip_vit_l14.lock")
         
-        import time
-        loaded = False
-        last_err = None
-        for attempt in range(5):
-            try:
-                self.clip_model, self.preprocess = clip.load(
-                    "ViT-L/14", device=self.device, jit=False, download_root=cache_dir
-                )
-                loaded = True
-                break
-            except Exception as e:
-                last_err = e
-                print(f"⚠️ CLIP load attempt {attempt+1}/5 on {self.device} failed: {e}. Retrying in 2s...")
-                time.sleep(2)
-        if not loaded:
-            # Fallback to local or default
-            self.clip_model, self.preprocess = clip.load("ViT-L/14", device=self.device, jit=False)
+        with FileLock(lock_path):
+            self.clip_model, self.preprocess = clip.load(
+                "ViT-L/14", device=self.device, jit=False, download_root=cache_dir
+            )
 
         if device == "cpu":
             self.clip_model.float()
@@ -258,20 +255,11 @@ class AestheticScore(nn.Module):
         self.device = device
         cache_dir = download_root or os.path.expanduser("~/.cache/clip")
         os.makedirs(cache_dir, exist_ok=True)
-        import time
-        loaded = False
-        for attempt in range(5):
-            try:
-                self.clip_model, self.preprocess = clip.load(
-                    "ViT-L/14", device=self.device, jit=False, download_root=cache_dir
-                )
-                loaded = True
-                break
-            except Exception as e:
-                print(f"⚠️ AS CLIP load attempt {attempt+1}/5 on {self.device} failed: {e}. Retrying in 2s...")
-                time.sleep(2)
-        if not loaded:
-            self.clip_model, self.preprocess = clip.load("ViT-L/14", device=self.device, jit=False)
+        lock_path = os.path.join(cache_dir, "clip_vit_l14.lock")
+        with FileLock(lock_path):
+            self.clip_model, self.preprocess = clip.load(
+                "ViT-L/14", device=self.device, jit=False, download_root=cache_dir
+            )
         self.mlp = MLP(768)
 
         if device == "cpu":
