@@ -638,7 +638,10 @@ class FKDStableDiffusion(
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             if fkd_args is not None and fkd_args["use_rag"]:
-                subset = fkd_args['rag_dataset'].data[prompt_idx]
+                rag_data = fkd_args['rag_dataset'].data
+                if prompt_idx not in rag_data:
+                    raise KeyError(f"Lookahead dataset missing prompt_idx {prompt_idx}! Available keys: {len(rag_data)}. Ensure Phase 1 lookahead sampling has completed for this prompt before running Phase 2.")
+                subset = rag_data[prompt_idx]
                 subset = collate_like_dataloader([subset])
 
             for i, t in enumerate(timesteps):

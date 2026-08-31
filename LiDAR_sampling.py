@@ -5,6 +5,7 @@ os.environ["USE_TORCH"] = "1"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 import json
+import math
 import numpy as np
 from PIL import Image
 from tqdm import tqdm
@@ -186,7 +187,18 @@ def main(args):
     if args.use_rag:
         lookaheads = gen_lookahead_samples(args.lookahead_path,args.top_k)
 
-    for prompt_idx, item in enumerate(tqdm(prompt_data)):
+    total_prompts = len(prompt_data)
+    if args.num_shards > 1:
+        prompts_per_shard = math.ceil(total_prompts / args.num_shards)
+        start_idx = args.shard_id * prompts_per_shard
+        end_idx = min(start_idx + prompts_per_shard, total_prompts)
+        print(f"🚀 Shard {args.shard_id + 1}/{args.num_shards}: Processing prompts {start_idx} to {end_idx - 1} (Total: {end_idx - start_idx})")
+    else:
+        start_idx = 0
+        end_idx = total_prompts
+
+    for prompt_idx in tqdm(range(start_idx, end_idx), desc=f"Shard-{args.shard_id}"):
+        item = prompt_data[prompt_idx]
         prompt = [item["prompt"]] * args.num_particles
 
         prompt_path = os.path.join(output_dir, f"{prompt_idx:0>5}")
@@ -310,17 +322,17 @@ def main(args):
         with open(os.path.join(prompt_path, "results.json"), "w") as f:
             json.dump(results, f)
 
-
-
     # save final metrics
-    for metric in metrics_to_compute:
-        metrics_arr[metric]["mean"] /= n_samples
-        metrics_arr[metric]["max"] /= n_samples
-        metrics_arr[metric]["min"] /= n_samples
-        metrics_arr[metric]["std"] /= n_samples
+    if n_samples > 0:
+        for metric in metrics_to_compute:
+            metrics_arr[metric]["mean"] /= n_samples
+            metrics_arr[metric]["max"] /= n_samples
+            metrics_arr[metric]["min"] /= n_samples
+            metrics_arr[metric]["std"] /= n_samples
 
-    with open(os.path.join(output_dir, "final_metrics.json"), "w") as f:
-        json.dump(metrics_arr, f)
+    metrics_fname = f"final_metrics_shard_{args.shard_id}.json" if args.num_shards > 1 else "final_metrics.json"
+    with open(os.path.join(output_dir, metrics_fname), "w") as f:
+        json.dump(metrics_arr, f, indent=4)
 
 
 def get_args():
@@ -337,7 +349,6 @@ def get_args():
     parser.add_argument("--lmbda", type=float, default=5000)
     parser.add_argument("--scale", type=float, default=12.5)
 
-
     parser.add_argument("--eta", type=float, default=1.0)
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward")
     parser.add_argument(
@@ -349,7 +360,6 @@ def get_args():
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl")
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
 
-
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--adaptive_resampling", action="store_true")
     parser.add_argument("--resample_frequency", type=int, default=20)
@@ -357,8 +367,9 @@ def get_args():
     parser.add_argument("--resample_t_end", type=int, default=200)
     parser.add_argument("--potential_type", type=str, default="diff")
 
-
     parser.add_argument("--max_prompt", type=int, default=1000)
+    parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards to split prompts")
+    parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--reward_type", type=str, choices=["ImageReward", "Clip-Score-only", "HumanPreference", "AS", "mix"], default="ImageReward")
 
     parser.add_argument("--lookahead_path", type=str, default="100_50_5")
@@ -368,11 +379,9 @@ def get_args():
     parser.add_argument("--FK_resample_t_start", type=int, default=20)
     parser.add_argument("--FK_resample_t_end", type=int, default=80)
 
-
     parser.add_argument("--run_name", type=str, default="", help="Custom output subfolder name")
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
     args = parser.parse_args()
-
 
     return args
 
