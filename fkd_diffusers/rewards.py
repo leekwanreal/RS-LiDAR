@@ -253,11 +253,25 @@ class MLP(nn.Module):
 
 
 class AestheticScore(nn.Module):
-    def __init__(self, download_root, device='cpu'):
+    def __init__(self, download_root=None, device='cpu'):
         super().__init__()
         self.device = device
-        self.clip_model, self.preprocess = clip.load("ViT-L/14", device=self.device, jit=False,
-                                                     download_root=download_root)
+        cache_dir = download_root or os.path.expanduser("~/.cache/clip")
+        os.makedirs(cache_dir, exist_ok=True)
+        import time
+        loaded = False
+        for attempt in range(5):
+            try:
+                self.clip_model, self.preprocess = clip.load(
+                    "ViT-L/14", device=self.device, jit=False, download_root=cache_dir
+                )
+                loaded = True
+                break
+            except Exception as e:
+                print(f"⚠️ AS CLIP load attempt {attempt+1}/5 on {self.device} failed: {e}. Retrying in 2s...")
+                time.sleep(2)
+        if not loaded:
+            self.clip_model, self.preprocess = clip.load("ViT-L/14", device=self.device, jit=False)
         self.mlp = MLP(768)
 
         if device == "cpu":
