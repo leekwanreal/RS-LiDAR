@@ -1,6 +1,9 @@
-# Context notes
+# Context & Documents
 README_CONTEXT.md
 readme_context.md
+*.pdf
+*.txt
+!requirements.txt
 
 # Python cache & artifacts
 __pycache__/
@@ -19,11 +22,14 @@ venv/
 
 # Experiment outputs & weights
 Lookahead_samples/
+Target_samples/
 *.pt
 *.pth
 *.bin
 *.safetensors
 *.ckpt
+*.zip
+*.csv
 
 # Environment & local files
 .env
