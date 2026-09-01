@@ -32,6 +32,29 @@ from tqdm import tqdm
 os.environ["USE_TF"] = "0"
 os.environ["USE_TORCH"] = "1"
 
+# Universal transformers compatibility shims
+try:
+    import transformers
+    for dummy_cls in ["EncoderDecoderCache", "DynamicCache", "Cache"]:
+        if not hasattr(transformers, dummy_cls):
+            setattr(transformers, dummy_cls, type(dummy_cls, (), {}))
+    import transformers.pytorch_utils
+    if not hasattr(transformers.pytorch_utils, "find_pruneable_heads_and_indices"):
+        def find_pruneable_heads_and_indices(heads, n_heads, head_size, already_pruned_heads):
+            if len(heads) == 0:
+                return set(), torch.empty(0, dtype=torch.long)
+            heads = set(heads) - already_pruned_heads
+            mask = torch.ones(n_heads, head_size)
+            for head in heads:
+                head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
+                mask[head] = 0
+            mask = mask.view(-1).contiguous().eq(1)
+            index = torch.arange(len(mask))[mask].long()
+            return heads, index
+        transformers.pytorch_utils.find_pruneable_heads_and_indices = find_pruneable_heads_and_indices
+except Exception:
+    pass
+
 # Telemetry dummy module to prevent telemetry crashes
 if "wandb" not in sys.modules:
     try:
@@ -267,9 +290,9 @@ def run_test_1_solver_robustness(
 # ======================================================================================
 # 🔬 TEST 2: Kháng Sụp đổ Trọng số Softmax (Softmax Mode Collapse Prevention)
 # ======================================================================================
-def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=None, prompt_list=None, device="cuda"):
+def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=None, prompt_list=None, device="cuda", num_shards=1, shard_id=0, output_dir="experiments/test_results"):
     print("\n" + "="*80)
-    print("🔬 [BÀI TEST 2] ĐO KHẢ NĂNG KHÁNG SỤP ĐỔ ENTROPY SOFTMAX (MODE COLLAPSE)")
+    print(f"🔬 [BÀI TEST 2] ĐO KHẢ NĂNG KHÁNG SỤP ĐỔ ENTROPY SOFTMAX (Shard {shard_id + 1}/{num_shards})")
     print("="*80)
 
     scheduler = DDIMScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
@@ -280,12 +303,20 @@ def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=Non
     if lookahead_dir and os.path.exists(lookahead_dir):
         lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
 
-    n_eval_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
+    total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
+    if num_shards > 1:
+        per_shard = math.ceil(total_prompts / num_shards)
+        start_i = shard_id * per_shard
+        end_i = min(start_i + per_shard, total_prompts)
+        idx_range = range(start_i, end_i)
+    else:
+        idx_range = range(total_prompts)
+
     all_entropy_lidar = {int(t): [] for t in timesteps}
     all_entropy_ours = {int(t): [] for t in timesteps}
 
-    for idx in tqdm(range(n_eval_prompts), desc="Evaluating Test 2 Entropy"):
-        if lookahead_folders:
+    for idx in tqdm(idx_range, desc=f"Test 2 [Shard {shard_id}]"):
+        if lookahead_folders and idx < len(lookahead_folders):
             p_folder = lookahead_folders[idx]
             try:
                 latents_path = os.path.join(p_folder, "samples", "latent.pt")
@@ -324,10 +355,14 @@ def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=Non
             all_entropy_ours[t_int].append(h_ours)
 
     t_list = [int(t) for t in timesteps]
-    mean_entropy_lidar = [float(np.mean(all_entropy_lidar[t])) for t in t_list]
-    mean_entropy_ours = [float(np.mean(all_entropy_ours[t])) for t in t_list]
+    mean_entropy_lidar = [float(np.mean(all_entropy_lidar[t])) if all_entropy_lidar[t] else 0.0 for t in t_list]
+    mean_entropy_ours = [float(np.mean(all_entropy_ours[t])) if all_entropy_ours[t] else 0.0 for t in t_list]
 
-    print(f"\n📊 KẾT QUẢ BÀI TEST 2 TRÊN {n_eval_prompts} PROMPTS:")
+    ckpt_file = os.path.join(output_dir, f"test_2_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_2_checkpoint.json")
+    with open(ckpt_file, "w", encoding="utf-8") as f:
+        json.dump({"t_list": t_list, "entropy_lidar": mean_entropy_lidar, "entropy_ours": mean_entropy_ours}, f)
+
+    print(f"\n📊 KẾT QUẢ BÀI TEST 2 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS:")
     print(f" • Entropy lý thuyết khi phân phối đều {num_particles} hạt:       {np.log2(num_particles):.4f} bits")
     print(f" • Entropy trung bình của LiDAR gốc:                  {np.mean(mean_entropy_lidar):.4f} bits (Sụp đổ Best-of-1)")
     print(f" • Entropy trung bình của Phương pháp Bạn:            {np.mean(mean_entropy_ours):.4f} bits (Phân bổ mượt mà)")
@@ -338,9 +373,9 @@ def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=Non
 # ======================================================================================
 # 🔬 TEST 3: Kháng Rung lắc Vector Dẫn đường (Guidance Field Lipschitz Stability)
 # ======================================================================================
-def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_dir=None, prompt_list=None, device="cuda"):
+def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_dir=None, prompt_list=None, device="cuda", num_shards=1, shard_id=0, output_dir="experiments/test_results"):
     print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 3] ĐO ĐỘ ỔN ĐỊNH LIPSCHITZ CỦA TRƯỜNG VECTOR DẪN ĐƯỜNG (delta={delta_eps})")
+    print(f"🔬 [BÀI TEST 3] ĐO ĐỘ ỔN ĐỊNH LIPSCHITZ CỦA TRƯỜNG VECTOR DẪN ĐƯỜNG (Shard {shard_id + 1}/{num_shards})")
     print("="*80)
 
     scheduler = DDIMScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
@@ -350,12 +385,20 @@ def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_d
     if lookahead_dir and os.path.exists(lookahead_dir):
         lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
 
-    n_eval = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
+    total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
+    if num_shards > 1:
+        per_shard = math.ceil(total_prompts / num_shards)
+        start_i = shard_id * per_shard
+        end_i = min(start_i + per_shard, total_prompts)
+        idx_range = range(start_i, end_i)
+    else:
+        idx_range = range(total_prompts)
+
     cossim_lidar_all = {t: [] for t in test_timesteps}
     cossim_ours_all = {t: [] for t in test_timesteps}
 
-    for idx in tqdm(range(n_eval), desc="Evaluating Test 3 Guidance Stability"):
-        if lookahead_folders:
+    for idx in tqdm(idx_range, desc=f"Test 3 [Shard {shard_id}]"):
+        if lookahead_folders and idx < len(lookahead_folders):
             try:
                 latents_path = os.path.join(lookahead_folders[idx], "samples", "latent.pt")
                 results_path = os.path.join(lookahead_folders[idx], "results.json")
@@ -399,10 +442,14 @@ def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_d
             sim_ours = F.cosine_similarity(g_ours.view(1, -1), g_ours_pert.view(1, -1)).item()
             cossim_ours_all[t_val].append(sim_ours)
 
-    mean_cossim_lidar = [float(np.mean(cossim_lidar_all[t])) for t in test_timesteps]
-    mean_cossim_ours = [float(np.mean(cossim_ours_all[t])) for t in test_timesteps]
+    mean_cossim_lidar = [float(np.mean(cossim_lidar_all[t])) if cossim_lidar_all[t] else 0.0 for t in test_timesteps]
+    mean_cossim_ours = [float(np.mean(cossim_ours_all[t])) if cossim_ours_all[t] else 0.0 for t in test_timesteps]
 
-    print(f"\n📊 KẾT QUẢ BÀI TEST 3 TRÊN {n_eval} PROMPTS (Tại delta={delta_eps}):")
+    ckpt_file = os.path.join(output_dir, f"test_3_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_3_checkpoint.json")
+    with open(ckpt_file, "w", encoding="utf-8") as f:
+        json.dump({"timesteps": test_timesteps, "cossim_lidar": mean_cossim_lidar, "cossim_ours": mean_cossim_ours}, f)
+
+    print(f"\n📊 KẾT QUẢ BÀI TEST 3 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS (Tại delta={delta_eps}):")
     print(f" • Độ ổn định Cosine trung bình của LiDAR gốc:        {np.mean(mean_cossim_lidar):.4f} (Vector bị bẻ hướng)")
     print(f" • Độ ổn định Cosine của Phương pháp Bạn:             {np.mean(mean_cossim_ours):.4f} (Kháng nhiễu tuyệt đối)")
 
@@ -415,7 +462,7 @@ def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_d
 def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/test_results", sigma=0.05):
     os.makedirs(output_dir, exist_ok=True)
 
-    # Tự động quét và gom kết quả Test 1 từ tất cả shard checkpoints nếu res1 chưa đủ
+    # 1. Tự động quét và gom kết quả Test 1 từ tất cả shard checkpoints
     if res1 is None or len(res1.get("delta_r_lidar", [])) == 0:
         shard_ckpts = sorted(glob.glob(os.path.join(output_dir, "test_1_checkpoint*.json")))
         if shard_ckpts:
@@ -445,6 +492,52 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
                     "tau_lidar": float(np.mean(merged_kendall_lidar)) if merged_kendall_lidar else 0.0,
                     "tau_ours": float(np.mean(merged_kendall_ours)) if merged_kendall_ours else 0.0,
                     "lipschitz_bound": float(lipschitz_bound)
+                }
+
+    # 2. Tự động quét và gom kết quả Test 2 từ tất cả shard checkpoints
+    if res2 is None:
+        shard_ckpts_2 = sorted(glob.glob(os.path.join(output_dir, "test_2_checkpoint*.json")))
+        if shard_ckpts_2:
+            t_list = None
+            ent_lidar_shards = []
+            ent_ours_shards = []
+            for cp in shard_ckpts_2:
+                try:
+                    with open(cp, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                        t_list = d.get("t_list", [])
+                        ent_lidar_shards.append(d.get("entropy_lidar", []))
+                        ent_ours_shards.append(d.get("entropy_ours", []))
+                except Exception:
+                    pass
+            if t_list and ent_lidar_shards:
+                res2 = {
+                    "t_list": t_list,
+                    "entropy_lidar": np.mean(ent_lidar_shards, axis=0).tolist(),
+                    "entropy_ours": np.mean(ent_ours_shards, axis=0).tolist()
+                }
+
+    # 3. Tự động quét và gom kết quả Test 3 từ tất cả shard checkpoints
+    if res3 is None:
+        shard_ckpts_3 = sorted(glob.glob(os.path.join(output_dir, "test_3_checkpoint*.json")))
+        if shard_ckpts_3:
+            timesteps = None
+            cos_lidar_shards = []
+            cos_ours_shards = []
+            for cp in shard_ckpts_3:
+                try:
+                    with open(cp, "r", encoding="utf-8") as f:
+                        d = json.load(f)
+                        timesteps = d.get("timesteps", [])
+                        cos_lidar_shards.append(d.get("cossim_lidar", []))
+                        cos_ours_shards.append(d.get("cossim_ours", []))
+                except Exception:
+                    pass
+            if timesteps and cos_lidar_shards:
+                res3 = {
+                    "timesteps": timesteps,
+                    "cossim_lidar": np.mean(cos_lidar_shards, axis=0).tolist(),
+                    "cossim_ours": np.mean(cos_ours_shards, axis=0).tolist()
                 }
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
@@ -595,13 +688,17 @@ if __name__ == "__main__":
     if args.test in ["all", "2"]:
         res2 = run_test_2_softmax_entropy(
             num_particles=50, lookahead_dir=args.lookahead_dir,
-            prompt_list=test_prompts, device=device
+            prompt_list=test_prompts, device=device,
+            num_shards=args.num_shards, shard_id=args.shard_id,
+            output_dir=args.output_dir
         )
 
     if args.test in ["all", "3"]:
         res3 = run_test_3_guidance_stability(
             num_particles=50, delta_eps=0.001,
-            lookahead_dir=args.lookahead_dir, prompt_list=test_prompts, device=device
+            lookahead_dir=args.lookahead_dir, prompt_list=test_prompts, device=device,
+            num_shards=args.num_shards, shard_id=args.shard_id,
+            output_dir=args.output_dir
         )
 
     plot_and_save_all(res1, res2, res3, output_dir=args.output_dir, sigma=args.sigma)
