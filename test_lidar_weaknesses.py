@@ -636,20 +636,24 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
 
-    # Device configuration
-    if args.gpu_id is not None and torch.cuda.is_available():
-        num_devices = torch.cuda.device_count()
+    # Device configuration - Yêu cầu bắt buộc GPU để không bị treo CPU
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "❌ KHÔNG TÌM THẤY GPU (CUDA is not available)!\n"
+            "   Vui lòng kiểm tra lại cấu hình Notebook trên Kaggle/Colab:\n"
+            "   👉 Kaggle: Panel bên phải -> Session options -> Accelerator -> Chọn 'GPU T4 x2'\n"
+            "   👉 Không chạy trên CPU vì khuếch tán 50 bước trên CPU sẽ mất 3 tiếng/ảnh!"
+        )
+
+    num_devices = torch.cuda.device_count()
+    if args.gpu_id is not None:
         actual_gpu = args.gpu_id if args.gpu_id < num_devices else (args.gpu_id % num_devices)
-        torch.cuda.set_device(actual_gpu)
-        device = f"cuda:{actual_gpu}"
-        print(f"🎯 Thiết bị thực thi: GPU {actual_gpu} ({torch.cuda.get_device_name(actual_gpu)})")
-    elif torch.cuda.is_available():
-        device = "cuda:0"
-        torch.cuda.set_device(0)
-        print(f"🎯 Thiết bị thực thi: {torch.cuda.get_device_name(0)}")
     else:
-        device = "cpu"
-        print("🎯 Thiết bị thực thi: CPU")
+        actual_gpu = 0
+
+    torch.cuda.set_device(actual_gpu)
+    device = f"cuda:{actual_gpu}"
+    print(f"🎯 Thiết bị thực thi: GPU {actual_gpu} ({torch.cuda.get_device_name(actual_gpu)})")
 
     test_prompts = load_geneval_prompts(args.prompt_path, max_prompts=args.num_prompts)
     print(f"📝 Đã nạp {len(test_prompts)} prompts để chạy thực nghiệm.")
