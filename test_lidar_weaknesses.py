@@ -236,25 +236,16 @@ def run_test_1_solver_robustness(
             r_5step_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
             r_50step_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_50step))
 
-            # Phương pháp của Bạn: Smoothed Surrogate \bar{r}_\sigma với Antithetic Variates
-            # Lấy 2 cặp nhiễu đối xứng (x + sigma*eps và x - sigma*eps) để triệt tiêu phương sai bậc 1
+            # Phương pháp của Bạn: Smoothed Surrogate \bar{r}_\sigma(hat{x}_0) với M=4 mẫu nhiễu Gaussian xi_m ~ N(0, sigma^2 I)
+            M = 4
             r_5step_smoothed_samples = []
             r_50step_smoothed_samples = []
-            M_pairs = 2  # 2 cặp đối xứng (4 ảnh per particle)
-            for _ in range(M_pairs):
+            for _ in range(M):
                 noise = torch.randn_like(latents_5step) * sigma
-                
-                # + noise
-                noisy_img_5_pos = decode_latents(latents_5step + noise, vae, pipe, device=device, chunk_size=2)
-                noisy_img_50_pos = decode_latents(latents_50step + noise, vae, pipe, device=device, chunk_size=2)
-                # - noise
-                noisy_img_5_neg = decode_latents(latents_5step - noise, vae, pipe, device=device, chunk_size=2)
-                noisy_img_50_neg = decode_latents(latents_50step - noise, vae, pipe, device=device, chunk_size=2)
-
-                r_5step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5_pos))
-                r_5step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5_neg))
-                r_50step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_50_pos))
-                r_50step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_50_neg))
+                noisy_img_5 = decode_latents(latents_5step + noise, vae, pipe, device=device, chunk_size=2)
+                noisy_img_50 = decode_latents(latents_50step + noise, vae, pipe, device=device, chunk_size=2)
+                r_5step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5))
+                r_50step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_50))
 
             r_5step_ours = np.mean(r_5step_smoothed_samples, axis=0)
             r_50step_ours = np.mean(r_50step_smoothed_samples, axis=0)
