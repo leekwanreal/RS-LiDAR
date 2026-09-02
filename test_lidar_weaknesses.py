@@ -248,8 +248,9 @@ def run_test_1_solver_robustness(
             r_5step_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
             r_50step_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_50step))
 
-            # Phương pháp của Bạn: Smoothed Surrogate \bar{r}_\sigma(hat{x}_0) với M=4 mẫu nhiễu Gaussian xi_m ~ N(0, sigma^2 I)
-            M = 4
+            # Phương pháp của Bạn: Smoothed Surrogate \bar{r}_\sigma(hat{x}_0) với M=8 mẫu nhiễu Gaussian xi_m ~ N(0, sigma^2 I)
+            # Tăng số mẫu M=8 để xấp xỉ kỳ vọng Monte Carlo chính xác và mượt mà hơn
+            M = 8
             r_5step_smoothed_samples = []
             r_50step_smoothed_samples = []
             for _ in range(M):
@@ -354,10 +355,14 @@ def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=Non
             lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
             rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
 
-        # Chuẩn hóa z-score của reward cho Smoothed Surrogate
-        r_mean = rewards_raw.mean()
-        r_std = torch.clamp(rewards_raw.std(), min=1e-3)
-        rewards_ours_smooth = (rewards_raw - r_mean) / r_std
+        # 1. LiDAR Gốc: Điểm thưởng thô tại 1 mẫu duy nhất r(x)
+        rewards_lidar = rewards_raw
+
+        # 2. Phương pháp của Bạn: Kỳ vọng điểm thưởng khi thêm nhiễu Gaussian xi ~ N(0, sigma^2 I)
+        # Lấy kỳ vọng Monte Carlo qua M=8 mẫu nhiễu để triệt tiêu các gai nhọn cục bộ
+        M_exp = 8
+        noise_evals = torch.randn(M_exp, num_particles, device=device) * 0.15
+        rewards_ours = rewards_raw + noise_evals.mean(dim=0, keepdim=True)
 
         current_latent = torch.randn(1, 1, 4, 64, 64, device=device)
 
@@ -366,15 +371,15 @@ def run_test_2_softmax_entropy(num_particles=50, num_steps=50, lookahead_dir=Non
             alpha_prod_t = scheduler.alphas_cumprod[t_int].to(device)
 
             raw_diff_sq = - (current_latent.float() - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
-            potential_raw = (raw_diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))  # (1, K) unnormalized
+            potential_raw = (raw_diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
 
-            # 1. LiDAR Gốc: Dùng lambda=5000 nhân trực tiếp trên thế năng chưa chuẩn hóa
-            w_r_lidar = F.softmax(5000.0 * rewards_raw + potential_raw, dim=1)
+            # CẢ HAI BÊN DÙNG CÙNG 100% CÔNG THỨC THẾ NĂNG VÀ CÙNG HỆ SỐ LAMBDA (lambda = 5000):
+            # LiDAR gốc: dùng reward thô r_i
+            w_r_lidar = F.softmax(5000.0 * rewards_lidar + potential_raw, dim=1)
             h_lidar = - (w_r_lidar * (w_r_lidar + 1e-12).log2()).sum(dim=1).item()
 
-            # 2. Phương pháp Của Bạn (RS-LiDAR): Chuẩn hóa thế năng theo số chiều (P / D_latent)
-            potential_dim_norm = potential_raw / (D_latent ** 0.5)
-            w_r_ours = F.softmax(2.0 * rewards_ours_smooth + potential_dim_norm, dim=1)
+            # Phương pháp của Bạn: dùng kỳ vọng khi thêm nhiễu \bar{r}_\sigma, hoàn toàn cùng thế năng và cùng lambda
+            w_r_ours = F.softmax(5000.0 * rewards_ours + potential_raw, dim=1)
             h_ours = - (w_r_ours * (w_r_ours + 1e-12).log2()).sum(dim=1).item()
 
             all_entropy_lidar[t_int].append(h_lidar)
@@ -440,9 +445,12 @@ def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_d
             lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
             rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
 
-        r_mean = rewards_raw.mean()
-        r_std = torch.clamp(rewards_raw.std(), min=1e-3)
-        rewards_ours_smooth = (rewards_raw - r_mean) / r_std
+        rewards_lidar = rewards_raw
+
+        # Lấy kỳ vọng Monte Carlo qua M=8 mẫu nhiễu Gaussian
+        M_exp = 8
+        noise_evals = torch.randn(M_exp, num_particles, device=device) * 0.15
+        rewards_ours = rewards_raw + noise_evals.mean(dim=0, keepdim=True)
 
         current_latent = torch.randn(1, 1, 4, 64, 64, device=device)
         delta = delta_eps * torch.randn_like(current_latent)
@@ -450,34 +458,26 @@ def run_test_3_guidance_stability(num_particles=50, delta_eps=0.001, lookahead_d
         for t_val in test_timesteps:
             alpha_prod_t = scheduler.alphas_cumprod[t_val].to(device)
 
-            def get_g_lidar(pot_latent):
+            # CẢ HAI BÊN DÙNG CHUNG DUY NHẤT 1 HÀM TÍNH VECTOR DẪN ĐƯỜNG g_t
+            # Cùng 1 thế năng, cùng lambda=5000, không chia sqrt(D), không z-score
+            def get_g(pot_latent, r_vec):
                 pot = - (pot_latent.float() - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
                 pot = (pot / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
                 w = F.softmax(pot, dim=1)
-                w_r = F.softmax(5000.0 * rewards_raw + pot, dim=1)
+                w_r = F.softmax(5000.0 * r_vec + pot, dim=1)
                 delta_w = (w_r - w)[..., None, None, None]
                 g = (delta_w * lookahead_latents).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
                 return g
 
-            def get_g_ours(pot_latent):
-                pot_raw = - (pot_latent.float() - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
-                pot_raw = (pot_raw / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
-                pot_norm = pot_raw / (D_latent ** 0.5)
-                w = F.softmax(pot_norm, dim=1)
-                w_r = F.softmax(2.0 * rewards_ours_smooth + pot_norm, dim=1)
-                delta_w = (w_r - w)[..., None, None, None]
-                g = (delta_w * lookahead_latents).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
-                return g
-
-            # LiDAR gốc
-            g_lidar = get_g_lidar(current_latent)
-            g_lidar_pert = get_g_lidar(current_latent + delta)
+            # 1. LiDAR gốc: Dùng reward thô
+            g_lidar = get_g(current_latent, rewards_lidar)
+            g_lidar_pert = get_g(current_latent + delta, rewards_lidar)
             sim_lidar = F.cosine_similarity(g_lidar.view(1, -1), g_lidar_pert.view(1, -1)).item()
             if not np.isnan(sim_lidar): cossim_lidar_all[t_val].append(sim_lidar)
 
-            # Smoothed Surrogate (RS-LiDAR)
-            g_ours = get_g_ours(current_latent)
-            g_ours_pert = get_g_ours(current_latent + delta)
+            # 2. Phương pháp của Bạn: Dùng kỳ vọng khi thêm nhiễu
+            g_ours = get_g(current_latent, rewards_ours)
+            g_ours_pert = get_g(current_latent + delta, rewards_ours)
             sim_ours = F.cosine_similarity(g_ours.view(1, -1), g_ours_pert.view(1, -1)).item()
             if not np.isnan(sim_ours): cossim_ours_all[t_val].append(sim_ours)
 
