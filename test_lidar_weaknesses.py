@@ -72,6 +72,18 @@ import torch
 import torch.nn.functional as F
 from diffusers import AutoencoderKL, DDIMScheduler, DPMSolverMultistepScheduler, StableDiffusionPipeline
 
+# Self-healing CLIP import to prevent ModuleNotFoundError
+try:
+    import clip
+except ImportError:
+    try:
+        import subprocess
+        print("⏳ Đang cài đặt bổ sung thư viện OpenAI CLIP...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "git+https://github.com/openai/CLIP.git"], check=True)
+        import clip
+    except Exception as e:
+        print(f"⚠️ Không thể tự động cài đặt CLIP: {e}")
+
 # Compatibility patch for ImageReward
 try:
     from fkd_diffusers.image_reward_utils import rm_load
