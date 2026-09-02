@@ -1,6 +1,8 @@
 # Context & Documents
 README_CONTEXT.md
 readme_context.md
+COLAB_A100_GUIDE.md
+colab_a100_guide.md
 *.pdf
 *.txt
 !requirements.txt
