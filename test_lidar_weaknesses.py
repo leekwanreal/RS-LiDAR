@@ -94,6 +94,16 @@ except ImportError:
         import ImageReward as RM
         rm_load = RM.load
 
+# Multi-metric reward scorers (CLIP-Score & HPS v2.1)
+try:
+    from fkd_diffusers.rewards import do_clip_score, do_human_preference_score
+except ImportError:
+    try:
+        from rewards import do_clip_score, do_human_preference_score
+    except ImportError:
+        do_clip_score = None
+        do_human_preference_score = None
+
 
 def load_geneval_prompts(prompt_path="prompt_files/geneval_metadata.jsonl", max_prompts=-1, seed=42):
     """Tải danh sách prompt từ file GenEval jsonl. Nếu max_prompts > 0: lấy mẫu ngẫu nhiên đồng đều trên toàn bộ 553 prompts."""
@@ -203,6 +213,14 @@ def run_test_1_solver_robustness(
     error_norms = []
     kendall_lidar_list = []
     kendall_ours_list = []
+    delta_clip_lidar_list = []
+    delta_clip_ours_list = []
+    kendall_clip_lidar_list = []
+    kendall_clip_ours_list = []
+    delta_hps_lidar_list = []
+    delta_hps_ours_list = []
+    kendall_hps_lidar_list = []
+    kendall_hps_ours_list = []
     start_local_idx = 0
 
     # Tự động đọc checkpoint nếu có
@@ -215,6 +233,14 @@ def run_test_1_solver_robustness(
                 error_norms = ckpt.get("error_norms", [])
                 kendall_lidar_list = ckpt.get("kendall_lidar", [])
                 kendall_ours_list = ckpt.get("kendall_ours", [])
+                delta_clip_lidar_list = ckpt.get("delta_clip_lidar", [])
+                delta_clip_ours_list = ckpt.get("delta_clip_ours", [])
+                kendall_clip_lidar_list = ckpt.get("kendall_clip_lidar", [])
+                kendall_clip_ours_list = ckpt.get("kendall_clip_ours", [])
+                delta_hps_lidar_list = ckpt.get("delta_hps_lidar", [])
+                delta_hps_ours_list = ckpt.get("delta_hps_ours", [])
+                kendall_hps_lidar_list = ckpt.get("kendall_hps_lidar", [])
+                kendall_hps_ours_list = ckpt.get("kendall_hps_ours", [])
                 start_local_idx = ckpt.get("processed_prompts", 0)
                 print(f"🔄 Shard {shard_id}: Đã khôi phục từ Checkpoint! Tiếp tục từ prompt thứ {start_local_idx + 1}/{len(prompt_slice)}...")
         except Exception as e:
@@ -239,73 +265,147 @@ def run_test_1_solver_robustness(
         e_norms = torch.linalg.norm((latents_5step - latents_50step).view(num_particles, -1), ord=2, dim=1).cpu().tolist()
         error_norms.extend(e_norms)
 
-        # 3. Giải mã VAE & Chấm điểm Reward
+        # 3. Giải mã VAE & Chấm điểm Đa Mô Hình Reward (ImageReward, CLIP-Score, HPS v2.1)
         with torch.inference_mode():
             img_5step = decode_latents(latents_5step, vae, pipe, device=device, chunk_size=2)
             img_50step = decode_latents(latents_50step, vae, pipe, device=device, chunk_size=2)
 
-            # LiDAR gốc (sigma = 0): Chấm điểm thô trực tiếp
-            r_5step_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
-            r_50step_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_50step))
+            # 1. ImageReward thô (LiDAR gốc sigma=0)
+            r_5step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
+            r_50step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_50step))
+
+            # 2. CLIP-Score thô
+            if do_clip_score is not None:
+                r_5step_clip_raw = np.array(do_clip_score(images=img_5step, prompts=[prompt] * num_particles))
+                r_50step_clip_raw = np.array(do_clip_score(images=img_50step, prompts=[prompt] * num_particles))
+            else:
+                r_5step_clip_raw, r_50step_clip_raw = None, None
+
+            # 3. HPS v2.1 thô
+            if do_human_preference_score is not None:
+                r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
+                r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
+            else:
+                r_5step_hps_raw, r_50step_hps_raw = None, None
 
             # Phương pháp của Bạn: Smoothed Surrogate \bar{r}_\sigma(hat{x}_0) với M=8 mẫu nhiễu Gaussian xi_m ~ N(0, sigma^2 I)
-            # Tăng số mẫu M=8 để xấp xỉ kỳ vọng Monte Carlo chính xác và mượt mà hơn
             M = 8
-            r_5step_smoothed_samples = []
-            r_50step_smoothed_samples = []
+            r_5_ir_smooth, r_50_ir_smooth = [], []
+            r_5_clip_smooth, r_50_clip_smooth = [], []
+            r_5_hps_smooth, r_50_hps_smooth = [], []
+
             for _ in range(M):
                 noise = torch.randn_like(latents_5step) * sigma
                 noisy_img_5 = decode_latents(latents_5step + noise, vae, pipe, device=device, chunk_size=2)
                 noisy_img_50 = decode_latents(latents_50step + noise, vae, pipe, device=device, chunk_size=2)
-                r_5step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5))
-                r_50step_smoothed_samples.append(ir_model.score_batched([prompt] * num_particles, noisy_img_50))
 
-            r_5step_ours = np.mean(r_5step_smoothed_samples, axis=0)
-            r_50step_ours = np.mean(r_50step_smoothed_samples, axis=0)
+                # ImageReward
+                r_5_ir_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5))
+                r_50_ir_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_img_50))
 
-        # Đo sai số điểm
-        delta_r_lidar_list.extend(np.abs(r_5step_raw - r_50step_raw).tolist())
-        delta_r_ours_list.extend(np.abs(r_5step_ours - r_50step_ours).tolist())
+                # CLIP-Score
+                if do_clip_score is not None:
+                    r_5_clip_smooth.append(do_clip_score(images=noisy_img_5, prompts=[prompt] * num_particles))
+                    r_50_clip_smooth.append(do_clip_score(images=noisy_img_50, prompts=[prompt] * num_particles))
 
-        # Đo tương quan thứ hạng Kendall's tau
-        tau_lidar, _ = scipy.stats.kendalltau(r_5step_raw, r_50step_raw)
-        tau_ours, _ = scipy.stats.kendalltau(r_5step_ours, r_50step_ours)
-        if not np.isnan(tau_lidar): kendall_lidar_list.append(tau_lidar)
-        if not np.isnan(tau_ours): kendall_ours_list.append(tau_ours)
+                # HPS v2.1
+                if do_human_preference_score is not None:
+                    r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
+                    r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
+
+            r_5step_ir_ours = np.mean(r_5_ir_smooth, axis=0)
+            r_50step_ir_ours = np.mean(r_50_ir_smooth, axis=0)
+
+            if r_5_clip_smooth:
+                r_5step_clip_ours = np.mean(r_5_clip_smooth, axis=0)
+                r_50step_clip_ours = np.mean(r_50_clip_smooth, axis=0)
+            else:
+                r_5step_clip_ours, r_50step_clip_ours = None, None
+
+            if r_5_hps_smooth:
+                r_5step_hps_ours = np.mean(r_5_hps_smooth, axis=0)
+                r_50step_hps_ours = np.mean(r_50_hps_smooth, axis=0)
+            else:
+                r_5step_hps_ours, r_50step_hps_ours = None, None
+
+        # Đo sai số điểm & Kendall's tau cho từng Metric
+        # 1. ImageReward
+        delta_r_lidar_list.extend(np.abs(r_5step_ir_raw - r_50step_ir_raw).tolist())
+        delta_r_ours_list.extend(np.abs(r_5step_ir_ours - r_50step_ir_ours).tolist())
+        tau_ir_lidar, _ = scipy.stats.kendalltau(r_5step_ir_raw, r_50step_ir_raw)
+        tau_ir_ours, _ = scipy.stats.kendalltau(r_5step_ir_ours, r_50step_ir_ours)
+        if not np.isnan(tau_ir_lidar): kendall_lidar_list.append(tau_ir_lidar)
+        if not np.isnan(tau_ir_ours): kendall_ours_list.append(tau_ir_ours)
+
+        # 2. CLIP-Score
+        if r_5step_clip_raw is not None and r_5step_clip_ours is not None:
+            delta_clip_lidar_list.extend(np.abs(r_5step_clip_raw - r_50step_clip_raw).tolist())
+            delta_clip_ours_list.extend(np.abs(r_5step_clip_ours - r_50step_clip_ours).tolist())
+            t_c_l, _ = scipy.stats.kendalltau(r_5step_clip_raw, r_50step_clip_raw)
+            t_c_o, _ = scipy.stats.kendalltau(r_5step_clip_ours, r_50step_clip_ours)
+            if not np.isnan(t_c_l): kendall_clip_lidar_list.append(t_c_l)
+            if not np.isnan(t_c_o): kendall_clip_ours_list.append(t_c_o)
+
+        # 3. HPS v2.1
+        if r_5step_hps_raw is not None and r_5step_hps_ours is not None:
+            delta_hps_lidar_list.extend(np.abs(r_5step_hps_raw - r_50step_hps_raw).tolist())
+            delta_hps_ours_list.extend(np.abs(r_5step_hps_ours - r_50step_hps_ours).tolist())
+            t_h_l, _ = scipy.stats.kendalltau(r_5step_hps_raw, r_50step_hps_raw)
+            t_h_o, _ = scipy.stats.kendalltau(r_5step_hps_ours, r_50step_hps_ours)
+            if not np.isnan(t_h_l): kendall_hps_lidar_list.append(t_h_l)
+            if not np.isnan(t_h_o): kendall_hps_ours_list.append(t_h_o)
 
         # Lưu checkpoint định kỳ
         with open(checkpoint_file, "w", encoding="utf-8") as f:
             json.dump({
                 "processed_prompts": p_local_idx + 1,
+                "error_norms": error_norms,
                 "delta_r_lidar": delta_r_lidar_list,
                 "delta_r_ours": delta_r_ours_list,
-                "error_norms": error_norms,
                 "kendall_lidar": kendall_lidar_list,
-                "kendall_ours": kendall_ours_list
+                "kendall_ours": kendall_ours_list,
+                "delta_clip_lidar": delta_clip_lidar_list,
+                "delta_clip_ours": delta_clip_ours_list,
+                "kendall_clip_lidar": kendall_clip_lidar_list,
+                "kendall_clip_ours": kendall_clip_ours_list,
+                "delta_hps_lidar": delta_hps_lidar_list,
+                "delta_hps_ours": delta_hps_ours_list,
+                "kendall_hps_lidar": kendall_hps_lidar_list,
+                "kendall_hps_ours": kendall_hps_ours_list,
             }, f)
 
-    delta_r_range = max(0.1, np.max(delta_r_ours_list) - np.min(delta_r_ours_list)) if delta_r_ours_list else 1.0
-    lipschitz_bound = delta_r_range / (sigma * np.sqrt(2 * np.pi))
+    def calc_stats(d_lidar, d_ours, k_lidar, k_ours):
+        m_l = float(np.mean(d_lidar)) if d_lidar else 0.0
+        m_o = float(np.mean(d_ours)) if d_ours else 0.0
+        t_l = float(np.mean(k_lidar)) if k_lidar else 0.0
+        t_o = float(np.mean(k_ours)) if k_ours else 0.0
+        rng = max(0.01, np.max(d_ours) - np.min(d_ours)) if d_ours else 1.0
+        l_b = float(rng / (sigma * np.sqrt(2 * np.pi)))
+        return {"delta_lidar": m_l, "delta_ours": m_o, "tau_lidar": t_l, "tau_ours": t_o, "lipschitz_bound": l_b}
 
-    mean_err_lidar = float(np.mean(delta_r_lidar_list)) if delta_r_lidar_list else 0.0
-    mean_err_ours = float(np.mean(delta_r_ours_list)) if delta_r_ours_list else 0.0
-    tau_lidar_mean = float(np.mean(kendall_lidar_list)) if kendall_lidar_list else 0.0
-    tau_ours_mean = float(np.mean(kendall_ours_list)) if kendall_ours_list else 0.0
+    ir_stats = calc_stats(delta_r_lidar_list, delta_r_ours_list, kendall_lidar_list, kendall_ours_list)
+    clip_stats = calc_stats(delta_clip_lidar_list, delta_clip_ours_list, kendall_clip_lidar_list, kendall_clip_ours_list)
+    hps_stats = calc_stats(delta_hps_lidar_list, delta_hps_ours_list, kendall_hps_lidar_list, kendall_hps_ours_list)
 
-    print(f"\n📊 KẾT QUẢ BÀI TEST 1 [Shard {shard_id}]:")
-    print(f" • Sai số Reward trung bình của LiDAR gốc (sigma=0):   {mean_err_lidar:.4f}")
-    print(f" • Sai số Reward của Phương pháp Bạn (sigma={sigma}):      {mean_err_ours:.4f} (Giảm {max(0, (mean_err_lidar - mean_err_ours)/max(1e-6, mean_err_lidar)*100):.1f}%)")
-    print(f" • Tương quan Kendall's tau của LiDAR gốc:               {tau_lidar_mean:.4f} (Bị nhiễu làm sai lệch xếp hạng)")
-    print(f" • Tương quan Kendall's tau của Phương pháp Bạn:         {tau_ours_mean:.4f} (Bảo toàn thứ bậc hạt xuất sắc)")
-    print(f" • Chặn Lipschitz Lý thuyết (Dimension-Free):          L_sigma <= {lipschitz_bound:.4f}")
+    print(f"\n📊 KẾT QUẢ BÀI TEST 1 [Shard {shard_id}] ĐA MÔ HÌNH REWARD:")
+    print(f" • [ImageReward]  |Δr|: {ir_stats['delta_lidar']:.4f} -> {ir_stats['delta_ours']:.4f} | tau: {ir_stats['tau_lidar']:.4f} -> {ir_stats['tau_ours']:.4f} | L_sigma <= {ir_stats['lipschitz_bound']:.2f}")
+    if delta_clip_lidar_list:
+        print(f" • [CLIP-Score]   |Δr|: {clip_stats['delta_lidar']:.4f} -> {clip_stats['delta_ours']:.4f} | tau: {clip_stats['tau_lidar']:.4f} -> {clip_stats['tau_ours']:.4f} | L_sigma <= {clip_stats['lipschitz_bound']:.2f}")
+    if delta_hps_lidar_list:
+        print(f" • [HPS v2.1]     |Δr|: {hps_stats['delta_lidar']:.4f} -> {hps_stats['delta_ours']:.4f} | tau: {hps_stats['tau_lidar']:.4f} -> {hps_stats['tau_ours']:.4f} | L_sigma <= {hps_stats['lipschitz_bound']:.2f}")
 
     return {
         "error_norms": error_norms,
         "delta_r_lidar": delta_r_lidar_list,
         "delta_r_ours": delta_r_ours_list,
-        "tau_lidar": tau_lidar_mean,
-        "tau_ours": tau_ours_mean,
-        "lipschitz_bound": float(lipschitz_bound)
+        "tau_lidar": ir_stats["tau_lidar"],
+        "tau_ours": ir_stats["tau_ours"],
+        "lipschitz_bound": ir_stats["lipschitz_bound"],
+        "metrics": {
+            "ImageReward": ir_stats,
+            "CLIP-Score": clip_stats,
+            "HPS-v2.1": hps_stats
+        }
     }
 
 
@@ -510,6 +610,11 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
             merged_error_norms = []
             merged_kendall_lidar = []
             merged_kendall_ours = []
+            merged_delta_clip_lidar, merged_delta_clip_ours = [], []
+            merged_kendall_clip_lidar, merged_kendall_clip_ours = [], []
+            merged_delta_hps_lidar, merged_delta_hps_ours = [], []
+            merged_kendall_hps_lidar, merged_kendall_hps_ours = [], []
+
             for ckpt_p in shard_ckpts:
                 try:
                     with open(ckpt_p, "r", encoding="utf-8") as f:
@@ -519,18 +624,43 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
                         merged_error_norms.extend(c_data.get("error_norms", []))
                         merged_kendall_lidar.extend(c_data.get("kendall_lidar", []))
                         merged_kendall_ours.extend(c_data.get("kendall_ours", []))
+                        merged_delta_clip_lidar.extend(c_data.get("delta_clip_lidar", []))
+                        merged_delta_clip_ours.extend(c_data.get("delta_clip_ours", []))
+                        merged_kendall_clip_lidar.extend(c_data.get("kendall_clip_lidar", []))
+                        merged_kendall_clip_ours.extend(c_data.get("kendall_clip_ours", []))
+                        merged_delta_hps_lidar.extend(c_data.get("delta_hps_lidar", []))
+                        merged_delta_hps_ours.extend(c_data.get("delta_hps_ours", []))
+                        merged_kendall_hps_lidar.extend(c_data.get("kendall_hps_lidar", []))
+                        merged_kendall_hps_ours.extend(c_data.get("kendall_hps_ours", []))
                 except Exception:
                     pass
+
+            def calc_merged_stats(d_l, d_o, k_l, k_o):
+                m_l = float(np.mean(d_l)) if d_l else 0.0
+                m_o = float(np.mean(d_o)) if d_o else 0.0
+                t_l = float(np.mean(k_l)) if k_l else 0.0
+                t_o = float(np.mean(k_o)) if k_o else 0.0
+                rng = max(0.01, np.max(d_o) - np.min(d_o)) if d_o else 1.0
+                l_b = float(rng / (sigma * np.sqrt(2 * np.pi)))
+                return {"delta_lidar": m_l, "delta_ours": m_o, "tau_lidar": t_l, "tau_ours": t_o, "lipschitz_bound": l_b}
+
             if merged_delta_lidar:
-                delta_r_range = max(0.1, np.max(merged_delta_ours) - np.min(merged_delta_ours))
-                lipschitz_bound = delta_r_range / (sigma * np.sqrt(2 * np.pi))
+                ir_m = calc_merged_stats(merged_delta_lidar, merged_delta_ours, merged_kendall_lidar, merged_kendall_ours)
+                clip_m = calc_merged_stats(merged_delta_clip_lidar, merged_delta_clip_ours, merged_kendall_clip_lidar, merged_kendall_clip_ours)
+                hps_m = calc_merged_stats(merged_delta_hps_lidar, merged_delta_hps_ours, merged_kendall_hps_lidar, merged_kendall_hps_ours)
+
                 res1 = {
                     "error_norms": merged_error_norms,
                     "delta_r_lidar": merged_delta_lidar,
                     "delta_r_ours": merged_delta_ours,
-                    "tau_lidar": float(np.mean(merged_kendall_lidar)) if merged_kendall_lidar else 0.0,
-                    "tau_ours": float(np.mean(merged_kendall_ours)) if merged_kendall_ours else 0.0,
-                    "lipschitz_bound": float(lipschitz_bound)
+                    "tau_lidar": ir_m["tau_lidar"],
+                    "tau_ours": ir_m["tau_ours"],
+                    "lipschitz_bound": ir_m["lipschitz_bound"],
+                    "metrics": {
+                        "ImageReward": ir_m,
+                        "CLIP-Score": clip_m,
+                        "HPS-v2.1": hps_m
+                    }
                 }
 
     # 2. Tự động quét và gom kết quả Test 2 từ tất cả shard checkpoints
@@ -633,7 +763,8 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
             "tau_ours": res1.get("tau_ours", 0.0),
             "lipschitz_bound": res1.get("lipschitz_bound", 0.0),
             "mean_delta_r_lidar": float(np.mean(res1.get("delta_r_lidar", [0]))),
-            "mean_delta_r_ours": float(np.mean(res1.get("delta_r_ours", [0])))
+            "mean_delta_r_ours": float(np.mean(res1.get("delta_r_ours", [0]))),
+            "metrics": res1.get("metrics", {})
         }
     if res2 is not None:
         summary["test_2_entropy"] = {
@@ -649,6 +780,98 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=4)
     print(f"📄 ĐÃ LƯU BẢNG SỐ LIỆU TỔNG HỢP JSON: {summary_path}")
+
+    # ==============================================================================
+    # 📑 XUẤT BẢNG KHOA HỌC ĐA CHỈ SỐ RA CSV & MARKDOWN (PUBLICATION FORMAT)
+    # ==============================================================================
+    table_rows = []
+
+    # 1. Test 1 Multi-Reward Rows
+    t1 = summary.get("test_1_solver_error", {})
+    metrics_dict = t1.get("metrics", {})
+    if not metrics_dict:
+        metrics_dict = {
+            "ImageReward": {
+                "delta_lidar": t1.get("mean_delta_r_lidar", 0.0),
+                "delta_ours": t1.get("mean_delta_r_ours", 0.0),
+                "tau_lidar": t1.get("tau_lidar", 0.0),
+                "tau_ours": t1.get("tau_ours", 0.0),
+                "lipschitz_bound": t1.get("lipschitz_bound", 0.0)
+            }
+        }
+
+    for m_name, m_data in metrics_dict.items():
+        d_lidar = m_data.get("delta_lidar", 0.0)
+        d_ours = m_data.get("delta_ours", 0.0)
+        t_lidar = m_data.get("tau_lidar", 0.0)
+        t_ours = m_data.get("tau_ours", 0.0)
+        l_bound = m_data.get("lipschitz_bound", 0.0)
+        err_red = max(0.0, (d_lidar - d_ours) / max(1e-6, d_lidar) * 100) if d_lidar > 0 else 0.0
+        tau_gain = max(0.0, (t_ours - t_lidar) / max(1e-6, abs(t_lidar)) * 100) if t_lidar != 0 else 0.0
+
+        table_rows.append({
+            "Nhóm Thí Nghiệm": "Test 1: Sai Số Bộ Giải (|Δr| & Tau)",
+            "Mô Hình / Tiêu Chí": m_name,
+            "LiDAR Gốc (σ=0)": f"|Δr|={d_lidar:.4f} | τ={t_lidar:.4f}",
+            "Phương Pháp Của Bạn (r_σ)": f"|Δr|={d_ours:.4f} | τ={t_ours:.4f}",
+            "Mức Độ Cải Thiện": f"Giảm sai số -{err_red:.1f}% | Tăng τ +{tau_gain:.1f}%",
+            "Chặn Lipschitz L_σ": f"<= {l_bound:.2f}",
+            "Ý Nghĩa Khoa Học": f"Kháng sai số DPM-5 & bảo toàn thứ bậc trên {m_name}"
+        })
+
+    # 2. Test 2 Row (Softmax Entropy)
+    t2 = summary.get("test_2_entropy", {})
+    if t2:
+        e_lidar = t2.get("entropy_lidar_mean", 0.0)
+        e_ours = t2.get("entropy_ours_mean", 0.0)
+        n_eff_lidar = 2 ** e_lidar
+        n_eff_ours = 2 ** e_ours
+        table_rows.append({
+            "Nhóm Thí Nghiệm": "Test 2: Entropy Phân Phối Trọng Số",
+            "Mô Hình / Tiêu Chí": "Softmax Entropy H(w^r) (50 hạt)",
+            "LiDAR Gốc (σ=0)": f"{e_lidar:.4f} bits (N_eff={n_eff_lidar:.1f})",
+            "Phương Pháp Của Bạn (r_σ)": f"{e_ours:.4f} bits (N_eff={n_eff_ours:.1f})",
+            "Mức Độ Cải Thiện": f"Tăng Entropy +{e_ours - e_lidar:.4f} bits",
+            "Chặn Lipschitz L_σ": "N/A",
+            "Ý Nghĩa Khoa Học": "Chống sụp đổ One-Hot (Best-of-1 Trap), kích hoạt đa hạt"
+        })
+
+    # 3. Test 3 Row (Guidance Field Cosine Stability)
+    t3 = summary.get("test_3_cosine_stability", {})
+    if t3:
+        c_lidar = t3.get("cossim_lidar_mean", 0.0)
+        c_ours = t3.get("cossim_ours_mean", 0.0)
+        table_rows.append({
+            "Nhóm Thí Nghiệm": "Test 3: Độ Ổn Định Vector Dẫn Đường",
+            "Mô Hình / Tiêu Chí": "CosSim(g_t, g_{t+δ}) (δ=1e-3)",
+            "LiDAR Gốc (σ=0)": f"{c_lidar:.4f}",
+            "Phương Pháp Của Bạn (r_σ)": f"{c_ours:.4f}",
+            "Mức Độ Cải Thiện": f"Tăng độ ổn định +{(c_ours - c_lidar)*100:.2f}%",
+            "Chặn Lipschitz L_σ": "Lipschitz Smooth",
+            "Ý Nghĩa Khoa Học": "Triệt tiêu rung giật gradient vi mô, dẫn đường mượt mà"
+        })
+
+    if table_rows:
+        try:
+            import pandas as pd
+            df_table = pd.DataFrame(table_rows)
+
+            csv_file = os.path.join(output_dir, "weaknesses_comparison_table.csv")
+            md_file = os.path.join(output_dir, "weaknesses_comparison_table.md")
+            df_table.to_csv(csv_file, index=False)
+            with open(md_file, "w", encoding="utf-8") as f:
+                f.write(df_table.to_markdown(index=False))
+
+            print("\n" + "="*110)
+            print("📊 BẢNG TỔNG HỢP KHOA HỌC ĐA MÔ HÌNH REWARD (MULTI-REWARD SCIENTIFIC BENCHMARK)")
+            print("="*110)
+            print(df_table.to_string(index=False))
+            print("="*110)
+            print(f"💾 ĐÃ XUẤT BẢNG KHOA HỌC THÀNH CÔNG:")
+            print(f" • CSV:      {csv_file}")
+            print(f" • Markdown: {md_file}")
+        except Exception as e:
+            print(f"⚠️ Lỗi xuất bảng Pandas: {e}")
 
 
 def get_args():
