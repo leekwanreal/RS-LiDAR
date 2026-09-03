@@ -31,6 +31,7 @@ from tqdm import tqdm
 # Environment settings
 os.environ["USE_TF"] = "0"
 os.environ["USE_TORCH"] = "1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # Universal transformers compatibility shims
 try:
@@ -194,6 +195,7 @@ def generate_latents_batched(pipe, prompt, num_particles, num_inference_steps, s
 # ======================================================================================
 # 🔬 TEST 1: Kháng Sai số Bộ giải (Solver Error Robustness & Theorem 1 Lipschitz Bound)
 # ======================================================================================
+@torch.inference_mode()
 def run_test_1_solver_robustness(
     pipe, vae, ir_model, prompt_list, sigma=0.05,
     tune_sigma=False, sigmas_to_sweep=None,
@@ -301,11 +303,15 @@ def run_test_1_solver_robustness(
             # 1. ImageReward thô (LiDAR gốc sigma=0)
             r_5step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
             r_50step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_50step))
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             # 2. CLIP-Score thô
             if do_clip_score is not None:
                 r_5step_clip_raw = np.array(do_clip_score(images=img_5step, prompts=[prompt] * num_particles))
                 r_50step_clip_raw = np.array(do_clip_score(images=img_50step, prompts=[prompt] * num_particles))
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             else:
                 r_5step_clip_raw, r_50step_clip_raw = None, None
 
@@ -313,6 +319,8 @@ def run_test_1_solver_robustness(
             if do_human_preference_score is not None:
                 r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
                 r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             else:
                 r_5step_hps_raw, r_50step_hps_raw = None, None
 
@@ -356,6 +364,10 @@ def run_test_1_solver_robustness(
                 if do_human_preference_score is not None:
                     r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
                     r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
+
+                del noisy_img_5, noisy_img_50, noise
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             r_5_ir_ours = np.mean(r_5_ir_smooth, axis=0)
             r_50_ir_ours = np.mean(r_50_ir_smooth, axis=0)
