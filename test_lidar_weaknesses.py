@@ -1058,8 +1058,8 @@ def get_args():
             break
 
     parser = argparse.ArgumentParser(description="Standalone 3 Golden Tests for LiDAR Weaknesses vs Smoothed Surrogate")
-    parser.add_argument("--test", type=str, choices=["all", "1", "2", "3"], default="1", help="Test to run: '1', '2', '3', or 'all'")
-    parser.add_argument("--num_prompts", type=int, default=10, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
+    parser.add_argument("--test", type=str, choices=["all", "1", "2", "3"], default="all", help="Test to run: '1', '2', '3', or 'all'")
+    parser.add_argument("--num_prompts", type=int, default=50, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
     parser.add_argument("--sigma", type=float, default=0.30, help="Randomized Smoothing standard deviation")
     parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
