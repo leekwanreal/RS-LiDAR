@@ -24,7 +24,14 @@ try:
 except Exception as _e:
     pass
 
-from image_reward_utils import rm_load
+try:
+    from fkd_diffusers.image_reward_utils import rm_load
+except ImportError:
+    try:
+        from image_reward_utils import rm_load
+    except ImportError:
+        import ImageReward as RM
+        rm_load = RM.load
 
 # Stores the reward models
 REWARDS_DICT = {
