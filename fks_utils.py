@@ -129,9 +129,12 @@ def do_eval(*, prompt, images, metrics_to_compute):
 
         elif metric == "AS":
             results[metric] = {}
-            results[metric]["result"] = do_AS(images=images, prompts=prompt)
+            as_res = do_AS(images=images, prompts=prompt)
+            if as_res is None:
+                as_res = [0.0] * len(images)
+            results[metric]["result"] = as_res
 
-            results_arr = torch.tensor(results[metric]["result"])
+            results_arr = torch.tensor(as_res, dtype=torch.float32)
 
             results[metric]["mean"] = results_arr.mean().item()
             results[metric]["std"] = results_arr.std().item()

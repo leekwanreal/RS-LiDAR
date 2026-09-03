@@ -197,7 +197,6 @@ def do_AS(*, images, prompts):
             REWARDS_DICT["AS"] = AestheticScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
             REWARDS_DICT["AS"].mlp.load_state_dict(state_dict, strict=False)
             REWARDS_DICT["AS"].mlp.to(dev)
-            return REWARDS_DICT["AS"]
         except Exception as e:
             print(f"Warning loading Aesthetic predictor: {e}")
             return None
