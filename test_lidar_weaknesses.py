@@ -850,6 +850,11 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
         t_lidar = m_data.get("tau_lidar", 0.0)
         t_ours = m_data.get("tau_ours", 0.0)
         l_bound = m_data.get("lipschitz_bound", 0.0)
+
+        # Bỏ qua chỉ số nếu không có dữ liệu thực tế (tránh in dòng 0.0000)
+        if d_lidar == 0.0 and d_ours == 0.0 and t_lidar == 0.0:
+            continue
+
         err_red = max(0.0, (d_lidar - d_ours) / max(1e-6, d_lidar) * 100) if d_lidar > 0 else 0.0
         tau_gain = max(0.0, (t_ours - t_lidar) / max(1e-6, abs(t_lidar)) * 100) if t_lidar != 0 else 0.0
 
@@ -924,25 +929,30 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
     base_lidar = res1.get("baseline_lidar", {}) if res1 else {}
 
     if sigma_abl and len(sigma_abl) > 1:
+        # Kiểm tra xem CLIP và HPS có thực sự có dữ liệu hợp lệ không
+        has_clip = any(s_dict.get("CLIP-Score", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
+        has_hps = any(s_dict.get("HPS-v2.1", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
+
         abl_rows = []
         # Dòng mốc: LiDAR Gốc (sigma = 0.0)
-        abl_rows.append({
+        r0 = {
             "Sigma (σ)": "0.00 (LiDAR Gốc)",
             "ImageReward |Δr| ↓": f"{base_lidar.get('ImageReward', {}).get('delta', 0.0):.4f}",
             "Kendall τ (IR) ↑": f"{base_lidar.get('ImageReward', {}).get('tau', 0.0):.4f}",
-            "CLIP-Score |Δr| ↓": f"{base_lidar.get('CLIP-Score', {}).get('delta', 0.0):.4f}",
-            "Kendall τ (CLIP) ↑": f"{base_lidar.get('CLIP-Score', {}).get('tau', 0.0):.4f}",
-            "HPS v2.1 |Δr| ↓": f"{base_lidar.get('HPS-v2.1', {}).get('delta', 0.0):.4f}",
-            "Kendall τ (HPS) ↑": f"{base_lidar.get('HPS-v2.1', {}).get('tau', 0.0):.4f}",
-            "Chặn Lipschitz L_σ": "Không bị chặn (∞)",
-            "Đánh Giá Khoa Học": "Không làm mịn, chịu hoàn toàn sai số gai nhọn"
-        })
+        }
+        if has_clip:
+            r0["CLIP-Score |Δr| ↓"] = f"{base_lidar.get('CLIP-Score', {}).get('delta', 0.0):.4f}"
+            r0["Kendall τ (CLIP) ↑"] = f"{base_lidar.get('CLIP-Score', {}).get('tau', 0.0):.4f}"
+        if has_hps:
+            r0["HPS v2.1 |Δr| ↓"] = f"{base_lidar.get('HPS-v2.1', {}).get('delta', 0.0):.4f}"
+            r0["Kendall τ (HPS) ↑"] = f"{base_lidar.get('HPS-v2.1', {}).get('tau', 0.0):.4f}"
+        r0["Chặn Lipschitz L_σ"] = "Không bị chặn (∞)"
+        r0["Đánh Giá Khoa Học"] = "Không làm mịn, chịu hoàn toàn sai số gai nhọn"
+        abl_rows.append(r0)
 
         for s_val in sorted(sigma_abl.keys()):
             s_dict = sigma_abl[s_val]
             ir_info = s_dict.get("ImageReward", {})
-            clip_info = s_dict.get("CLIP-Score", {})
-            hps_info = s_dict.get("HPS-v2.1", {})
             l_bound = s_dict.get("lipschitz_bound", 0.0)
 
             if s_val <= 0.20:
@@ -952,17 +962,22 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
             else:
                 comment = "Nhiễu mức cao, tiệm cận ranh giới bão hòa"
 
-            abl_rows.append({
+            row = {
                 "Sigma (σ)": f"{s_val:.2f}",
                 "ImageReward |Δr| ↓": f"{ir_info.get('delta_ours', 0.0):.4f}",
                 "Kendall τ (IR) ↑": f"{ir_info.get('tau_ours', 0.0):.4f}",
-                "CLIP-Score |Δr| ↓": f"{clip_info.get('delta_ours', 0.0):.4f}",
-                "Kendall τ (CLIP) ↑": f"{clip_info.get('tau_ours', 0.0):.4f}",
-                "HPS v2.1 |Δr| ↓": f"{hps_info.get('delta_ours', 0.0):.4f}",
-                "Kendall τ (HPS) ↑": f"{hps_info.get('tau_ours', 0.0):.4f}",
-                "Chặn Lipschitz L_σ": f"<= {l_bound:.2f}",
-                "Đánh Giá Khoa Học": comment
-            })
+            }
+            if has_clip:
+                clip_info = s_dict.get("CLIP-Score", {})
+                row["CLIP-Score |Δr| ↓"] = f"{clip_info.get('delta_ours', 0.0):.4f}"
+                row["Kendall τ (CLIP) ↑"] = f"{clip_info.get('tau_ours', 0.0):.4f}"
+            if has_hps:
+                hps_info = s_dict.get("HPS-v2.1", {})
+                row["HPS v2.1 |Δr| ↓"] = f"{hps_info.get('delta_ours', 0.0):.4f}"
+                row["Kendall τ (HPS) ↑"] = f"{hps_info.get('tau_ours', 0.0):.4f}"
+            row["Chặn Lipschitz L_σ"] = f"<= {l_bound:.2f}"
+            row["Đánh Giá Khoa Học"] = comment
+            abl_rows.append(row)
 
         try:
             import pandas as pd
@@ -1082,7 +1097,45 @@ if __name__ == "__main__":
             import ImageReward as RM
             ir_model = RM.load("ImageReward-v1.0").to(device)
 
-        sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.01, 0.03, 0.05, 0.08, 0.10]
+        # Pre-flight Health Check: Kiểm tra sức khỏe của từng mô hình Reward
+        from PIL import Image
+        dummy_img = Image.new("RGB", (64, 64), color="blue")
+        print("\n🔍 ĐANG KIỂM TRA TÍNH KHẢ DỤNG CỦA CÁC MÔ HÌNH REWARD...")
+        try:
+            _ = ir_model.score_batched(["a blue image"], [dummy_img])
+            print(" ✅ [ImageReward] Hoạt động hoàn hảo.")
+        except Exception as e:
+            print(f" ⚠️ [ImageReward] Lỗi: {e}")
+
+        # Kiểm tra CLIP-Score
+        clip_ok = False
+        if do_clip_score is not None:
+            try:
+                res_c = do_clip_score(images=[dummy_img], prompts=["a blue image"])
+                if res_c is not None and len(res_c) > 0 and float(res_c[0]) != 0.0:
+                    clip_ok = True
+                    print(" ✅ [CLIP-Score] Hoạt động hoàn hảo.")
+            except Exception as e:
+                print(f" ⚠️ [CLIP-Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
+        if not clip_ok:
+            do_clip_score = None
+            print(" ℹ️ [CLIP-Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+
+        # Kiểm tra HPS v2.1
+        hps_ok = False
+        if do_human_preference_score is not None:
+            try:
+                res_h = do_human_preference_score(images=[dummy_img], prompts=["a blue image"])
+                if res_h is not None and len(res_h) > 0 and float(res_h[0]) != 0.0:
+                    hps_ok = True
+                    print(" ✅ [HPS v2.1] Hoạt động hoàn hảo.")
+            except Exception as e:
+                print(f" ⚠️ [HPS v2.1] Không khả dụng ({e}). Tạm thời bỏ qua.")
+        if not hps_ok:
+            do_human_preference_score = None
+            print(" ℹ️ [HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+
+        sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.15, 0.30, 0.60]
         res1 = run_test_1_solver_robustness(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
