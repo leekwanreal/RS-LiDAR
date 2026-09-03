@@ -109,6 +109,19 @@ def load_geneval_prompts(prompt_path="prompt_files/geneval_metadata.jsonl", max_
     """Tải danh sách prompt từ file GenEval jsonl. Nếu max_prompts > 0: lấy mẫu ngẫu nhiên đồng đều trên toàn bộ 553 prompts."""
     import random
     all_prompts = []
+    if not os.path.exists(prompt_path):
+        cands = glob.glob(f"**/{os.path.basename(prompt_path)}", recursive=True) + glob.glob(f"/kaggle/**/{os.path.basename(prompt_path)}", recursive=True)
+        if cands and os.path.exists(cands[0]):
+            prompt_path = cands[0]
+        else:
+            try:
+                os.makedirs(os.path.dirname(prompt_path) if os.path.dirname(prompt_path) else ".", exist_ok=True)
+                url = "https://raw.githubusercontent.com/leekwanreal/RS-LiDAR/main/prompt_files/geneval_metadata.jsonl"
+                import urllib.request
+                urllib.request.urlretrieve(url, prompt_path)
+            except Exception:
+                pass
+
     if os.path.exists(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             for line in f:
