@@ -945,12 +945,12 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
             hps_info = s_dict.get("HPS-v2.1", {})
             l_bound = s_dict.get("lipschitz_bound", 0.0)
 
-            if s_val <= 0.02:
-                comment = "Bắt đầu làm mịn vi mô, giảm nhẹ sai số"
-            elif s_val <= 0.06:
+            if s_val <= 0.20:
+                comment = "Nhiễu mức thấp, bắt đầu làm mịn bề mặt"
+            elif s_val <= 0.45:
                 comment = "Vùng tối ưu (Sweet Spot), cân bằng hoàn hảo"
             else:
-                comment = "Siêu phẳng hóa, kháng nhiễu cực đại"
+                comment = "Nhiễu mức cao, tiệm cận ranh giới bão hòa"
 
             abl_rows.append({
                 "Sigma (σ)": f"{s_val:.2f}",
@@ -1018,12 +1018,12 @@ def get_args():
             break
 
     parser = argparse.ArgumentParser(description="Standalone 3 Golden Tests for LiDAR Weaknesses vs Smoothed Surrogate")
-    parser.add_argument("--test", type=str, choices=["all", "1", "2", "3"], default="all", help="Test to run: '1', '2', '3', or 'all'")
+    parser.add_argument("--test", type=str, choices=["all", "1", "2", "3"], default="1", help="Test to run: '1', '2', '3', or 'all'")
     parser.add_argument("--num_prompts", type=int, default=10, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
-    parser.add_argument("--sigma", type=float, default=0.05, help="Randomized Smoothing standard deviation")
+    parser.add_argument("--sigma", type=float, default=0.30, help="Randomized Smoothing standard deviation")
     parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
-    parser.add_argument("--sigmas", type=str, default="0.01,0.03,0.05,0.08,0.10", help="Comma-separated sigma values for ablation study")
+    parser.add_argument("--sigmas", type=str, default="0.15,0.30,0.60", help="Comma-separated sigma values for ablation study")
     parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
     parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
