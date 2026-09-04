@@ -158,45 +158,25 @@ def load_geneval_prompts(prompt_path="prompt_files/geneval_metadata.jsonl", max_
 
 
 @torch.inference_mode()
-def decode_latents(latents, vae, pipe, device, chunk_size=None):
-    """Giải mã latents qua VAE theo từng chunk tối ưu theo VRAM."""
-    if chunk_size is None:
-        try:
-            vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
-            chunk_size = 10 if vram_gb >= 20 else 4
-        except Exception:
-            chunk_size = 4
-
-    image_list = []
-    latents = latents.to(device=device, dtype=vae.dtype)
-    for c_idx in range(0, latents.shape[0], chunk_size):
-        chunk = latents[c_idx:c_idx + chunk_size] / vae.config.scaling_factor
-        decoded = vae.decode(chunk, return_dict=False)[0]
-        image_list.append(decoded.detach().cpu())
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    images = torch.cat(image_list, dim=0)
+def decode_latents(latents, vae, pipe, device):
+    """Giải mã toàn bộ latents qua VAE full-batch 1 lượt duy nhất trên GPU."""
+    scaled = (latents / vae.config.scaling_factor).to(device=device, dtype=vae.dtype)
+    images = vae.decode(scaled, return_dict=False)[0]
     return pipe.image_processor.postprocess(images, output_type="pil")
 
 
 @torch.inference_mode()
-def generate_latents_batched(pipe, prompt, num_particles, num_inference_steps, seed, device, batch_size=4):
-    """Sinh latents khử nhiễu theo từng micro-batch chống tràn bộ nhớ GPU."""
-    all_latents = []
-    for i in range(0, num_particles, batch_size):
-        curr_batch = min(batch_size, num_particles - i)
-        generator = torch.Generator(device=device).manual_seed(seed + i)
-        latents = pipe(
-            [prompt] * curr_batch,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=7.5,
-            generator=generator,
-            output_type="latent"
-        ).images
-        all_latents.append(latents)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    return torch.cat(all_latents, dim=0)
+def generate_latents(pipe, prompt, num_particles, num_inference_steps, seed, device):
+    """Sinh toàn bộ latents full-batch song song 1 lượt duy nhất trên GPU."""
+    generator = torch.Generator(device=device).manual_seed(seed)
+    latents = pipe(
+        [prompt] * num_particles,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=7.5,
+        generator=generator,
+        output_type="latent"
+    ).images
+    return latents
 
 
 # ======================================================================================
@@ -290,13 +270,13 @@ def run_test_1_solver_robustness(
         global_p_idx = offset + p_local_idx
         prompt = prompt_slice[p_local_idx]
 
-        # 1. Sinh hạt từ 5 bước DPM-Solver (hat{x}_0)
+        # 1. Sinh hạt từ 5 bước DPM-Solver (hat{x}_0) full-batch
         pipe.scheduler = dpm_scheduler
-        latents_5step = generate_latents_batched(pipe, prompt, num_particles=num_particles, num_inference_steps=5, seed=100 + global_p_idx, device=device, batch_size=4)
+        latents_5step = generate_latents(pipe, prompt, num_particles=num_particles, num_inference_steps=5, seed=100 + global_p_idx, device=device)
 
-        # 2. Sinh hạt chuẩn từ 50 bước DDIM (x_0) từ cùng seed
+        # 2. Sinh hạt chuẩn từ 50 bước DDIM (x_0) từ cùng seed full-batch
         pipe.scheduler = ddim_scheduler
-        latents_50step = generate_latents_batched(pipe, prompt, num_particles=num_particles, num_inference_steps=50, seed=100 + global_p_idx, device=device, batch_size=4)
+        latents_50step = generate_latents(pipe, prompt, num_particles=num_particles, num_inference_steps=50, seed=100 + global_p_idx, device=device)
 
         # Đo sai số hình học ||e_i||_2 = ||hat{x}_0 - x_0||_2
         e_norms = torch.linalg.norm((latents_5step - latents_50step).view(num_particles, -1), ord=2, dim=1).cpu().tolist()

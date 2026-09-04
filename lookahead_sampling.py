@@ -310,18 +310,7 @@ def main(args):
                 images = pipe.image_processor.postprocess(images, output_type="pil")
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
-                total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
-                if total_vram_gb >= 20.0:
-                    # L4 (24GB) or A100 (40GB/80GB): Fast full-batch VAE decoding (matches original paper author implementation)
-                    images = pipe.vae.decode(scaled_latents, return_dict=False)[0]
-                else:
-                    # Low-VRAM GPUs (T4 / P100): fallback chunking to prevent OOM
-                    vae_batch_size = 4
-                    decoded_chunks = []
-                    for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
-                        chunk = scaled_latents[v_i : v_i + vae_batch_size]
-                        decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
-                    images = torch.cat(decoded_chunks, dim=0)
+                images = pipe.vae.decode(scaled_latents, return_dict=False)[0]
                 images = pipe.image_processor.postprocess(images, output_type="pil")
 
         end_time = datetime.now()
