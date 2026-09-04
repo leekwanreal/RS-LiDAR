@@ -158,16 +158,23 @@ def load_geneval_prompts(prompt_path="prompt_files/geneval_metadata.jsonl", max_
 
 
 @torch.inference_mode()
-def decode_latents(latents, vae, pipe, device, chunk_size=2):
-    """Giải mã latents qua VAE theo từng chunk nhỏ để chống tràn VRAM."""
+def decode_latents(latents, vae, pipe, device, chunk_size=None):
+    """Giải mã latents qua VAE theo từng chunk tối ưu theo VRAM."""
+    if chunk_size is None:
+        try:
+            vram_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+            chunk_size = 10 if vram_gb >= 20 else 4
+        except Exception:
+            chunk_size = 4
+
     image_list = []
     latents = latents.to(device=device, dtype=vae.dtype)
     for c_idx in range(0, latents.shape[0], chunk_size):
         chunk = latents[c_idx:c_idx + chunk_size] / vae.config.scaling_factor
         decoded = vae.decode(chunk, return_dict=False)[0]
         image_list.append(decoded.detach().cpu())
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     images = torch.cat(image_list, dim=0)
     return pipe.image_processor.postprocess(images, output_type="pil")
 
@@ -297,8 +304,8 @@ def run_test_1_solver_robustness(
 
         # 3. Giải mã VAE & Chấm điểm Đa Mô Hình Reward (ImageReward, CLIP-Score, HPS v2.1)
         with torch.inference_mode():
-            img_5step = decode_latents(latents_5step, vae, pipe, device=device, chunk_size=2)
-            img_50step = decode_latents(latents_50step, vae, pipe, device=device, chunk_size=2)
+            img_5step = decode_latents(latents_5step, vae, pipe, device=device)
+            img_50step = decode_latents(latents_50step, vae, pipe, device=device)
 
             # 1. ImageReward thô (LiDAR gốc sigma=0)
             r_5step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
@@ -340,16 +347,19 @@ def run_test_1_solver_robustness(
             if not np.isnan(t_h_l): kendall_hps_lidar_list.append(t_h_l)
 
         # 2. Phương pháp của Bạn: Quét qua danh sách active_sigmas để khảo sát Ablation
+        M_sweep = 2 if (tune_sigma and len(active_sigmas) > 1) else (4 if tune_sigma else 8)
+        total_eval_steps = len(active_sigmas) * M_sweep
+        pbar_eval = tqdm(total=total_eval_steps, desc=f"  ↳ Chấm điểm đa mô hình (IR, CLIP, HPS) [{p_local_idx + 1}/{len(prompt_slice)}]", leave=False)
+
         for current_sig in active_sigmas:
-            M_sweep = 4 if tune_sigma else 8
             r_5_ir_smooth, r_50_ir_smooth = [], []
             r_5_clip_smooth, r_50_clip_smooth = [], []
             r_5_hps_smooth, r_50_hps_smooth = [], []
 
             for _ in range(M_sweep):
                 noise = torch.randn_like(latents_5step) * current_sig
-                noisy_img_5 = decode_latents(latents_5step + noise, vae, pipe, device=device, chunk_size=2)
-                noisy_img_50 = decode_latents(latents_50step + noise, vae, pipe, device=device, chunk_size=2)
+                noisy_img_5 = decode_latents(latents_5step + noise, vae, pipe, device=device)
+                noisy_img_50 = decode_latents(latents_50step + noise, vae, pipe, device=device)
 
                 # ImageReward
                 r_5_ir_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5))
@@ -368,6 +378,7 @@ def run_test_1_solver_robustness(
                 del noisy_img_5, noisy_img_50, noise
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
+                pbar_eval.update(1)
 
             r_5_ir_ours = np.mean(r_5_ir_smooth, axis=0)
             r_50_ir_ours = np.mean(r_50_ir_smooth, axis=0)
@@ -403,6 +414,8 @@ def run_test_1_solver_robustness(
                 if r_5_hps_smooth:
                     delta_hps_ours_list.extend(d_hps)
                     if not np.isnan(t_hps): kendall_hps_ours_list.append(t_hps)
+
+        pbar_eval.close()
 
         # Lưu checkpoint định kỳ
         with open(checkpoint_file, "w", encoding="utf-8") as f:
