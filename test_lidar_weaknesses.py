@@ -980,12 +980,14 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
             ir_info = s_dict.get("ImageReward", {})
             l_bound = s_dict.get("lipschitz_bound", 0.0)
 
-            if s_val <= 0.20:
-                comment = "Nhiễu mức thấp, bắt đầu làm mịn bề mặt"
-            elif s_val <= 0.45:
-                comment = "Vùng tối ưu (Sweet Spot), cân bằng hoàn hảo"
+            if s_val <= 0.15:
+                comment = "Nhiễu mức thấp (σ=0.10), bước đầu làm mịn bề mặt gradient"
+            elif s_val <= 0.35:
+                comment = "Vùng tối ưu (Sweet Spot, σ=0.25), cân bằng thứ hạng & sai số"
+            elif s_val <= 0.75:
+                comment = "Làm mịn diện rộng (σ=0.50), chặn Lipschitz rất chặt"
             else:
-                comment = "Nhiễu mức cao, tiệm cận ranh giới bão hòa"
+                comment = "Nhiễu cực mạnh (Stress-test, σ=1.00), kiểm chứng ranh giới suy biến"
 
             row = {
                 "Sigma (σ)": f"{s_val:.2f}",
@@ -1022,30 +1024,55 @@ def plot_and_save_all(res1=None, res2=None, res3=None, output_dir="experiments/t
             print(f" • CSV:      {abl_csv}")
             print(f" • Markdown: {abl_md}")
 
-            fig_abl, ax_abl1 = plt.subplots(figsize=(8, 5))
+            # Đồ thị Ablation Curve đa mô hình Reward chuẩn khoa học
             sig_vals = [0.0] + sorted(sigma_abl.keys())
-            ir_errs = [float(abl_rows[0]["ImageReward |Δr| ↓"])] + [float(sigma_abl[s]["ImageReward"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
-            ir_taus = [float(abl_rows[0]["Kendall τ (IR) ↑"])] + [float(sigma_abl[s]["ImageReward"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+            metrics_to_plot = [("ImageReward", "IR", "#E63946", "#2A9D8F")]
+            if has_clip:
+                metrics_to_plot.append(("CLIP-Score", "CLIP", "#E63946", "#1D3557"))
+            if has_hps:
+                metrics_to_plot.append(("HPS-v2.1", "HPS", "#E63946", "#7209B7"))
 
-            color1 = "#E63946"
-            ax_abl1.set_xlabel(r"Bán kính làm mịn $\sigma$ (Randomized Smoothing Radius)", fontsize=11)
-            ax_abl1.set_ylabel(r"Sai số Reward $|\Delta r|$ ↓", color=color1, fontsize=11)
-            ax_abl1.plot(sig_vals, ir_errs, color=color1, marker='o', linewidth=2, label=r"Sai số $|\Delta r|$")
-            ax_abl1.tick_params(axis='y', labelcolor=color1)
-            ax_abl1.grid(True, linestyle="--", alpha=0.5)
+            n_panels = len(metrics_to_plot)
+            fig_abl, axes_abl = plt.subplots(1, n_panels, figsize=(6.5 * n_panels, 5), squeeze=False)
 
-            ax_abl2 = ax_abl1.twinx()
-            color2 = "#2A9D8F"
-            ax_abl2.set_ylabel(r"Tương quan thứ bậc Kendall's $\tau$ ↑", color=color2, fontsize=11)
-            ax_abl2.plot(sig_vals, ir_taus, color=color2, marker='s', linewidth=2, linestyle="--", label=r"Thứ bậc Kendall $\tau$")
-            ax_abl2.tick_params(axis='y', labelcolor=color2)
+            for p_idx, (m_key, m_short, col_err, col_tau) in enumerate(metrics_to_plot):
+                ax1 = axes_abl[0, p_idx]
+                ax2 = ax1.twinx()
 
-            plt.title(r"Ablation Study: Tác động của $\sigma$ lên Sai số & Thứ hạng Hạt", fontsize=12, fontweight="bold")
+                if m_key == "ImageReward":
+                    err_0 = float(abl_rows[0]["ImageReward |Δr| ↓"])
+                    tau_0 = float(abl_rows[0]["Kendall τ (IR) ↑"])
+                    err_pts = [err_0] + [float(sigma_abl[s]["ImageReward"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
+                    tau_pts = [tau_0] + [float(sigma_abl[s]["ImageReward"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                elif m_key == "CLIP-Score":
+                    err_0 = float(abl_rows[0].get("CLIP-Score |Δr| ↓", 0.0))
+                    tau_0 = float(abl_rows[0].get("Kendall τ (CLIP) ↑", 0.0))
+                    err_pts = [err_0] + [float(sigma_abl[s]["CLIP-Score"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
+                    tau_pts = [tau_0] + [float(sigma_abl[s]["CLIP-Score"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                else:
+                    err_0 = float(abl_rows[0].get("HPS v2.1 |Δr| ↓", 0.0))
+                    tau_0 = float(abl_rows[0].get("Kendall τ (HPS) ↑", 0.0))
+                    err_pts = [err_0] + [float(sigma_abl[s]["HPS-v2.1"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
+                    tau_pts = [tau_0] + [float(sigma_abl[s]["HPS-v2.1"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+
+                ax1.set_xlabel(r"Bán kính làm mịn $\sigma$", fontsize=11, fontweight="bold")
+                ax1.set_ylabel(rf"Sai số {m_short} $|\Delta r|$ ↓", color=col_err, fontsize=11)
+                ax1.plot(sig_vals, err_pts, color=col_err, marker='o', linewidth=2.2, label=rf"Sai số $|\Delta r|$")
+                ax1.tick_params(axis='y', labelcolor=col_err)
+                ax1.grid(True, linestyle="--", alpha=0.5)
+
+                ax2.set_ylabel(rf"Thứ hạng Kendall $\tau$ ({m_short}) ↑", color=col_tau, fontsize=11)
+                ax2.plot(sig_vals, tau_pts, color=col_tau, marker='s', linewidth=2.2, linestyle="--", label=rf"Kendall $\tau$")
+                ax2.tick_params(axis='y', labelcolor=col_tau)
+
+                ax1.set_title(f"Ablation: {m_key}", fontsize=12, fontweight="bold")
+
+            fig_abl.suptitle(r"Ablation Study: Tác động của $\sigma \in \{0.10, 0.25, 0.50, 1.00\}$ Đa Mô Hình Reward", fontsize=13, fontweight="bold", y=1.02)
             fig_abl.tight_layout()
             abl_plot_path = os.path.join(output_dir, "sigma_ablation_curves.png")
-            fig_abl.savefig(abl_plot_path, dpi=300)
+            fig_abl.savefig(abl_plot_path, dpi=300, bbox_inches="tight")
             plt.close(fig_abl)
-            print(f"📈 ĐÃ XUẤT ĐỒ THỊ KHẢO SÁT SIGMA: {abl_plot_path}")
+            print(f"📈 ĐÃ XUẤT ĐỒ THỊ KHẢO SÁT SIGMA ĐA MÔ HÌNH: {abl_plot_path}")
         except Exception as e:
             print(f"⚠️ Lỗi xuất bảng khảo sát ablation sigma: {e}")
 
@@ -1061,9 +1088,9 @@ def get_args():
     parser.add_argument("--test", type=str, choices=["all", "1", "2", "3"], default="all", help="Test to run: '1', '2', '3', or 'all'")
     parser.add_argument("--num_prompts", type=int, default=50, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
-    parser.add_argument("--sigma", type=float, default=0.30, help="Randomized Smoothing standard deviation")
+    parser.add_argument("--sigma", type=float, default=0.25, help="Randomized Smoothing standard deviation")
     parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
-    parser.add_argument("--sigmas", type=str, default="0.15,0.30,0.60", help="Comma-separated sigma values for ablation study")
+    parser.add_argument("--sigmas", type=str, default="0.10,0.25,0.50,1.00", help="Comma-separated sigma values for ablation study")
     parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
     parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
@@ -1160,7 +1187,7 @@ if __name__ == "__main__":
             do_human_preference_score = None
             print(" ℹ️ [HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
-        sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.15, 0.30, 0.60]
+        sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.10, 0.25, 0.50, 1.00]
         res1 = run_test_1_solver_robustness(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
