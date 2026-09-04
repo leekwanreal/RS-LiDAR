@@ -794,14 +794,23 @@ class FKDStableDiffusion(
 
         if not output_type == "latent":
             scaled_latents = latents / self.vae.config.scaling_factor
-            vae_batch_size = 4
-            decoded_chunks = []
-            for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
-                chunk = scaled_latents[v_i : v_i + vae_batch_size]
-                decoded_chunks.append(
-                    self.vae.decode(chunk, return_dict=False, generator=generator)[0]
-                )
-            image = torch.cat(decoded_chunks, dim=0)
+            total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+            if total_vram_gb >= 24.0 or scaled_latents.shape[0] <= 4:
+                # A100 (40GB/80GB) or small batch: Fast full-batch VAE decoding (matches original paper author code)
+                image = self.vae.decode(
+                    scaled_latents,
+                    return_dict=False,
+                    generator=generator,
+                )[0]
+            else:
+                vae_batch_size = 4
+                decoded_chunks = []
+                for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
+                    chunk = scaled_latents[v_i : v_i + vae_batch_size]
+                    decoded_chunks.append(
+                        self.vae.decode(chunk, return_dict=False, generator=generator)[0]
+                    )
+                image = torch.cat(decoded_chunks, dim=0)
             has_nsfw_concept = None
         else:
             image = latents

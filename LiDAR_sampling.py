@@ -360,7 +360,7 @@ def get_args():
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)
-    parser.add_argument("--scale", type=float, default=12.5)
+    parser.add_argument("--scale", type=float, default=15.0)
 
     parser.add_argument("--eta", type=float, default=1.0)
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward")
