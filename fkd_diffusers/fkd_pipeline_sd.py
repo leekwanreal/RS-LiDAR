@@ -795,8 +795,8 @@ class FKDStableDiffusion(
         if not output_type == "latent":
             scaled_latents = latents / self.vae.config.scaling_factor
             total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
-            if total_vram_gb >= 24.0 or scaled_latents.shape[0] <= 4:
-                # A100 (40GB/80GB) or small batch: Fast full-batch VAE decoding (matches original paper author code)
+            if total_vram_gb >= 20.0 or scaled_latents.shape[0] <= 4:
+                # L4 (24GB) / A100 (40GB/80GB) or small batch: Fast full-batch VAE decoding (matches original paper author code)
                 image = self.vae.decode(
                     scaled_latents,
                     return_dict=False,

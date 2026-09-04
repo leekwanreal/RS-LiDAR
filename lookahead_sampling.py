@@ -311,8 +311,8 @@ def main(args):
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
                 total_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
-                if total_vram_gb >= 24.0:
-                    # A100 (40GB/80GB) or high-end GPUs: Fast full-batch VAE decoding (matches original paper author implementation)
+                if total_vram_gb >= 20.0:
+                    # L4 (24GB) or A100 (40GB/80GB): Fast full-batch VAE decoding (matches original paper author implementation)
                     images = pipe.vae.decode(scaled_latents, return_dict=False)[0]
                 else:
                     # Low-VRAM GPUs (T4 / P100): fallback chunking to prevent OOM
