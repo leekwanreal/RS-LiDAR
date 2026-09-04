@@ -1199,6 +1199,7 @@ def get_args():
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl", help="Prompt dataset path")
+    parser.add_argument("--use_hps", action="store_true", default=False, help="Whether to evaluate HPS v2.1 (very slow ViT-H/14, default False)")
     return parser.parse_args()
 
 
@@ -1276,9 +1277,9 @@ if __name__ == "__main__":
             do_clip_score = None
             print(" ℹ️ [CLIP-Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
-        # Kiểm tra HPS v2.1
+        # Kiểm tra HPS v2.1 (Mặc định tạm tắt để tối ưu tốc độ x10 lần, bật lại bằng cờ --use_hps)
         hps_ok = False
-        if do_human_preference_score is not None:
+        if args.use_hps and do_human_preference_score is not None:
             try:
                 res_h = do_human_preference_score(images=[dummy_img], prompts=["a blue image"])
                 if res_h is not None and len(res_h) > 0 and float(res_h[0]) != 0.0:
@@ -1288,7 +1289,10 @@ if __name__ == "__main__":
                 print(f" ⚠️ [HPS v2.1] Không khả dụng ({e}). Tạm thời bỏ qua.")
         if not hps_ok:
             do_human_preference_score = None
-            print(" ℹ️ [HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+            if not args.use_hps:
+                print(" ⏸️ [HPS v2.1] Đã tạm tắt để chạy siêu tốc trên T4/L4 (bật lại bằng cờ --use_hps nếu cần).")
+            else:
+                print(" ℹ️ [HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
         res1 = run_test_1_solver_robustness(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
