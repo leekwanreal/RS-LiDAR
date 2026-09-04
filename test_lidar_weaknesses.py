@@ -1235,15 +1235,13 @@ if __name__ == "__main__":
         print("\n🚀 Khởi tạo Pipeline & ImageReward cho Bài Test 1...")
         pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16).to(device)
         vae = pipe.vae
-        if hasattr(pipe, "vae") and pipe.vae is not None:
-            try:
-                pipe.vae.enable_slicing()
-            except Exception:
-                pass
-            try:
-                pipe.vae.enable_tiling()
-            except Exception:
-                pass
+        try:
+            pipe.enable_xformers_memory_efficient_attention()
+            print(" ⚡ Đã kích hoạt xFormers Memory Efficient Attention.")
+        except Exception:
+            pass
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
 
         try:
             ir_model = rm_load("ImageReward-v1.0", device=device)
