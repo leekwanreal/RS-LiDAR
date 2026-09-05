@@ -35,3 +35,4 @@ Target_samples/
 
 # Environment & local files
 .env
+test_results_analyzed/
