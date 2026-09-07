@@ -1711,6 +1711,7 @@ def get_args():
             default_lookahead = candidate
             break
 
+    parser = argparse.ArgumentParser(description="Empirical proof of LiDAR weaknesses & RS-LiDAR benefits")
     parser.add_argument("--test", type=str, default="1,2,3", help="Tests to run: '1,2,3' (Golden 3 Tests), 'all' (All 5 Tests), or specific e.g. '1', '2', '3'")
     parser.add_argument("--num_prompts", type=int, default=50, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
