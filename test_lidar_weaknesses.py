@@ -1116,7 +1116,8 @@ def run_test_4_effective_sample_size(
 def run_test_5_step_budget_scaling(
     pipe, vae, ir_model, prompt_list, sigma=0.05,
     step_budgets=None, num_particles=10, device="cuda",
-    num_shards=1, shard_id=0, output_dir="experiments/test_results"
+    num_shards=1, shard_id=0, output_dir="experiments/test_results",
+    overwrite=False
 ):
     if step_budgets is None:
         step_budgets = [2, 3, 5, 8, 15]
@@ -1155,7 +1156,7 @@ def run_test_5_step_budget_scaling(
     }
 
     start_local_idx = 0
-    if os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
+    if not overwrite and os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
         try:
             with open(checkpoint_file, "r", encoding="utf-8") as f:
                 ckpt = json.load(f)
@@ -2177,7 +2178,8 @@ if __name__ == "__main__":
             sigma=args.sigma, step_budgets=[2, 3, 5, 8, 15],
             num_particles=min(10, args.num_particles),
             device=device, output_dir=args.output_dir,
-            num_shards=args.num_shards, shard_id=args.shard_id
+            num_shards=args.num_shards, shard_id=args.shard_id,
+            overwrite=args.overwrite
         )
 
     plot_and_save_all(res1, res2, res3, res4, res5, output_dir=args.output_dir, sigma=args.sigma)
