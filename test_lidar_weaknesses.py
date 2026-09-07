@@ -373,21 +373,26 @@ def run_test_1_solver_robustness(
         with torch.inference_mode():
             img_tensor_5 = decode_latents_to_tensor(latents_5step, vae, device=device)
             img_tensor_50 = decode_latents_to_tensor(latents_50step, vae, device=device)
-            img_5step = pipe.image_processor.postprocess(img_tensor_5.clamp(-1.0, 1.0), output_type="pil")
-            img_50step = pipe.image_processor.postprocess(img_tensor_50.clamp(-1.0, 1.0), output_type="pil")
+            raw_tensors_40 = torch.cat([img_tensor_5, img_tensor_50], dim=0).clamp(-1.0, 1.0)
+            all_raw_imgs = pipe.image_processor.postprocess(raw_tensors_40, output_type="pil")
+            img_5step = all_raw_imgs[:num_particles]
+            img_50step = all_raw_imgs[num_particles:]
+            all_raw_prompts = [prompt] * len(all_raw_imgs)
 
-            # 1. ImageReward thô (LiDAR gốc sigma=0)
-            r_5step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
-            r_50step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_50step))
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            # 1. ImageReward thô (chấm trọn bộ 40 ảnh trong 1 lượt)
+            all_ir_raw = np.array(ir_model.score_batched(all_raw_prompts, all_raw_imgs, batch_size=len(all_raw_imgs)))
+            r_5step_ir_raw = all_ir_raw[:num_particles]
+            r_50step_ir_raw = all_ir_raw[num_particles:]
 
-            # 2. CLIP-Score thô
+            # 2. CLIP-Score thô (chấm trọn bộ 40 ảnh trong 1 lượt)
             if do_clip_score is not None:
-                r_5step_clip_raw = np.array(do_clip_score(images=img_5step, prompts=[prompt] * num_particles))
-                r_50step_clip_raw = np.array(do_clip_score(images=img_50step, prompts=[prompt] * num_particles))
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                all_clip_raw = do_clip_score(images=all_raw_imgs, prompts=all_raw_prompts)
+                if all_clip_raw is not None and len(all_clip_raw) == len(all_raw_imgs):
+                    r_5step_clip_raw = np.array(all_clip_raw[:num_particles])
+                    r_50step_clip_raw = np.array(all_clip_raw[num_particles:])
+                else:
+                    r_5step_clip_raw = np.array(do_clip_score(images=img_5step, prompts=[prompt] * num_particles))
+                    r_50step_clip_raw = np.array(do_clip_score(images=img_50step, prompts=[prompt] * num_particles))
             else:
                 r_5step_clip_raw, r_50step_clip_raw = None, None
 
@@ -395,31 +400,32 @@ def run_test_1_solver_robustness(
             if do_human_preference_score is not None:
                 try:
                     all_hps_raw = do_human_preference_score(
-                        images=list(img_5step) + list(img_50step),
-                        prompts=[prompt] * (len(img_5step) + len(img_50step))
+                        images=all_raw_imgs,
+                        prompts=all_raw_prompts
                     )
-                    if all_hps_raw is not None and len(all_hps_raw) == (len(img_5step) + len(img_50step)):
-                        r_5step_hps_raw = np.array(all_hps_raw[:len(img_5step)])
-                        r_50step_hps_raw = np.array(all_hps_raw[len(img_5step):])
+                    if all_hps_raw is not None and len(all_hps_raw) == len(all_raw_imgs):
+                        r_5step_hps_raw = np.array(all_hps_raw[:num_particles])
+                        r_50step_hps_raw = np.array(all_hps_raw[num_particles:])
                     else:
                         r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
                         r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
                 except Exception:
                     r_5step_hps_raw, r_50step_hps_raw = None, None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
             else:
                 r_5step_hps_raw, r_50step_hps_raw = None, None
 
-            # 4. Aesthetic Score thô
+            # 4. Aesthetic Score thô (chấm trọn bộ 40 ảnh trong 1 lượt)
             if do_AS is not None:
                 try:
-                    r_5step_as_raw = np.array(do_AS(images=img_5step, prompts=[prompt] * num_particles))
-                    r_50step_as_raw = np.array(do_AS(images=img_50step, prompts=[prompt] * num_particles))
+                    all_as_raw = do_AS(images=all_raw_imgs, prompts=all_raw_prompts)
+                    if all_as_raw is not None and len(all_as_raw) == len(all_raw_imgs):
+                        r_5step_as_raw = np.array(all_as_raw[:num_particles])
+                        r_50step_as_raw = np.array(all_as_raw[num_particles:])
+                    else:
+                        r_5step_as_raw = np.array(do_AS(images=img_5step, prompts=[prompt] * num_particles))
+                        r_50step_as_raw = np.array(do_AS(images=img_50step, prompts=[prompt] * num_particles))
                 except Exception:
                     r_5step_as_raw, r_50step_as_raw = None, None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
             else:
                 r_5step_as_raw, r_50step_as_raw = None, None
 
@@ -427,20 +433,18 @@ def run_test_1_solver_robustness(
             if do_pickscore is not None:
                 try:
                     all_pick_raw = do_pickscore(
-                        images=list(img_5step) + list(img_50step),
-                        prompts=[prompt] * (len(img_5step) + len(img_50step)),
+                        images=all_raw_imgs,
+                        prompts=all_raw_prompts,
                         device=device
                     )
-                    if all_pick_raw is not None and len(all_pick_raw) == (len(img_5step) + len(img_50step)):
-                        r_5step_pick_raw = np.array(all_pick_raw[:len(img_5step)])
-                        r_50step_pick_raw = np.array(all_pick_raw[len(img_5step):])
+                    if all_pick_raw is not None and len(all_pick_raw) == len(all_raw_imgs):
+                        r_5step_pick_raw = np.array(all_pick_raw[:num_particles])
+                        r_50step_pick_raw = np.array(all_pick_raw[num_particles:])
                     else:
                         r_5step_pick_raw = np.array(do_pickscore(images=img_5step, prompts=[prompt] * num_particles, device=device))
                         r_50step_pick_raw = np.array(do_pickscore(images=img_50step, prompts=[prompt] * num_particles, device=device))
                 except Exception:
                     r_5step_pick_raw, r_50step_pick_raw = None, None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
             else:
                 r_5step_pick_raw, r_50step_pick_raw = None, None
 
@@ -482,65 +486,82 @@ def run_test_1_solver_robustness(
             r_5_pick_smooth, r_50_pick_smooth = [], []
 
             for _ in range(M_sweep):
-                # Image-Space Randomized Smoothing: Cộng nhiễu trực tiếp lên tensor ảnh [-1.0, 1.0]
-                noisy_img_5 = get_noisy_pil_images(img_tensor_5, current_sig, pipe)
-                noisy_img_50 = get_noisy_pil_images(img_tensor_50, current_sig, pipe)
+                # 1. Image-Space Randomized Smoothing: Cộng nhiễu GPU và gộp 40 ảnh full-batch 1 lượt duy nhất
+                if current_sig > 0:
+                    noisy_t_5 = (img_tensor_5 + torch.randn_like(img_tensor_5) * current_sig).clamp(-1.0, 1.0)
+                    noisy_t_50 = (img_tensor_50 + torch.randn_like(img_tensor_50) * current_sig).clamp(-1.0, 1.0)
+                else:
+                    noisy_t_5 = img_tensor_5.clamp(-1.0, 1.0)
+                    noisy_t_50 = img_tensor_50.clamp(-1.0, 1.0)
 
-                # ImageReward
-                r_5_ir_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5))
-                r_50_ir_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_img_50))
+                noisy_t_40 = torch.cat([noisy_t_5, noisy_t_50], dim=0)
+                all_noisy_imgs = pipe.image_processor.postprocess(noisy_t_40, output_type="pil")
+                noisy_img_5 = all_noisy_imgs[:num_particles]
+                noisy_img_50 = all_noisy_imgs[num_particles:]
+                all_noisy_prompts = [prompt] * len(all_noisy_imgs)
 
-                # CLIP-Score
+                # 2. ImageReward (chấm full-batch 40 ảnh trong 1 lượt GPU)
+                all_ir_batch = ir_model.score_batched(all_noisy_prompts, all_noisy_imgs, batch_size=len(all_noisy_imgs))
+                r_5_ir_smooth.append(all_ir_batch[:num_particles])
+                r_50_ir_smooth.append(all_ir_batch[num_particles:])
+
+                # 3. CLIP-Score (chấm full-batch 40 ảnh trong 1 lượt GPU)
                 if do_clip_score is not None:
-                    r_5_clip_smooth.append(do_clip_score(images=noisy_img_5, prompts=[prompt] * num_particles))
-                    r_50_clip_smooth.append(do_clip_score(images=noisy_img_50, prompts=[prompt] * num_particles))
+                    all_clip_batch = do_clip_score(images=all_noisy_imgs, prompts=all_noisy_prompts)
+                    if all_clip_batch is not None and len(all_clip_batch) == len(all_noisy_imgs):
+                        r_5_clip_smooth.append(all_clip_batch[:num_particles])
+                        r_50_clip_smooth.append(all_clip_batch[num_particles:])
+                    else:
+                        r_5_clip_smooth.append(do_clip_score(images=noisy_img_5, prompts=[prompt] * num_particles))
+                        r_50_clip_smooth.append(do_clip_score(images=noisy_img_50, prompts=[prompt] * num_particles))
 
-                # HPS v2.1 (chấm đồng thời cả 40 ảnh noisy của DPM-5 và DDIM-50)
+                # 4. HPS v2.1 (chấm full-batch 40 ảnh trong 1 lượt GPU)
                 if do_human_preference_score is not None and r_5step_hps_raw is not None:
                     try:
-                        all_noisy_imgs = list(noisy_img_5) + list(noisy_img_50)
                         all_hps_batch = do_human_preference_score(
                             images=all_noisy_imgs,
-                            prompts=[prompt] * len(all_noisy_imgs)
+                            prompts=all_noisy_prompts
                         )
                         if all_hps_batch is not None and len(all_hps_batch) == len(all_noisy_imgs):
-                            r_5_hps_smooth.append(all_hps_batch[:len(noisy_img_5)])
-                            r_50_hps_smooth.append(all_hps_batch[len(noisy_img_5):])
+                            r_5_hps_smooth.append(all_hps_batch[:num_particles])
+                            r_50_hps_smooth.append(all_hps_batch[num_particles:])
                         else:
                             r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
                             r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
                     except Exception:
                         pass
 
-                # Aesthetic Score
+                # 5. Aesthetic Score (chấm full-batch 40 ảnh trong 1 lượt GPU)
                 if do_AS is not None and r_5step_as_raw is not None:
                     try:
-                        r_5_as_smooth.append(do_AS(images=noisy_img_5, prompts=[prompt] * num_particles))
-                        r_50_as_smooth.append(do_AS(images=noisy_img_50, prompts=[prompt] * num_particles))
+                        all_as_batch = do_AS(images=all_noisy_imgs, prompts=all_noisy_prompts)
+                        if all_as_batch is not None and len(all_as_batch) == len(all_noisy_imgs):
+                            r_5_as_smooth.append(all_as_batch[:num_particles])
+                            r_50_as_smooth.append(all_as_batch[num_particles:])
+                        else:
+                            r_5_as_smooth.append(do_AS(images=noisy_img_5, prompts=[prompt] * num_particles))
+                            r_50_as_smooth.append(do_AS(images=noisy_img_50, prompts=[prompt] * num_particles))
                     except Exception:
                         pass
 
-                # PickScore (chấm đồng thời trọn bộ 40 ảnh noisy của DPM-5 và DDIM-50 trong 1 lượt GPU)
+                # 6. PickScore (chấm full-batch 40 ảnh trong 1 lượt GPU)
                 if do_pickscore is not None and r_5step_pick_raw is not None:
                     try:
-                        all_noisy_imgs = list(noisy_img_5) + list(noisy_img_50)
                         all_pick_batch = do_pickscore(
                             images=all_noisy_imgs,
-                            prompts=[prompt] * len(all_noisy_imgs),
+                            prompts=all_noisy_prompts,
                             device=device
                         )
                         if all_pick_batch is not None and len(all_pick_batch) == len(all_noisy_imgs):
-                            r_5_pick_smooth.append(all_pick_batch[:len(noisy_img_5)])
-                            r_50_pick_smooth.append(all_pick_batch[len(noisy_img_5):])
+                            r_5_pick_smooth.append(all_pick_batch[:num_particles])
+                            r_50_pick_smooth.append(all_pick_batch[num_particles:])
                         else:
                             r_5_pick_smooth.append(do_pickscore(images=noisy_img_5, prompts=[prompt] * num_particles, device=device))
                             r_50_pick_smooth.append(do_pickscore(images=noisy_img_50, prompts=[prompt] * num_particles, device=device))
                     except Exception:
                         pass
 
-                del noisy_img_5, noisy_img_50
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                del noisy_t_40, all_noisy_imgs, noisy_img_5, noisy_img_50
                 pbar_eval.update(1)
 
             r_5_ir_ours = np.mean(r_5_ir_smooth, axis=0)
