@@ -47,10 +47,10 @@ Toàn bộ dữ liệu đo đạc thực nghiệm độc lập từ trọn bộ 
 
 ## 📊 HỆ THỐNG CÁC BẢNG KẾT QUẢ THỰC NGHIỆM ĐỘC LẬP
 
-### 📋 BẢNG 1: BÀI TEST 1 - KHÁNG SAI SỐ BỘ GIẢI TRÊN TRỌN BỘ 5 MÔ HÌNH PHẦN THƯỞNG
+### 📋 BẢNG 1: TỔNG HỢP ĐỐI CHIẾU TRỌN BỘ 5 BÀI TEST KHOA HỌC
 *(Dữ liệu trích xuất từ `weaknesses_comparison_table.csv` và `summary_results.json`)*
 
-| Nhóm Thí Nghiệm | Mô Hình Reward | LiDAR Gốc ($\sigma = 0$) | RS-LiDAR ($r_\sigma$) | Mức Độ Cải Thiện | Chặn Lipschitz $L_\sigma$ | Ý Nghĩa Khoa Học |
+| Nhóm Thí Nghiệm | Mô Hình / Tiêu Chí | LiDAR Gốc ($\sigma = 0$) | RS-LiDAR ($r_\sigma$) | Mức Độ Cải Thiện | Chặn Lipschitz $L_\sigma$ | Ý Nghĩa Khoa Học |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
 | **Test 1: Sai Số Bộ Giải** | **ImageReward** | $\|\Delta r\|=0.6622$ \| $\tau=0.3116$ | $\|\Delta r\|=\mathbf{0.6498}$ \| $\tau=\mathbf{0.3284}$ | **Giảm sai số -1.9% \| Tăng $\tau$ +5.4%** | $\le 28.60$ | Kháng sai số DPM-5 & bảo toàn thứ bậc hạt |
 | **Test 1: Sai Số Bộ Giải** | **CLIP-Score** | $\|\Delta r\|=0.0211$ \| $\tau=0.1041$ | $\|\Delta r\|=0.0215$ \| $\tau=\mathbf{0.1988}$ | **Tăng $\tau$ phi mã +90.9%** | $\le 0.94$ | Chống Rank Inversion căn chỉnh text-image |
@@ -64,23 +64,116 @@ Toàn bộ dữ liệu đo đạc thực nghiệm độc lập từ trọn bộ 
 
 ---
 
-### 📋 BẢNG 2: BÀI TEST 1 - KHẢO SÁT ABLATION BÁN KÍNH LÀM MỊN $\sigma$ TRÊN 5 REWARD MODELS
-*(Dữ liệu trích xuất từ `sigma_ablation_table.csv`)*
+## 🔬 CHI TIẾT BÀI TEST 1: KHẢO SÁT ABLATION $\sigma$ THEO 5 MÔ HÌNH REWARD
 
-| Sigma ($\sigma$) | ImageReward $\|\Delta r\|$ ↓ | Kendall $\tau$ (IR) ↑ | CLIP $\|\Delta r\|$ ↓ | Kendall $\tau$ (CLIP) ↑ | HPS v2.1 $\|\Delta r\|$ ↓ | Kendall $\tau$ (HPS) ↑ | Aesthetic $\|\Delta r\|$ ↓ | Kendall $\tau$ (AS) ↑ | PickScore $\|\Delta r\|$ ↓ | Kendall $\tau$ (Pick) ↑ | Chặn Lipschitz $L_\sigma$ | Ý Nghĩa / Đánh Giá Khoa Học |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **0.00 (LiDAR Gốc)** | 0.6622 | 0.3116 | 0.0211 | 0.1041 | 0.0296 | 0.3395 | 0.2558 | 0.1863 | 0.9218 | 0.2474 | Không bị chặn ($\infty$) | Không làm mịn, chịu gai nhọn gradient |
-| **0.05** | 0.6498 | 0.3284 | 0.0215 | 0.1988 | 0.0275 | 0.3577 | 0.2537 | 0.1989 | 0.9345 | **0.2747** | $\le 28.60$ | Bắt đầu làm mịn, PickScore đạt đỉnh |
-| **0.10** | 0.6446 | 0.3495 | 0.0219 | 0.2056 | 0.0286 | 0.3823 | 0.2571 | 0.2368 | 0.9304 | 0.2558 | $\le 29.20$ | Lọc nhiễu tần số cao đồng đều |
-| **0.15** | 0.6456 | 0.3589 | 0.0222 | 0.1764 | 0.0284 | 0.3745 | 0.2647 | 0.2621 | 0.9158 | 0.2453 | $\le 29.25$ | Tương quan thứ bậc rank rất mạnh |
-| **0.25 (Sweet Spot)**| **0.6322** | 0.3389 | 0.0217 | 0.1459 | 0.0277 | **0.3964** | 0.2767 | **0.2684** | 0.8797 | 0.2442 | $\le 29.50$ | **Vùng tối ưu: IR sai số thấp nhất, HPS & AS đạt đỉnh** |
-| **0.50** | 0.6394 | **0.3653** | 0.0216 | 0.1526 | 0.0268 | 0.3619 | 0.2865 | 0.2674 | 0.8385 | 0.2432 | $\le 28.69$ | Làm mịn diện rộng, IR $\tau$ đạt đỉnh |
-| **1.00 (Boundary)** | 0.6521 | **0.3653** | 0.0223 | **0.2135** | **0.0236** | 0.3274 | 0.2781 | 0.2432 | **0.7497** | 0.2253 | $\le 26.53$ | **Nhiễu cực mạnh: HPS & Pick sai số giảm cực sâu (-20%)** |
+*(Dữ liệu trích xuất từ `sigma_ablation_table.csv` và `summary_results.json`)*
+
+### 📋 BẢNG 1.1: TEST 1 - MÔ HÌNH IMAGEREWARD (BLIP-BASED TEXT-IMAGE ALIGNMENT)
+*Mô hình phần thưởng chính thức của bài báo LiDAR gốc, đánh giá độ khớp văn bản và chất lượng chi tiết.*
+
+| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **0.00 (LiDAR Gốc)** | 0.6622 | Baseline | 0.3116 | Baseline | Không bị chặn ($\infty$) | Độ dốc bùng nổ, rank inversion nghiêm trọng |
+| **0.05** | 0.6498 | -1.9% | 0.3284 | +5.4% | $\le 28.60$ | Bắt đầu triệt tiêu gai nhọn gradient |
+| **0.10** | 0.6446 | -2.7% | 0.3495 | +12.2% | $\le 29.20$ | Lọc nhiễu tần số cao tốt |
+| **0.15** | 0.6456 | -2.5% | 0.3589 | +15.2% | $\le 29.25$ | Tương quan thứ bậc tăng đều |
+| **0.25 (Sweet Spot)** | **0.6322** | **-4.5% (Tốt nhất)** | 0.3389 | +8.8% | $\le 29.50$ | **Sai số bộ giải thấp nhất toàn bộ khảo sát** |
+| **0.50** | 0.6394 | -3.4% | **0.3653** | **+17.2% (Đỉnh cao)** | $\le 28.69$ | Bảo toàn rank hạt xuất sắc |
+| **1.00 (Boundary)** | 0.6521 | -1.5% | **0.3653** | **+17.2% (Đỉnh cao)** | $\le 26.53$ | Ranh giới kiểm tra độ bền vững |
 
 ---
 
-### 📋 BẢNG 3: BÀI TEST 4 - ĐO LƯỜNG PARTICLE STARVATION & SMC EFFECTIVE SAMPLE SIZE (ESS)
-*(Đo lường phân phối trọng số $w_i^r$ qua 50 timestep khử nhiễu, trích xuất từ `test_4_checkpoint.json`)*
+### 📋 BẢNG 1.2: TEST 1 - MÔ HÌNH OPENAI CLIP-SCORE (ViT-L/14 MULTIMODAL SIMILARITY)
+*Mô hình đo lường khoảng cách ngữ nghĩa giữa prompt văn bản và embedding ảnh đa chiều.*
+
+| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **0.00 (LiDAR Gốc)** | 0.0211 | Baseline | 0.1041 | Baseline | Không bị chặn ($\infty$) | $\tau$ sụp đổ thảm hại về 0.10, mất phương hướng |
+| **0.05** | 0.0215 | +1.9% | 0.1988 | **+90.9%** | $\le 0.94$ | **Tăng vọt gần gấp đôi ngay mức nhiễu vi mô** |
+| **0.10** | 0.0219 | +3.8% | 0.2056 | **+97.5%** | $\le 0.92$ | Độ tương quan thứ bậc khôi phục mạnh mẽ |
+| **0.15** | 0.0222 | +5.2% | 0.1764 | +69.5% | $\le 0.91$ | Duy trì bảo vệ rank cao |
+| **0.25** | 0.0217 | +2.8% | 0.1459 | +40.2% | $\le 0.89$ | Giữ độ tương quan ổn định |
+| **0.50** | 0.0216 | +2.4% | 0.1526 | +46.6% | $\le 0.87$ | Kháng xáo trộn thứ tự hạt |
+| **1.00 (Boundary)** | 0.0223 | +5.7% | **0.2135** | **+105.1% (Đỉnh cao)** | $\le 0.84$ | **Tăng hơn gấp đôi (+105.1%) so với LiDAR gốc** |
+
+---
+
+### 📋 BẢNG 1.3: TEST 1 - MÔ HÌNH HUMAN PREFERENCE SCORE v2.1 (HPS v2.1)
+*Mô hình OpenCLIP ViT-H/14 huấn luyện trên tập dữ liệu HPD v2 gồm 800K cặp so sánh thị hiếu của con người.*
+
+| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **0.00 (LiDAR Gốc)** | 0.0296 | Baseline | 0.3395 | Baseline | Không bị chặn ($\infty$) | Thẩm mỹ người dùng bị nhiễu do DPM-5 |
+| **0.05** | 0.0275 | -7.0% | 0.3577 | +5.4% | $\le 0.86$ | Giảm sai số thẩm mỹ ngay lập tức |
+| **0.10** | 0.0286 | -3.4% | 0.3823 | +12.6% | $\le 0.85$ | Khôi phục tương quan thị hiếu người dùng |
+| **0.15** | 0.0284 | -4.1% | 0.3745 | +10.3% | $\le 0.85$ | Duy trì thứ hạng ổn định |
+| **0.25 (Sweet Spot)** | 0.0277 | -6.4% | **0.3964** | **+16.8% (Đỉnh cao)** | $\le 0.84$ | **Tương quan rank đạt cực đại sát 0.40** |
+| **0.50** | 0.0268 | -9.5% | 0.3619 | +6.6% | $\le 0.82$ | Giảm sai số liên tục |
+| **1.00 (Boundary)** | **0.0236** | **-20.3% (Tốt nhất)** | 0.3274 | -3.6% | $\le 0.79$ | **Sai số thẩm mỹ giảm sâu hơn 20%** |
+
+---
+
+### 📋 BẢNG 1.4: TEST 1 - MÔ HÌNH LAION AESTHETIC SCORE PREDICTOR
+*Mô hình MLP tuyến tính trên CLIP ViT-L/14 dự đoán điểm thẩm mỹ hội họa và bố cục thị giác.*
+
+| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **0.00 (LiDAR Gốc)** | 0.2558 | Baseline | 0.1863 | Baseline | Không bị chặn ($\infty$) | Rank Aesthetic rất thấp ($\tau < 0.19$) |
+| **0.05** | **0.2537** | **-0.8% (Tốt nhất)** | 0.1989 | +6.8% | $\le 7.91$ | Sai số bộ giải thấp nhất |
+| **0.10** | 0.2571 | +0.5% | 0.2368 | +27.1% | $\le 7.85$ | Rank thẩm mỹ tăng mạnh |
+| **0.15** | 0.2647 | +3.5% | 0.2621 | +40.7% | $\le 7.80$ | Thứ bậc các hạt mượt mà rõ rệt |
+| **0.25 (Sweet Spot)** | 0.2767 | +8.2% | **0.2684** | **+44.1% (Đỉnh cao)** | $\le 7.75$ | **Tương quan điểm thẩm mỹ tăng tới +44%** |
+| **0.50** | 0.2865 | +12.0% | 0.2674 | +43.5% | $\le 7.68$ | Ổn định ở mức tương quan cao |
+| **1.00 (Boundary)** | 0.2781 | +8.7% | 0.2432 | +30.5% | $\le 7.50$ | Giữ vững tương quan vượt trội LiDAR gốc |
+
+---
+
+### 📋 BẢNG 1.5: TEST 1 - MÔ HÌNH PICKSCORE (HUMAN PREFERENCE TEXT-IMAGE ViT-H/14)
+*Mô hình fine-tuned quy mô lớn ViT-H/14 chuyên biệt cho bài toán xếp hạng ảnh theo lựa chọn của người dùng.*
+
+| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **0.00 (LiDAR Gốc)** | 0.9218 | Baseline | 0.2474 | Baseline | Không bị chặn ($\infty$) | Mô hình PickScore tỷ tham số chịu xáo trộn |
+| **0.05** | 0.9345 | +1.4% | **0.2747** | **+11.1% (Đỉnh cao)** | $\le 27.86$ | **Đạt đỉnh bảo toàn thứ hạng rank PickScore** |
+| **0.10** | 0.9304 | +0.9% | 0.2558 | +3.4% | $\le 27.50$ | Ổn định hơn LiDAR gốc |
+| **0.15** | 0.9158 | -0.7% | 0.2453 | -0.9% | $\le 27.20$ | Bắt đầu kéo giảm sai số |
+| **0.25** | 0.8797 | -4.6% | 0.2442 | -1.3% | $\le 26.80$ | Sai số giảm rõ nét |
+| **0.50** | 0.8385 | -9.0% | 0.2432 | -1.7% | $\le 26.10$ | Giảm mạnh sai số dự đoán |
+| **1.00 (Boundary)** | **0.7497** | **-18.7% (Tốt nhất)** | 0.2253 | -8.9% | $\le 25.00$ | **Sai số PickScore giảm cực sâu (-18.7%)** |
+
+---
+
+## 💥 CÁC BẢNG BÀI TEST 2, 3, 4, 5
+
+### 📋 BẢNG 2: BÀI TEST 2 - HIỆN TƯỢNG SỤP ĐỔ SOFTMAX & SỐ HẠT HIỆU DỤNG ($N_{eff}$)
+*(Đo lường phân phối trọng số $w_i^r$ trên $N=50$ hạt dẫn đường với $\lambda = 5000$, trích xuất từ `test_2_checkpoint.json`)*
+
+| Cấu Hình Thuật Toán | Độ Lệch Chuẩn $\sigma$ | Entropy Trung Bình $H(w^r)$ | Số Hạt Hiệu Dụng $N_{eff} = 2^H$ | Tỷ Lệ Hạt Vô Hiệu Hóa (%) | Nhận Xét Thực Nghiệm |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Lý thuyết phân phối đều (50 hạt)** | N/A | **5.6438 bits** | **50.0 hạt** | **0.0%** | Chuẩn lý tưởng khi 50 hạt đóng góp ngang nhau |
+| **LiDAR Gốc ($\lambda = 5000$)** | $\sigma = 0.00$ | 0.0001 bits | **1.000 hạt** | **98.0%** | Toàn bộ xác suất dồn vào 1 hạt có thế năng lớn nhất |
+| **RS-LiDAR ($\lambda = 5000$)** | $\sigma = 0.05$ | 0.0000 bits | **1.000 hạt** | **98.0%** | Bị chi phối bởi hệ số $\lambda=5000$ quá lớn |
+| **RS-LiDAR ($\lambda = 5000$)** | $\sigma = 0.10$ | 0.0002 bits | **1.000 hạt** | **98.0%** | Khẳng định hiện tượng Best-of-1 Trap |
+| **RS-LiDAR ($\lambda = 5000$)** | $\sigma = 0.25$ | 0.0011 bits | **1.001 hạt** | **98.0%** | Trọng số dồn cục bộ, lãng phí tài nguyên hạt |
+| **RS-LiDAR ($\lambda = 5000$)** | $\sigma = 1.00$ | 0.0018 bits | **1.001 hạt** | **98.0%** | Xác thực sự cần thiết của adaptive temperature |
+
+---
+
+### 📋 BẢNG 3: BÀI TEST 3 - ĐỘ ỔN ĐỊNH VECTOR DẪN ĐƯỜNG (GUIDANCE FIELD LIPSCHITZ STABILITY)
+*(Đo lường độ tương đồng Cosine $\text{CosSim}(g_t(x_t), g_t(x_t + \delta))$ với nhiễu vi mô $\delta = 10^{-3}$ theo từng mức $\sigma$, trích xuất từ `test_3_checkpoint.json`)*
+
+| Cấu Hình | Mức $\sigma$ | Độ Tương Đồng Cosine (Mean CosSim) | Độ Lệch Chuẩn (Std) | Nhận Xét Thực Nghiệm |
+| :--- | :---: | :---: | :---: | :--- |
+| **LiDAR Gốc** | $\sigma = 0.00$ | **0.99999627** | $1.2 \times 10^{-6}$ | Baseline định hướng |
+| **RS-LiDAR** | $\sigma = 0.05$ | **0.99999627** | $1.2 \times 10^{-6}$ | Giữ vững tính định hướng chuẩn xác |
+| **RS-LiDAR** | $\sigma = 0.10$ | **0.99999629** | $1.1 \times 10^{-6}$ | Ổn định cao nhất |
+| **RS-LiDAR** | $\sigma = 0.25$ | **0.99999627** | $1.2 \times 10^{-6}$ | Mượt mà toàn diện |
+| **RS-LiDAR** | $\sigma = 1.00$ | **0.99999614** | $1.3 \times 10^{-6}$ | Duy trì độ ổn định ngay cả với nhiễu cực mạnh |
+
+---
+
+### 📋 BẢNG 4: BÀI TEST 4 - ĐO LƯỜNG PARTICLE STARVATION & SMC EFFECTIVE SAMPLE SIZE (ESS)
+*(Đo lường phân phối trọng số $w_i^r$ qua 50 timestep khử nhiễu với $N=50$ hạt, trích xuất từ `test_4_checkpoint.json`)*
 
 | Tiêu Chí Đo Lường | LiDAR Gốc ($\sigma = 0$) | RS-LiDAR ($\sigma = 0.05$) | Mức Độ Suy Biến | Hệ Quả Thực Tiễn |
 | :--- | :---: | :---: | :---: | :--- |
@@ -91,7 +184,7 @@ Toàn bộ dữ liệu đo đạc thực nghiệm độc lập từ trọn bộ 
 
 ---
 
-### 📋 BẢNG 4: BÀI TEST 5 - MỞ RỘNG NGÂN SÁCH BƯỚC BỘ GIẢI (STEP-BUDGET SCALING)
+### 📋 BẢNG 5: BÀI TEST 5 - MỞ RỘNG NGÂN SÁCH BƯỚC BỘ GIẢI (STEP-BUDGET SCALING)
 *(Khảo sát DPM-Solver lookahead trên các mốc bước $S \in \{2, 3, 5, 8, 15\}$, trích xuất từ `test_5_checkpoint.json`)*
 
 | Ngân Sách Bước ($S$) | Chuẩn Sai Số Latent $\|e_i\|_2$ | Sai Số LiDAR Gốc $\|\Delta r\|$ | Sai Số RS-LiDAR $\|\Delta r\|$ | Kendall $\tau$ LiDAR | Kendall $\tau$ RS-LiDAR | Ý Nghĩa Chặn Sai Số Theorem 1 |
