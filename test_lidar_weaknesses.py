@@ -1927,7 +1927,7 @@ def get_args():
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
     parser.add_argument("--sigma", type=float, default=0.05, help="Randomized Smoothing standard deviation")
     parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
-    parser.add_argument("--sigmas", type=str, default="0.05,0.10,0.15,0.25,0.50", help="Comma-separated sigma values for ablation study")
+    parser.add_argument("--sigmas", type=str, default="0.05,0.10,0.15,0.25,0.50,1.00", help="Comma-separated sigma values for ablation study")
     parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
     parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
@@ -1972,7 +1972,7 @@ if __name__ == "__main__":
     print(f"📝 Đã nạp {len(test_prompts)} prompts để chạy thực nghiệm.")
 
     res1, res2, res3, res4, res5 = None, None, None, None, None
-    sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25, 0.50]
+    sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25, 0.50, 1.00]
     requested_tests = [t.strip().lower() for t in args.test.split(",") if t.strip()]
     run_all = ("all" in requested_tests)
 
