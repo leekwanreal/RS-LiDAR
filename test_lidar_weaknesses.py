@@ -156,19 +156,44 @@ def do_pickscore(images, prompts, device="cuda"):
         return None
 
 
+_fast_batch_initialized = False
+
 @torch.inference_mode()
 def fast_batch_clip_and_aesthetic(images, prompt, device="cuda"):
     """
     Chấm điểm siêu tốc CLIP-Score và Aesthetic Score bằng đúng 1 lượt GPU Tensor duy nhất [N, 3, 224, 224],
     loại bỏ hoàn toàn vòng lặp tuần tự từng ảnh 80 lần của rewards.py gốc.
     """
+    global _fast_batch_initialized
     try:
-        from fkd_diffusers.rewards import REWARDS_DICT
+        from fkd_diffusers.rewards import REWARDS_DICT, CLIPScore, AestheticScore
     except ImportError:
         try:
-            from rewards import REWARDS_DICT
+            from rewards import REWARDS_DICT, CLIPScore, AestheticScore
         except ImportError:
             return None, None
+
+    # Tự động nạp CLIPScore nếu chưa có trong REWARDS_DICT
+    if REWARDS_DICT.get("Clip-Score") is None:
+        try:
+            dev = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+            REWARDS_DICT["Clip-Score"] = CLIPScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
+        except Exception as e:
+            return None, None
+
+    # Tự động nạp AestheticScore nếu chưa có
+    if REWARDS_DICT.get("AS") is None:
+        try:
+            dev = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+            weight_path = "sac+logos+ava1-l14-linearMSE.pth"
+            if os.path.exists(weight_path):
+                state_dict = torch.load(weight_path, map_location='cpu')
+                as_obj = AestheticScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
+                as_obj.mlp.load_state_dict(state_dict, strict=False)
+                as_obj.mlp.to(dev)
+                REWARDS_DICT["AS"] = as_obj
+        except Exception:
+            pass
 
     clip_obj = REWARDS_DICT.get("Clip-Score")
     as_obj = REWARDS_DICT.get("AS")
@@ -181,134 +206,31 @@ def fast_batch_clip_and_aesthetic(images, prompt, device="cuda"):
         preprocess = clip_obj.preprocess
         model_dtype = next(clip_model.parameters()).dtype
 
-        # 1. Gom N ảnh PIL thành 1 Tensor duy nhất [N, 3, 224, 224] trên GPU
+        # 1. Chuyển N ảnh thành batch tensor [N, 3, 224, 224] trên GPU
         tensors = torch.stack([preprocess(img) for img in images]).to(device=device, dtype=model_dtype)
 
-        # 2. Forward GPU ĐÚNG 1 LƯỢT DUY NHẤT cho toàn bộ N ảnh
+        # 2. Forward GPU đúng 1 lượt duy nhất cho toàn bộ N ảnh
         image_features = F.normalize(clip_model.encode_image(tensors))
 
         # 3. CLIP-Score: Encode prompt 1 lần duy nhất rồi dot product
-        text_tokens = clip.tokenize(prompt, truncate=True).to(device)
+        p_str = prompt[0] if isinstance(prompt, (list, tuple)) else str(prompt)
+        text_tokens = clip.tokenize(p_str, truncate=True).to(device)
         txt_features = F.normalize(clip_model.encode_text(text_tokens))
         clip_scores = (image_features.float() * txt_features.float()).sum(dim=-1).cpu().tolist()
 
-        # 4. Aesthetic Score: Tái sử dụng trực tiếp image_features qua MLP (không cần forward lại ViT-L/14)
+        # 4. Aesthetic Score: Tái sử dụng trực tiếp image_features qua MLP
         if as_obj is not None and hasattr(as_obj, "mlp"):
             as_scores = as_obj.mlp(image_features.float()).squeeze(-1).cpu().tolist()
         else:
             as_scores = None
 
+        if not _fast_batch_initialized:
+            print(" ⚡ [Fast-Batch] Đã kích hoạt Vectorized GPU scoring cho CLIP-Score & Aesthetic Score!")
+            _fast_batch_initialized = True
+
         return clip_scores, as_scores
-    except Exception:
+    except Exception as e:
         return None, None
-
-
-_hps_cached_model = None
-_hps_cached_preprocess = None
-_hps_cached_tokenizer = None
-
-@torch.inference_mode()
-def fast_batch_hps_score(images, prompt, device="cuda"):
-    """
-    Chấm điểm HPS v2.1 theo batch GPU siêu tốc:
-    1. Trích xuất model OpenCLIP từ hpsv2.score để forward 40 ảnh trong 1 lượt duy nhất.
-    2. Fallback: Lưu batch ảnh vào RAM disk (/dev/shm) và gọi hpsv2.score(file_paths, prompt).
-    """
-    global _hps_cached_model, _hps_cached_preprocess, _hps_cached_tokenizer
-    try:
-        import hpsv2
-    except ImportError:
-        return None
-
-    score_fn = getattr(hpsv2, "score", None)
-    if score_fn is None:
-        return None
-
-    # Tìm model, preprocess, tokenizer trong globals của hpsv2.score
-    if _hps_cached_model is None or _hps_cached_preprocess is None:
-        fn_globals = getattr(score_fn, "__globals__", {})
-        for k in ["model", "current_model", "_model"]:
-            if k in fn_globals and fn_globals[k] is not None:
-                _hps_cached_model = fn_globals[k]
-                break
-        for k in ["preprocess", "transform", "_preprocess"]:
-            if k in fn_globals and fn_globals[k] is not None:
-                _hps_cached_preprocess = fn_globals[k]
-                break
-        for k in ["tokenizer", "_tokenizer"]:
-            if k in fn_globals and fn_globals[k] is not None:
-                _hps_cached_tokenizer = fn_globals[k]
-                break
-
-    # Nếu chưa có trong globals, gọi 1 lần dummy để hpsv2 tự khởi tạo model trong memory
-    if _hps_cached_model is None or _hps_cached_preprocess is None:
-        try:
-            from PIL import Image
-            dummy = Image.new("RGB", (64, 64), color="blue")
-            _ = score_fn(dummy, "test", hps_version="v2.1")
-            fn_globals = getattr(score_fn, "__globals__", {})
-            for k in ["model", "current_model", "_model"]:
-                if k in fn_globals and fn_globals[k] is not None:
-                    _hps_cached_model = fn_globals[k]
-                    break
-            for k in ["preprocess", "transform", "_preprocess"]:
-                if k in fn_globals and fn_globals[k] is not None:
-                    _hps_cached_preprocess = fn_globals[k]
-                    break
-            for k in ["tokenizer", "_tokenizer"]:
-                if k in fn_globals and fn_globals[k] is not None:
-                    _hps_cached_tokenizer = fn_globals[k]
-                    break
-        except Exception:
-            pass
-
-    # Cách 1: Forward trực tiếp Tensor qua OpenCLIP model trong 1 lượt duy nhất
-    if _hps_cached_model is not None and _hps_cached_preprocess is not None:
-        try:
-            model_dtype = next(_hps_cached_model.parameters()).dtype
-            tensors = torch.stack([_hps_cached_preprocess(img) for img in images]).to(device=device, dtype=model_dtype)
-            image_features = _hps_cached_model.encode_image(tensors)
-            image_features = F.normalize(image_features, dim=-1)
-
-            if _hps_cached_tokenizer is not None:
-                text_tokens = _hps_cached_tokenizer([prompt]).to(device=device)
-            else:
-                try:
-                    import open_clip
-                    text_tokens = open_clip.tokenize([prompt]).to(device=device)
-                except Exception:
-                    text_tokens = clip.tokenize(prompt, truncate=True).to(device)
-
-            text_features = _hps_cached_model.encode_text(text_tokens)
-            text_features = F.normalize(text_features, dim=-1)
-
-            sim = (image_features.float() * text_features.float()).sum(dim=-1)
-            hps_scores = sim.cpu().tolist()
-            return hps_scores
-        except Exception:
-            pass
-
-    # Cách 2: Lưu batch ảnh vào RAM disk và gọi hpsv2.score(paths_list) 1 lượt duy nhất
-    try:
-        import tempfile
-        tmp_dir = "/dev/shm" if os.path.exists("/dev/shm") else tempfile.gettempdir()
-        tmp_paths = []
-        for idx, img in enumerate(images):
-            p = os.path.join(tmp_dir, f"hps_batch_{idx}_{os.getpid()}.png")
-            img.save(p)
-            tmp_paths.append(p)
-        raw_res = score_fn(tmp_paths, prompt, hps_version="v2.1")
-        for p in tmp_paths:
-            try: os.remove(p)
-            except Exception: pass
-        if isinstance(raw_res, (list, tuple, np.ndarray, torch.Tensor)):
-            return [float(x) for x in raw_res]
-        else:
-            return [float(raw_res)]
-    except Exception:
-        pass
-
-    return None
 
 
 def load_geneval_prompts(prompt_path="prompt_files/geneval_metadata.jsonl", max_prompts=-1, seed=42):
@@ -565,21 +487,16 @@ def run_test_1_solver_robustness(
                     except Exception:
                         pass
 
-            # 3. HPS v2.1 thô (chấm trọn bộ 40 ảnh DPM-5 và DDIM-50 trong 1 lượt GPU duy nhất)
+            # 3. HPS v2.1 thô (chấm trọn bộ 40 ảnh DPM-5 và DDIM-50)
             r_5step_hps_raw, r_50step_hps_raw = None, None
             if do_human_preference_score is not None:
-                all_hps_raw = fast_batch_hps_score(all_raw_imgs, prompt, device=device)
-                if all_hps_raw is not None and len(all_hps_raw) == len(all_raw_imgs):
-                    r_5step_hps_raw = np.array(all_hps_raw[:num_particles])
-                    r_50step_hps_raw = np.array(all_hps_raw[num_particles:])
-                else:
-                    try:
-                        h_res = do_human_preference_score(images=all_raw_imgs, prompts=all_raw_prompts)
-                        if h_res is not None and len(h_res) == len(all_raw_imgs):
-                            r_5step_hps_raw = np.array(h_res[:num_particles])
-                            r_50step_hps_raw = np.array(h_res[num_particles:])
-                    except Exception:
-                        pass
+                try:
+                    h_res = do_human_preference_score(images=all_raw_imgs, prompts=all_raw_prompts)
+                    if h_res is not None and len(h_res) == len(all_raw_imgs):
+                        r_5step_hps_raw = np.array(h_res[:num_particles])
+                        r_50step_hps_raw = np.array(h_res[num_particles:])
+                except Exception:
+                    pass
 
             # 5. PickScore thô (chấm trọn bộ 40 ảnh DPM-5 và DDIM-50 trong 1 lượt GPU duy nhất)
             if do_pickscore is not None:
@@ -681,20 +598,15 @@ def run_test_1_solver_robustness(
                         except Exception:
                             pass
 
-                # 4. HPS v2.1 (Full-Batch GPU 1 lượt duy nhất)
+                # 4. HPS v2.1
                 if do_human_preference_score is not None and r_5step_hps_raw is not None:
-                    all_hps_batch = fast_batch_hps_score(all_noisy_imgs, prompt, device=device)
-                    if all_hps_batch is not None and len(all_hps_batch) == len(all_noisy_imgs):
-                        r_5_hps_smooth.append(all_hps_batch[:num_particles])
-                        r_50_hps_smooth.append(all_hps_batch[num_particles:])
-                    else:
-                        try:
-                            h_res = do_human_preference_score(images=all_noisy_imgs, prompts=all_noisy_prompts)
-                            if h_res is not None and len(h_res) == len(all_noisy_imgs):
-                                r_5_hps_smooth.append(h_res[:num_particles])
-                                r_50_hps_smooth.append(h_res[num_particles:])
-                        except Exception:
-                            pass
+                    try:
+                        h_res = do_human_preference_score(images=all_noisy_imgs, prompts=all_noisy_prompts)
+                        if h_res is not None and len(h_res) == len(all_noisy_imgs):
+                            r_5_hps_smooth.append(h_res[:num_particles])
+                            r_50_hps_smooth.append(h_res[num_particles:])
+                    except Exception:
+                        pass
 
                 # 6. PickScore (chấm full-batch 40 ảnh trong 1 lượt GPU)
                 if do_pickscore is not None and r_5step_pick_raw is not None:
