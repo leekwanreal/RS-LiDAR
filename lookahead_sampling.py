@@ -289,7 +289,10 @@ def main(args):
             candidates = [
                 os.path.join(args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
                 os.path.join("Lookahead_samples", args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                os.path.join(args.output_dir, args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt")
+                os.path.join(args.output_dir, args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                os.path.join("Lookahead_samples", "100_50_5", f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
             ]
             for c in candidates:
                 if os.path.exists(c):
@@ -299,6 +302,8 @@ def main(args):
         start_time = datetime.now()
         with torch.inference_mode():
             if reused_latent_file is not None:
+                if prompt_idx == start_idx or prompt_idx % 50 == 0:
+                    print(f"⚡ [Prompt {prompt_idx:05d}] Tái sử dụng latents có sẵn: {reused_latent_file}")
                 loaded_latents = torch.load(reused_latent_file, map_location=device)
                 if isinstance(loaded_latents, (list, tuple)):
                     latents = torch.stack([x.to(device) for x in loaded_latents])

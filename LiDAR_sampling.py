@@ -218,7 +218,7 @@ def main(args):
         os.makedirs(prompt_path, exist_ok=True)
 
         results_file = os.path.join(prompt_path, "results.json")
-        if args.resume and os.path.exists(results_file):
+        if args.resume and not getattr(args, "overwrite", False) and os.path.exists(results_file):
             try:
                 with open(results_file, "r") as f:
                     res_cached = json.load(f)
@@ -395,6 +395,7 @@ def get_args():
 
     parser.add_argument("--run_name", type=str, default="", help="Custom output subfolder name")
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
+    parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
     args = parser.parse_args()
 
     return args
