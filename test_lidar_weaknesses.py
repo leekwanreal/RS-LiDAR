@@ -2097,7 +2097,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir
         )
 
-    if ("all" in requested_tests and len(requested_tests) == 1) or "4" in requested_tests:
+    if run_all or "4" in requested_tests:
         res4 = run_test_4_effective_sample_size(
             num_particles=50, sigma=args.sigma,
             tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
@@ -2106,7 +2106,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir
         )
 
-    if ("all" in requested_tests and len(requested_tests) == 1) or "5" in requested_tests:
+    if run_all or "5" in requested_tests:
         res5 = run_test_5_step_budget_scaling(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, step_budgets=[2, 3, 5, 8, 15],
