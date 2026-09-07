@@ -1711,8 +1711,7 @@ def get_args():
             default_lookahead = candidate
             break
 
-    parser = argparse.ArgumentParser(description="Standalone 3 Golden Tests for LiDAR Weaknesses vs Smoothed Surrogate")
-    parser.add_argument("--test", type=str, choices=["all", "1", "2", "3", "4", "5"], default="all", help="Test to run: '1', '2', '3', or 'all'")
+    parser.add_argument("--test", type=str, default="1,2,3", help="Tests to run: '1,2,3' (Golden 3 Tests), 'all' (All 5 Tests), or specific e.g. '1', '2', '3'")
     parser.add_argument("--num_prompts", type=int, default=50, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
     parser.add_argument("--sigma", type=float, default=0.05, help="Randomized Smoothing standard deviation")
@@ -1755,10 +1754,12 @@ if __name__ == "__main__":
 
     res1, res2, res3, res4, res5 = None, None, None, None, None
     sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25]
+    requested_tests = [t.strip().lower() for t in args.test.split(",") if t.strip()]
+    run_all = ("all" in requested_tests)
 
     # Khởi tạo mô hình Pipeline & ImageReward khi chạy Test 1 hoặc Test 5
     pipe, vae, ir_model = None, None, None
-    if args.test in ["all", "1", "5"]:
+    if run_all or "1" in requested_tests or "5" in requested_tests:
         print("\n🚀 Khởi tạo Pipeline & ImageReward cho thực nghiệm...")
         pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16).to(device)
         vae = pipe.vae
@@ -1816,7 +1817,7 @@ if __name__ == "__main__":
             else:
                 print(" ℹ️ [HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
-    if args.test in ["all", "1"]:
+    if run_all or "1" in requested_tests:
         res1 = run_test_1_solver_robustness(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
@@ -1825,7 +1826,7 @@ if __name__ == "__main__":
             num_shards=args.num_shards, shard_id=args.shard_id
         )
 
-    if args.test in ["all", "2"]:
+    if run_all or "2" in requested_tests:
         res2 = run_test_2_softmax_entropy(
             num_particles=50, sigma=args.sigma,
             tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
@@ -1835,7 +1836,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir
         )
 
-    if args.test in ["all", "3"]:
+    if run_all or "3" in requested_tests:
         res3 = run_test_3_guidance_stability(
             num_particles=50, delta_eps=0.001, sigma=args.sigma,
             tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
@@ -1844,7 +1845,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir
         )
 
-    if args.test in ["all", "4"]:
+    if ("all" in requested_tests and len(requested_tests) == 1) or "4" in requested_tests:
         res4 = run_test_4_effective_sample_size(
             num_particles=50, sigma=args.sigma,
             tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
@@ -1853,7 +1854,7 @@ if __name__ == "__main__":
             output_dir=args.output_dir
         )
 
-    if args.test in ["all", "5"]:
+    if ("all" in requested_tests and len(requested_tests) == 1) or "5" in requested_tests:
         res5 = run_test_5_step_budget_scaling(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, step_budgets=[2, 3, 5, 8, 15],
