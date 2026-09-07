@@ -166,6 +166,25 @@ def decode_latents(latents, vae, pipe, device):
 
 
 @torch.inference_mode()
+def decode_latents_to_tensor(latents, vae, device):
+    """Giải mã toàn bộ latents qua VAE full-batch 1 lượt duy nhất thành tensor ảnh [-1.0, 1.0]."""
+    scaled = (latents / vae.config.scaling_factor).to(device=device, dtype=vae.dtype)
+    images = vae.decode(scaled, return_dict=False)[0]
+    return images
+
+
+@torch.inference_mode()
+def get_noisy_pil_images(img_tensor, sigma, pipe):
+    """Cộng nhiễu Gaussian N(0, sigma^2 * I) trên tensor ảnh [-1.0, 1.0], clamp và chuyển sang PIL [0, 255]."""
+    if sigma > 0:
+        noisy_tensor = (img_tensor + torch.randn_like(img_tensor) * sigma).clamp(-1.0, 1.0)
+    else:
+        noisy_tensor = img_tensor.clamp(-1.0, 1.0)
+    return pipe.image_processor.postprocess(noisy_tensor, output_type="pil")
+
+
+
+@torch.inference_mode()
 def generate_latents(pipe, prompt, num_particles, num_inference_steps, seed, device):
     """Sinh toàn bộ latents full-batch song song 1 lượt duy nhất trên GPU."""
     generator = torch.Generator(device=device).manual_seed(seed)
@@ -190,7 +209,7 @@ def run_test_1_solver_robustness(
     num_shards=1, shard_id=0
 ):
     if sigmas_to_sweep is None:
-        sigmas_to_sweep = [0.01, 0.03, 0.05, 0.08, 0.10]
+        sigmas_to_sweep = [0.05, 0.10, 0.15, 0.25]
 
     total_prompts = len(prompt_list)
     if num_shards > 1:
@@ -282,10 +301,12 @@ def run_test_1_solver_robustness(
         e_norms = torch.linalg.norm((latents_5step - latents_50step).view(num_particles, -1), ord=2, dim=1).cpu().tolist()
         error_norms.extend(e_norms)
 
-        # 3. Giải mã VAE & Chấm điểm Đa Mô Hình Reward (ImageReward, CLIP-Score, HPS v2.1)
+        # 3. Giải mã VAE 1 lượt duy nhất thành tensor ảnh [-1.0, 1.0] & Chấm điểm Đa Mô Hình Reward (ImageReward, CLIP-Score, HPS v2.1)
         with torch.inference_mode():
-            img_5step = decode_latents(latents_5step, vae, pipe, device=device)
-            img_50step = decode_latents(latents_50step, vae, pipe, device=device)
+            img_tensor_5 = decode_latents_to_tensor(latents_5step, vae, device=device)
+            img_tensor_50 = decode_latents_to_tensor(latents_50step, vae, device=device)
+            img_5step = pipe.image_processor.postprocess(img_tensor_5.clamp(-1.0, 1.0), output_type="pil")
+            img_50step = pipe.image_processor.postprocess(img_tensor_50.clamp(-1.0, 1.0), output_type="pil")
 
             # 1. ImageReward thô (LiDAR gốc sigma=0)
             r_5step_ir_raw = np.array(ir_model.score_batched([prompt] * num_particles, img_5step))
@@ -326,8 +347,8 @@ def run_test_1_solver_robustness(
             t_h_l, _ = scipy.stats.kendalltau(r_5step_hps_raw, r_50step_hps_raw)
             if not np.isnan(t_h_l): kendall_hps_lidar_list.append(t_h_l)
 
-        # 2. Phương pháp của Bạn: Quét qua danh sách active_sigmas để khảo sát Ablation
-        M_sweep = 2 if (tune_sigma and len(active_sigmas) > 1) else (4 if tune_sigma else 8)
+        # 2. Phương pháp của Bạn: Quét qua danh sách active_sigmas để khảo sát Ablation với M=4
+        M_sweep = 4
         total_eval_steps = len(active_sigmas) * M_sweep
         pbar_eval = tqdm(total=total_eval_steps, desc=f"  ↳ Chấm điểm đa mô hình (IR, CLIP, HPS) [{p_local_idx + 1}/{len(prompt_slice)}]", leave=False)
 
@@ -337,9 +358,9 @@ def run_test_1_solver_robustness(
             r_5_hps_smooth, r_50_hps_smooth = [], []
 
             for _ in range(M_sweep):
-                noise = torch.randn_like(latents_5step) * current_sig
-                noisy_img_5 = decode_latents(latents_5step + noise, vae, pipe, device=device)
-                noisy_img_50 = decode_latents(latents_50step + noise, vae, pipe, device=device)
+                # Image-Space Randomized Smoothing: Cộng nhiễu trực tiếp lên tensor ảnh [-1.0, 1.0]
+                noisy_img_5 = get_noisy_pil_images(img_tensor_5, current_sig, pipe)
+                noisy_img_50 = get_noisy_pil_images(img_tensor_50, current_sig, pipe)
 
                 # ImageReward
                 r_5_ir_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_img_5))
@@ -355,7 +376,7 @@ def run_test_1_solver_robustness(
                     r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
                     r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
 
-                del noisy_img_5, noisy_img_50, noise
+                del noisy_img_5, noisy_img_50
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 pbar_eval.update(1)
@@ -394,6 +415,10 @@ def run_test_1_solver_robustness(
                 if r_5_hps_smooth:
                     delta_hps_ours_list.extend(d_hps)
                     if not np.isnan(t_hps): kendall_hps_ours_list.append(t_hps)
+
+        del img_tensor_5, img_tensor_50, img_5step, img_50step, latents_5step, latents_50step
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         pbar_eval.close()
 
@@ -527,7 +552,7 @@ def run_test_2_softmax_entropy(
         rewards_lidar = rewards_raw
 
         # 2. Phương pháp của Bạn: Kỳ vọng điểm thưởng khi thêm nhiễu Gaussian xi ~ N(0, sigma^2 I)
-        M_exp = 8
+        M_exp = 4
         rewards_ours_dict = {}
         for s_val in active_sigmas:
             noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
@@ -637,8 +662,8 @@ def run_test_3_guidance_stability(
 
         rewards_lidar = rewards_raw
 
-        # Lấy kỳ vọng Monte Carlo qua M=8 mẫu nhiễu Gaussian cho từng sigma
-        M_exp = 8
+        # Lấy kỳ vọng Monte Carlo qua M=4 mẫu nhiễu Gaussian cho từng sigma
+        M_exp = 4
         rewards_ours_dict = {}
         for s_val in active_sigmas:
             noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
@@ -762,7 +787,7 @@ def run_test_4_effective_sample_size(
             rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
 
         rewards_lidar = rewards_raw
-        M_exp = 8
+        M_exp = 4
         rewards_ours_dict = {}
         for s_val in active_sigmas:
             noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
@@ -926,22 +951,25 @@ def run_test_5_step_budget_scaling(
         # 1. Sinh hạt mốc chuẩn 50 bước DDIM (Ground Truth x_0)
         pipe.scheduler = ddim_scheduler
         latents_50 = generate_latents(pipe, prompt, num_particles=num_particles, num_inference_steps=50, seed=seed, device=device)
-        imgs_50 = decode_latents(latents_50, vae, pipe, device)
+        img_tensor_50 = decode_latents_to_tensor(latents_50, vae, device)
+        imgs_50 = pipe.image_processor.postprocess(img_tensor_50.clamp(-1.0, 1.0), output_type="pil")
         r_50_lidar = np.array(ir_model.score_batched([prompt] * num_particles, imgs_50))
 
-        # Smoothed reward cho ground truth 50 bước
+        # Smoothed reward cho ground truth 50 bước (cộng nhiễu trực tiếp lên tensor ảnh [-1.0, 1.0])
         r_50_smooth = []
         for _ in range(M_exp):
-            noise = torch.randn_like(latents_50) * sigma
-            noisy_imgs_50 = decode_latents(latents_50 + noise, vae, pipe, device)
+            noisy_imgs_50 = get_noisy_pil_images(img_tensor_50, sigma, pipe)
             r_50_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_imgs_50))
+            del noisy_imgs_50
         r_50_ours = np.mean(r_50_smooth, axis=0)
+        del img_tensor_50, imgs_50
 
         # 2. Quét từng mốc bước DPM-Solver S in [2, 3, 5, 8, 15]
         pipe.scheduler = dpm_scheduler
         for S in step_budgets:
             latents_S = generate_latents(pipe, prompt, num_particles=num_particles, num_inference_steps=S, seed=seed, device=device)
-            imgs_S = decode_latents(latents_S, vae, pipe, device)
+            img_tensor_S = decode_latents_to_tensor(latents_S, vae, device)
+            imgs_S = pipe.image_processor.postprocess(img_tensor_S.clamp(-1.0, 1.0), output_type="pil")
 
             # Đo sai số hình học không gian latent ||e_S||_2
             err_norm = (latents_S.float() - latents_50.float()).pow(2).sum(dim=(1, 2, 3)).sqrt().mean().item()
@@ -954,18 +982,23 @@ def run_test_5_step_budget_scaling(
             results_by_step[S]["delta_lidar"].extend(d_l)
             if not np.isnan(tau_l): results_by_step[S]["tau_lidar"].append(tau_l)
 
-            # Điểm thưởng làm mịn (RS-LiDAR)
+            # Điểm thưởng làm mịn (RS-LiDAR) trên tensor ảnh [-1.0, 1.0]
             r_S_smooth = []
             for _ in range(M_exp):
-                noise = torch.randn_like(latents_S) * sigma
-                noisy_imgs_S = decode_latents(latents_S + noise, vae, pipe, device)
+                noisy_imgs_S = get_noisy_pil_images(img_tensor_S, sigma, pipe)
                 r_S_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_imgs_S))
+                del noisy_imgs_S
             r_S_ours = np.mean(r_S_smooth, axis=0)
 
             d_o = np.abs(r_S_ours - r_50_ours).tolist()
             tau_o, _ = scipy.stats.kendalltau(r_S_ours, r_50_ours)
             results_by_step[S]["delta_ours"].extend(d_o)
             if not np.isnan(tau_o): results_by_step[S]["tau_ours"].append(tau_o)
+            del img_tensor_S, imgs_S, latents_S
+
+        del latents_50
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Lưu checkpoint định kỳ
         with open(checkpoint_file, "w", encoding="utf-8") as f:
@@ -1682,9 +1715,9 @@ def get_args():
     parser.add_argument("--test", type=str, choices=["all", "1", "2", "3", "4", "5"], default="all", help="Test to run: '1', '2', '3', or 'all'")
     parser.add_argument("--num_prompts", type=int, default=50, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
-    parser.add_argument("--sigma", type=float, default=0.25, help="Randomized Smoothing standard deviation")
+    parser.add_argument("--sigma", type=float, default=0.05, help="Randomized Smoothing standard deviation")
     parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
-    parser.add_argument("--sigmas", type=str, default="0.10,0.25,0.50,1.00", help="Comma-separated sigma values for ablation study")
+    parser.add_argument("--sigmas", type=str, default="0.05,0.10,0.15,0.25", help="Comma-separated sigma values for ablation study")
     parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
     parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
@@ -1721,7 +1754,7 @@ if __name__ == "__main__":
     print(f"📝 Đã nạp {len(test_prompts)} prompts để chạy thực nghiệm.")
 
     res1, res2, res3, res4, res5 = None, None, None, None, None
-    sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.10, 0.25, 0.50, 1.00]
+    sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25]
 
     # Khởi tạo mô hình Pipeline & ImageReward khi chạy Test 1 hoặc Test 5
     pipe, vae, ir_model = None, None, None
