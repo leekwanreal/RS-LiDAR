@@ -217,7 +217,12 @@ def main(args):
 
     # set output directory
     prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
-    output_dir = os.path.join(args.output_dir, f"{prefix}")
+    if getattr(args, "use_smoothing", False):
+        prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}"
+    if getattr(args, "run_name", None):
+        output_dir = os.path.join(args.output_dir, args.run_name)
+    else:
+        output_dir = os.path.join(args.output_dir, f"{prefix}")
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -259,7 +264,7 @@ def main(args):
 
         results_file = os.path.join(prompt_path, "results.json")
         latent_file = os.path.join(prompt_path, "samples", "latent.pt")
-        if args.resume and os.path.exists(results_file) and os.path.exists(latent_file):
+        if args.resume and not getattr(args, "overwrite", False) and os.path.exists(results_file) and os.path.exists(latent_file):
             try:
                 with open(results_file, "r") as f:
                     res_cached = json.load(f)
@@ -278,51 +283,111 @@ def main(args):
         with open(os.path.join(prompt_path, "metadata.jsonl"), "w") as f:
             json.dump(item, f)
 
+        # Kiểm tra xem có thể tái sử dụng latent.pt đã chạy từ trước hay không
+        reused_latent_file = None
+        if getattr(args, "reuse_latents_from", None):
+            candidates = [
+                os.path.join(args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                os.path.join("Lookahead_samples", args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                os.path.join(args.output_dir, args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt")
+            ]
+            for c in candidates:
+                if os.path.exists(c):
+                    reused_latent_file = c
+                    break
+
         start_time = datetime.now()
         with torch.inference_mode():
-            if "dmd2_sdxl_4step_lora_fp16.safetensors" in args.model_name:
-                latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, timesteps=[999, 749, 499, 249], output_type="latent").images
-            elif "dmd2_sdxl_1step_unet_fp16.bin" in args.model_name:
-                latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[399], output_type="latent").images
-            elif "latent-consistency/lcm-lora-sdxl" in args.model_name:
-                latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
-            elif "sdxl_lightning_4step_lora.safetensors" in args.model_name:
-                latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
-            elif "Hyper-SDXL-1step-Unet.safetensors" in args.model_name:
-                latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[800], output_type="latent").images
-            elif "Hyper-FLUX.1-dev-8steps-lora.safetensors" in args.model_name:
-                latents = pipe(prompt=prompt, num_inference_steps=8, guidance_scale=3.5, output_type="latent").images
-            else: ## runwayml/stable-diffusion-v1-5 // mhdang/dpo // stabilityai/stable-diffusion-xl-base-1.0
-                latents = pipe(prompt=prompt, guidance_scale=7.5, num_inference_steps=args.num_inference_steps, output_type="latent").images
+            if reused_latent_file is not None:
+                loaded_latents = torch.load(reused_latent_file, map_location=device)
+                if isinstance(loaded_latents, (list, tuple)):
+                    latents = torch.stack([x.to(device) for x in loaded_latents])
+                else:
+                    latents = loaded_latents.to(device)
+            else:
+                if "dmd2_sdxl_4step_lora_fp16.safetensors" in args.model_name:
+                    latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, timesteps=[999, 749, 499, 249], output_type="latent").images
+                elif "dmd2_sdxl_1step_unet_fp16.bin" in args.model_name:
+                    latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[399], output_type="latent").images
+                elif "latent-consistency/lcm-lora-sdxl" in args.model_name:
+                    latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
+                elif "sdxl_lightning_4step_lora.safetensors" in args.model_name:
+                    latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
+                elif "Hyper-SDXL-1step-Unet.safetensors" in args.model_name:
+                    latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[800], output_type="latent").images
+                elif "Hyper-FLUX.1-dev-8steps-lora.safetensors" in args.model_name:
+                    latents = pipe(prompt=prompt, num_inference_steps=8, guidance_scale=3.5, output_type="latent").images
+                else: ## runwayml/stable-diffusion-v1-5 // mhdang/dpo // stabilityai/stable-diffusion-xl-base-1.0
+                    latents = pipe(prompt=prompt, guidance_scale=7.5, num_inference_steps=args.num_inference_steps, output_type="latent").images
 
             if "xl" in args.model_name or "XL" in args.model_name:
                 latents = latents.to(torch.float32)
 
             if "FLUX" in args.model_name:
-                latents = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
-                latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
+                latents_unpacked = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
+                latents_unpacked = (latents_unpacked / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
                 vae_batch_size = 1
                 decoded_chunks = []
-                for v_i in range(0, latents.shape[0], vae_batch_size):
-                    chunk = latents[v_i : v_i + vae_batch_size]
+                for v_i in range(0, latents_unpacked.shape[0], vae_batch_size):
+                    chunk = latents_unpacked[v_i : v_i + vae_batch_size]
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
-                images = torch.cat(decoded_chunks, dim=0)
-                images = pipe.image_processor.postprocess(images, output_type="pil")
+                decoded_tensor = torch.cat(decoded_chunks, dim=0)
+                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
-                images = pipe.vae.decode(scaled_latents, return_dict=False)[0]
-                images = pipe.image_processor.postprocess(images, output_type="pil")
+                decoded_tensor = pipe.vae.decode(scaled_latents, return_dict=False)[0]
+                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
 
         end_time = datetime.now()
         time_taken = end_time - start_time
 
-        results = do_eval(
-            prompt=prompt, images=images, metrics_to_compute=metrics_to_compute
-        )
+        if getattr(args, "use_smoothing", False):
+            # Randomized Smoothing: Monte Carlo expectation E[R(x + eps)] over M noisy samples
+            mc_evals = {metric: [] for metric in metrics_to_compute}
+            with torch.inference_mode():
+                for m_idx in range(args.num_mc_samples):
+                    if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                        noisy_lat = scaled_latents + torch.randn_like(scaled_latents) * args.sigma
+                        noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
+                    else:
+                        if args.sigma > 0:
+                            noisy_t = (decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0)
+                        else:
+                            noisy_t = decoded_tensor.clamp(-1.0, 1.0)
+                    noisy_pil = pipe.image_processor.postprocess(noisy_t, output_type="pil")
+                    eval_m = do_eval(prompt=prompt, images=noisy_pil, metrics_to_compute=metrics_to_compute)
+                    for metric in metrics_to_compute:
+                        mc_evals[metric].append(eval_m[metric]["result"])
+
+            results = {}
+            for metric in metrics_to_compute:
+                smoothed_scores = np.mean(mc_evals[metric], axis=0).tolist()
+                scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
+                results[metric] = {
+                    "result": smoothed_scores,
+                    "mean": scores_arr.mean().item(),
+                    "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
+                    "max": scores_arr.max().item(),
+                    "min": scores_arr.min().item(),
+                }
+            images = clean_images
+        else:
+            images = clean_images
+            results = do_eval(
+                prompt=prompt, images=images, metrics_to_compute=metrics_to_compute
+            )
 
         results["time_taken"] = time_taken.total_seconds()
         results["prompt"] = prompt
         results["prompt_index"] = prompt_idx
+        if getattr(args, "use_smoothing", False):
+            results["smoothing"] = {
+                "enabled": True,
+                "sigma": args.sigma,
+                "num_mc_samples": args.num_mc_samples,
+                "domain": args.smoothing_domain,
+                "reused_latents_from": reused_latent_file,
+            }
 
         n_samples += 1
         average_time += time_taken.total_seconds()
@@ -407,8 +472,21 @@ def get_args():
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID to run on (e.g. 0 or 1)")
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
+    parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
+    parser.add_argument("--use_smoothing", action="store_true", default=False, help="Enable Randomized Smoothing for Phase 1 lookahead rewards")
+    parser.add_argument("--sigma", type=float, default=0.25, help="Gaussian noise standard deviation for Randomized Smoothing (default: 0.25)")
+    parser.add_argument("--num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M to compute expected reward (default: 4)")
+    parser.add_argument("--M", type=int, default=None, help="Alias for --num_mc_samples")
+    parser.add_argument("--smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
+    parser.add_argument("--reuse_latents_from", type=str, default="100_50_5", help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
+    parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
+    parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
     args = parser.parse_args()
 
+    if args.M is not None:
+        args.num_mc_samples = args.M
+    if args.no_reuse_latents:
+        args.reuse_latents_from = None
 
     return args
 

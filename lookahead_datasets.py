@@ -45,7 +45,12 @@ def init_tokenizer():
 class gen_lookahead_samples(Dataset):
     def __init__(self, directory, top_k):
         print("top_k:", top_k)
-        self.dataset_path = f"Lookahead_samples/{directory}"
+        if os.path.isabs(directory) or os.path.exists(directory):
+            self.dataset_path = directory
+        elif os.path.exists(f"Lookahead_samples/{directory}"):
+            self.dataset_path = f"Lookahead_samples/{directory}"
+        else:
+            self.dataset_path = f"Lookahead_samples/{directory}"
         data = {}
         if os.path.exists(self.dataset_path):
             prompt_dirs = sorted([d for d in os.listdir(self.dataset_path) if os.path.isdir(os.path.join(self.dataset_path, d)) and d.isdigit()])
@@ -58,7 +63,11 @@ class gen_lookahead_samples(Dataset):
                     latent = torch.load(latent_path, map_location="cpu")
                     with open(results_path, "r") as f:
                         label = json.load(f)
-                    reward = label["ImageReward"]["result"]
+                    if "ImageReward" in label and "result" in label["ImageReward"]:
+                        reward = label["ImageReward"]["result"]
+                    else:
+                        first_metric = [k for k in label.keys() if isinstance(label[k], dict) and "result" in label[k]]
+                        reward = label[first_metric[0]]["result"] if first_metric else [0.0] * len(latent)
                     prompt = label["prompt"]
 
                     random.seed(42)
