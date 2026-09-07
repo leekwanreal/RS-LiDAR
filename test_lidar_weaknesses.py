@@ -141,9 +141,15 @@ def do_pickscore(images, prompts, device="cuda"):
         with torch.no_grad():
             image_embs = pick_model.get_image_features(pixel_values=inputs["pixel_values"])
             image_embs = image_embs / torch.norm(image_embs, dim=-1, keepdim=True)
-            text_embs = pick_model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
-            text_embs = text_embs / torch.norm(text_embs, dim=-1, keepdim=True)
-            scores = (pick_model.logit_scale.exp() * torch.sum(text_embs * image_embs, dim=-1)).cpu().tolist()
+            # Tối ưu: Nếu toàn bộ prompts giống nhau, chỉ encode text 1 lần duy nhất rồi broadcast
+            if len(prompts) > 0 and len(set(prompts)) == 1:
+                text_embs = pick_model.get_text_features(input_ids=inputs["input_ids"][:1], attention_mask=inputs["attention_mask"][:1])
+                text_embs = text_embs / torch.norm(text_embs, dim=-1, keepdim=True)
+                scores = (pick_model.logit_scale.exp() * torch.sum(text_embs * image_embs, dim=-1)).cpu().tolist()
+            else:
+                text_embs = pick_model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
+                text_embs = text_embs / torch.norm(text_embs, dim=-1, keepdim=True)
+                scores = (pick_model.logit_scale.exp() * torch.sum(text_embs * image_embs, dim=-1)).cpu().tolist()
         return scores
     except Exception as e:
         print(f" ⚠️ Lỗi tính PickScore: {e}")
@@ -417,11 +423,20 @@ def run_test_1_solver_robustness(
             else:
                 r_5step_as_raw, r_50step_as_raw = None, None
 
-            # 5. PickScore thô
+            # 5. PickScore thô (chấm trọn bộ 40 ảnh DPM-5 và DDIM-50 trong 1 lượt GPU duy nhất)
             if do_pickscore is not None:
                 try:
-                    r_5step_pick_raw = np.array(do_pickscore(images=img_5step, prompts=[prompt] * num_particles, device=device))
-                    r_50step_pick_raw = np.array(do_pickscore(images=img_50step, prompts=[prompt] * num_particles, device=device))
+                    all_pick_raw = do_pickscore(
+                        images=list(img_5step) + list(img_50step),
+                        prompts=[prompt] * (len(img_5step) + len(img_50step)),
+                        device=device
+                    )
+                    if all_pick_raw is not None and len(all_pick_raw) == (len(img_5step) + len(img_50step)):
+                        r_5step_pick_raw = np.array(all_pick_raw[:len(img_5step)])
+                        r_50step_pick_raw = np.array(all_pick_raw[len(img_5step):])
+                    else:
+                        r_5step_pick_raw = np.array(do_pickscore(images=img_5step, prompts=[prompt] * num_particles, device=device))
+                        r_50step_pick_raw = np.array(do_pickscore(images=img_50step, prompts=[prompt] * num_particles, device=device))
                 except Exception:
                     r_5step_pick_raw, r_50step_pick_raw = None, None
                 if torch.cuda.is_available():
@@ -505,11 +520,21 @@ def run_test_1_solver_robustness(
                     except Exception:
                         pass
 
-                # PickScore
+                # PickScore (chấm đồng thời trọn bộ 40 ảnh noisy của DPM-5 và DDIM-50 trong 1 lượt GPU)
                 if do_pickscore is not None and r_5step_pick_raw is not None:
                     try:
-                        r_5_pick_smooth.append(do_pickscore(images=noisy_img_5, prompts=[prompt] * num_particles, device=device))
-                        r_50_pick_smooth.append(do_pickscore(images=noisy_img_50, prompts=[prompt] * num_particles, device=device))
+                        all_noisy_imgs = list(noisy_img_5) + list(noisy_img_50)
+                        all_pick_batch = do_pickscore(
+                            images=all_noisy_imgs,
+                            prompts=[prompt] * len(all_noisy_imgs),
+                            device=device
+                        )
+                        if all_pick_batch is not None and len(all_pick_batch) == len(all_noisy_imgs):
+                            r_5_pick_smooth.append(all_pick_batch[:len(noisy_img_5)])
+                            r_50_pick_smooth.append(all_pick_batch[len(noisy_img_5):])
+                        else:
+                            r_5_pick_smooth.append(do_pickscore(images=noisy_img_5, prompts=[prompt] * num_particles, device=device))
+                            r_50_pick_smooth.append(do_pickscore(images=noisy_img_50, prompts=[prompt] * num_particles, device=device))
                     except Exception:
                         pass
 
