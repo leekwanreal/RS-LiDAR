@@ -37,3 +37,6 @@ Target_samples/
 .env
 test_results_analyzed/
 backup/
+results/
+txt/
+pdf/
