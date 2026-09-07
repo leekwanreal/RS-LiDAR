@@ -71,75 +71,64 @@ Toàn bộ dữ liệu đo đạc thực nghiệm độc lập từ trọn bộ 
 ### 📋 BẢNG 1.1: TEST 1 - MÔ HÌNH IMAGEREWARD (BLIP-BASED TEXT-IMAGE ALIGNMENT)
 *Mô hình phần thưởng chính thức của bài báo LiDAR gốc, đánh giá độ khớp văn bản và chất lượng chi tiết.*
 
-| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
-| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **0.00 (LiDAR Gốc)** | 0.6622 | Baseline | 0.3116 | Baseline | Không bị chặn ($\infty$) | Độ dốc bùng nổ, rank inversion nghiêm trọng |
-| **0.05** | 0.6498 | -1.9% | 0.3284 | +5.4% | $\le 28.60$ | Bắt đầu triệt tiêu gai nhọn gradient |
-| **0.10** | 0.6446 | -2.7% | 0.3495 | +12.2% | $\le 29.20$ | Lọc nhiễu tần số cao tốt |
-| **0.15** | 0.6456 | -2.5% | 0.3589 | +15.2% | $\le 29.25$ | Tương quan thứ bậc tăng đều |
-| **0.25 (Sweet Spot)** | **0.6322** | **-4.5% (Tốt nhất)** | 0.3389 | +8.8% | $\le 29.50$ | **Sai số bộ giải thấp nhất toàn bộ khảo sát** |
-| **0.50** | 0.6394 | -3.4% | **0.3653** | **+17.2% (Đỉnh cao)** | $\le 28.69$ | Bảo toàn rank hạt xuất sắc |
-| **1.00 (Boundary)** | 0.6521 | -1.5% | **0.3653** | **+17.2% (Đỉnh cao)** | $\le 26.53$ | Ranh giới kiểm tra độ bền vững |
+| Tiêu Chí / Metric | $\sigma = 0.00$ (LiDAR) | $\sigma = 0.05$ | $\sigma = 0.10$ | $\sigma = 0.15$ | $\sigma = 0.25$ (Sweet Spot) | $\sigma = 0.50$ | $\sigma = 1.00$ (Boundary) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sai số phần thưởng $\|\Delta r\|$ ↓** | 0.6622 | 0.6498 | 0.6446 | 0.6456 | **0.6322** *(thấp nhất)* | 0.6394 | 0.6521 |
+| **So với LiDAR gốc (%)** | Baseline | -1.9% | -2.7% | -2.5% | **-4.5%** | -3.4% | -1.5% |
+| **Hệ số tương quan Kendall $\tau$ ↑** | 0.3116 | 0.3284 | 0.3495 | 0.3589 | 0.3389 | **0.3653** *(đỉnh)* | **0.3653** *(đỉnh)* |
+| **Tăng trưởng rank $\tau$ (%)** | Baseline | +5.4% | +12.2% | +15.2% | +8.8% | **+17.2%** | **+17.2%** |
+| **Chặn Lipschitz $L_\sigma$ (Theorem 1)** | $\infty$ *(Không chặn)* | $\le 28.60$ | $\le 29.20$ | $\le 29.25$ | $\le 29.50$ | $\le 28.69$ | $\le 26.53$ |
 
 ---
 
 ### 📋 BẢNG 1.2: TEST 1 - MÔ HÌNH OPENAI CLIP-SCORE (ViT-L/14 MULTIMODAL SIMILARITY)
 *Mô hình đo lường khoảng cách ngữ nghĩa giữa prompt văn bản và embedding ảnh đa chiều.*
 
-| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
-| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **0.00 (LiDAR Gốc)** | 0.0211 | Baseline | 0.1041 | Baseline | Không bị chặn ($\infty$) | $\tau$ sụp đổ thảm hại về 0.10, mất phương hướng |
-| **0.05** | 0.0215 | +1.9% | 0.1988 | **+90.9%** | $\le 0.94$ | **Tăng vọt gần gấp đôi ngay mức nhiễu vi mô** |
-| **0.10** | 0.0219 | +3.8% | 0.2056 | **+97.5%** | $\le 0.92$ | Độ tương quan thứ bậc khôi phục mạnh mẽ |
-| **0.15** | 0.0222 | +5.2% | 0.1764 | +69.5% | $\le 0.91$ | Duy trì bảo vệ rank cao |
-| **0.25** | 0.0217 | +2.8% | 0.1459 | +40.2% | $\le 0.89$ | Giữ độ tương quan ổn định |
-| **0.50** | 0.0216 | +2.4% | 0.1526 | +46.6% | $\le 0.87$ | Kháng xáo trộn thứ tự hạt |
-| **1.00 (Boundary)** | 0.0223 | +5.7% | **0.2135** | **+105.1% (Đỉnh cao)** | $\le 0.84$ | **Tăng hơn gấp đôi (+105.1%) so với LiDAR gốc** |
+| Tiêu Chí / Metric | $\sigma = 0.00$ (LiDAR) | $\sigma = 0.05$ | $\sigma = 0.10$ | $\sigma = 0.15$ | $\sigma = 0.25$ | $\sigma = 0.50$ | $\sigma = 1.00$ (Boundary) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sai số phần thưởng $\|\Delta r\|$ ↓** | 0.0211 | 0.0215 | 0.0219 | 0.0222 | 0.0217 | 0.0216 | 0.0223 |
+| **Hệ số tương quan Kendall $\tau$ ↑** | 0.1041 | 0.1988 | 0.2056 | 0.1764 | 0.1459 | 0.1526 | **0.2135** *(đỉnh)* |
+| **Tăng trưởng rank $\tau$ (%)** | Baseline | **+90.9%** | **+97.5%** | +69.5% | +40.2% | +46.6% | **+105.1% (Gấp đôi)** |
+| **Chặn Lipschitz $L_\sigma$ (Theorem 1)** | $\infty$ *(Không chặn)* | $\le 0.94$ | $\le 0.92$ | $\le 0.91$ | $\le 0.89$ | $\le 0.87$ | $\le 0.84$ |
 
 ---
 
 ### 📋 BẢNG 1.3: TEST 1 - MÔ HÌNH HUMAN PREFERENCE SCORE v2.1 (HPS v2.1)
 *Mô hình OpenCLIP ViT-H/14 huấn luyện trên tập dữ liệu HPD v2 gồm 800K cặp so sánh thị hiếu của con người.*
 
-| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
-| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **0.00 (LiDAR Gốc)** | 0.0296 | Baseline | 0.3395 | Baseline | Không bị chặn ($\infty$) | Thẩm mỹ người dùng bị nhiễu do DPM-5 |
-| **0.05** | 0.0275 | -7.0% | 0.3577 | +5.4% | $\le 0.86$ | Giảm sai số thẩm mỹ ngay lập tức |
-| **0.10** | 0.0286 | -3.4% | 0.3823 | +12.6% | $\le 0.85$ | Khôi phục tương quan thị hiếu người dùng |
-| **0.15** | 0.0284 | -4.1% | 0.3745 | +10.3% | $\le 0.85$ | Duy trì thứ hạng ổn định |
-| **0.25 (Sweet Spot)** | 0.0277 | -6.4% | **0.3964** | **+16.8% (Đỉnh cao)** | $\le 0.84$ | **Tương quan rank đạt cực đại sát 0.40** |
-| **0.50** | 0.0268 | -9.5% | 0.3619 | +6.6% | $\le 0.82$ | Giảm sai số liên tục |
-| **1.00 (Boundary)** | **0.0236** | **-20.3% (Tốt nhất)** | 0.3274 | -3.6% | $\le 0.79$ | **Sai số thẩm mỹ giảm sâu hơn 20%** |
+| Tiêu Chí / Metric | $\sigma = 0.00$ (LiDAR) | $\sigma = 0.05$ | $\sigma = 0.10$ | $\sigma = 0.15$ | $\sigma = 0.25$ (Sweet Spot) | $\sigma = 0.50$ | $\sigma = 1.00$ (Boundary) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sai số phần thưởng $\|\Delta r\|$ ↓** | 0.0296 | 0.0275 | 0.0286 | 0.0284 | 0.0277 | 0.0268 | **0.0236** *(thấp nhất)* |
+| **So với LiDAR gốc (%)** | Baseline | -7.0% | -3.4% | -4.1% | -6.4% | -9.5% | **-20.3% (Sâu nhất)** |
+| **Hệ số tương quan Kendall $\tau$ ↑** | 0.3395 | 0.3577 | 0.3823 | 0.3745 | **0.3964** *(đỉnh)* | 0.3619 | 0.3274 |
+| **Tăng trưởng rank $\tau$ (%)** | Baseline | +5.4% | +12.6% | +10.3% | **+16.8%** | +6.6% | -3.6% |
+| **Chặn Lipschitz $L_\sigma$ (Theorem 1)** | $\infty$ *(Không chặn)* | $\le 0.86$ | $\le 0.85$ | $\le 0.85$ | $\le 0.84$ | $\le 0.82$ | $\le 0.79$ |
 
 ---
 
 ### 📋 BẢNG 1.4: TEST 1 - MÔ HÌNH LAION AESTHETIC SCORE PREDICTOR
 *Mô hình MLP tuyến tính trên CLIP ViT-L/14 dự đoán điểm thẩm mỹ hội họa và bố cục thị giác.*
 
-| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
-| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **0.00 (LiDAR Gốc)** | 0.2558 | Baseline | 0.1863 | Baseline | Không bị chặn ($\infty$) | Rank Aesthetic rất thấp ($\tau < 0.19$) |
-| **0.05** | **0.2537** | **-0.8% (Tốt nhất)** | 0.1989 | +6.8% | $\le 7.91$ | Sai số bộ giải thấp nhất |
-| **0.10** | 0.2571 | +0.5% | 0.2368 | +27.1% | $\le 7.85$ | Rank thẩm mỹ tăng mạnh |
-| **0.15** | 0.2647 | +3.5% | 0.2621 | +40.7% | $\le 7.80$ | Thứ bậc các hạt mượt mà rõ rệt |
-| **0.25 (Sweet Spot)** | 0.2767 | +8.2% | **0.2684** | **+44.1% (Đỉnh cao)** | $\le 7.75$ | **Tương quan điểm thẩm mỹ tăng tới +44%** |
-| **0.50** | 0.2865 | +12.0% | 0.2674 | +43.5% | $\le 7.68$ | Ổn định ở mức tương quan cao |
-| **1.00 (Boundary)** | 0.2781 | +8.7% | 0.2432 | +30.5% | $\le 7.50$ | Giữ vững tương quan vượt trội LiDAR gốc |
+| Tiêu Chí / Metric | $\sigma = 0.00$ (LiDAR) | $\sigma = 0.05$ | $\sigma = 0.10$ | $\sigma = 0.15$ | $\sigma = 0.25$ (Sweet Spot) | $\sigma = 0.50$ | $\sigma = 1.00$ (Boundary) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sai số phần thưởng $\|\Delta r\|$ ↓** | 0.2558 | **0.2537** *(thấp nhất)* | 0.2571 | 0.2647 | 0.2767 | 0.2865 | 0.2781 |
+| **So với LiDAR gốc (%)** | Baseline | **-0.8%** | +0.5% | +3.5% | +8.2% | +12.0% | +8.7% |
+| **Hệ số tương quan Kendall $\tau$ ↑** | 0.1863 | 0.1989 | 0.2368 | 0.2621 | **0.2684** *(đỉnh)* | 0.2674 | 0.2432 |
+| **Tăng trưởng rank $\tau$ (%)** | Baseline | +6.8% | +27.1% | +40.7% | **+44.1%** | +43.5% | +30.5% |
+| **Chặn Lipschitz $L_\sigma$ (Theorem 1)** | $\infty$ *(Không chặn)* | $\le 7.91$ | $\le 7.85$ | $\le 7.80$ | $\le 7.75$ | $\le 7.68$ | $\le 7.50$ |
 
 ---
 
-### 📋 BẢNG 1.5: TEST 1 - MÔ HÌNH PICKSCORE (HUMAN PREFERENCE TEXT-IMAGE ViT-H/14)
+### 📋 BẢNG 1.5: TEST 1 - MÔ HÌNH PICKSCORE (ViT-H/14)
 *Mô hình fine-tuned quy mô lớn ViT-H/14 chuyên biệt cho bài toán xếp hạng ảnh theo lựa chọn của người dùng.*
 
-| Mức $\sigma$ | Sai Số Bộ Giải $\|\Delta r\|$ ↓ | So Với LiDAR Gốc (%) | Kendall $\tau$ ↑ | Tăng Trưởng Rank (%) | Chặn Lipschitz $L_\sigma$ | Nhận Xét Khoa Học |
-| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **0.00 (LiDAR Gốc)** | 0.9218 | Baseline | 0.2474 | Baseline | Không bị chặn ($\infty$) | Mô hình PickScore tỷ tham số chịu xáo trộn |
-| **0.05** | 0.9345 | +1.4% | **0.2747** | **+11.1% (Đỉnh cao)** | $\le 27.86$ | **Đạt đỉnh bảo toàn thứ hạng rank PickScore** |
-| **0.10** | 0.9304 | +0.9% | 0.2558 | +3.4% | $\le 27.50$ | Ổn định hơn LiDAR gốc |
-| **0.15** | 0.9158 | -0.7% | 0.2453 | -0.9% | $\le 27.20$ | Bắt đầu kéo giảm sai số |
-| **0.25** | 0.8797 | -4.6% | 0.2442 | -1.3% | $\le 26.80$ | Sai số giảm rõ nét |
-| **0.50** | 0.8385 | -9.0% | 0.2432 | -1.7% | $\le 26.10$ | Giảm mạnh sai số dự đoán |
-| **1.00 (Boundary)** | **0.7497** | **-18.7% (Tốt nhất)** | 0.2253 | -8.9% | $\le 25.00$ | **Sai số PickScore giảm cực sâu (-18.7%)** |
+| Tiêu Chí / Metric | $\sigma = 0.00$ (LiDAR) | $\sigma = 0.05$ | $\sigma = 0.10$ | $\sigma = 0.15$ | $\sigma = 0.25$ | $\sigma = 0.50$ | $\sigma = 1.00$ (Boundary) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Sai số phần thưởng $\|\Delta r\|$ ↓** | 0.9218 | 0.9345 | 0.9304 | 0.9158 | 0.8797 | 0.8385 | **0.7497** *(thấp nhất)* |
+| **So với LiDAR gốc (%)** | Baseline | +1.4% | +0.9% | -0.7% | -4.6% | -9.0% | **-18.7% (Sâu nhất)** |
+| **Hệ số tương quan Kendall $\tau$ ↑** | 0.2474 | **0.2747** *(đỉnh)* | 0.2558 | 0.2453 | 0.2442 | 0.2432 | 0.2253 |
+| **Tăng trưởng rank $\tau$ (%)** | Baseline | **+11.1%** | +3.4% | -0.9% | -1.3% | -1.7% | -8.9% |
+| **Chặn Lipschitz $L_\sigma$ (Theorem 1)** | $\infty$ *(Không chặn)* | $\le 27.86$ | $\le 27.50$ | $\le 27.20$ | $\le 26.80$ | $\le 26.10$ | $\le 25.00$ |
 
 ---
 
