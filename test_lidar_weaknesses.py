@@ -95,15 +95,59 @@ except ImportError:
         import ImageReward as RM
         rm_load = RM.load
 
-# Multi-metric reward scorers (CLIP-Score & HPS v2.1)
+# Multi-metric reward scorers (CLIP-Score, HPS v2.1, Aesthetic Score & PickScore)
 try:
-    from fkd_diffusers.rewards import do_clip_score, do_human_preference_score
+    from fkd_diffusers.rewards import do_clip_score, do_human_preference_score, do_AS
 except ImportError:
     try:
-        from rewards import do_clip_score, do_human_preference_score
+        from rewards import do_clip_score, do_human_preference_score, do_AS
     except ImportError:
         do_clip_score = None
         do_human_preference_score = None
+        do_AS = None
+
+pick_processor = None
+pick_model = None
+
+def load_pickscore_model(device="cuda"):
+    global pick_processor, pick_model
+    try:
+        from transformers import AutoProcessor, AutoModel
+        print(" 📥 Đang nạp mô hình PickScore (yuvalkirstain/PickScore_v1)...")
+        pick_processor = AutoProcessor.from_pretrained("yuvalkirstain/PickScore_v1")
+        pick_model = AutoModel.from_pretrained("yuvalkirstain/PickScore_v1").to(device).eval()
+        print(" ✅ [PickScore] Đã sẵn sàng!")
+        return True
+    except Exception as e:
+        print(f" ⚠️ Không thể nạp PickScore: {e}")
+        pick_processor, pick_model = None, None
+        return False
+
+def do_pickscore(images, prompts, device="cuda"):
+    global pick_processor, pick_model
+    if pick_processor is None or pick_model is None:
+        return None
+    if isinstance(prompts, str):
+        prompts = [prompts] * len(images)
+    try:
+        inputs = pick_processor(
+            images=images,
+            text=prompts,
+            padding=True,
+            truncation=True,
+            max_length=77,
+            return_tensors="pt"
+        ).to(device)
+        with torch.no_grad():
+            image_embs = pick_model.get_image_features(pixel_values=inputs["pixel_values"])
+            image_embs = image_embs / torch.norm(image_embs, dim=-1, keepdim=True)
+            text_embs = pick_model.get_text_features(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
+            text_embs = text_embs / torch.norm(text_embs, dim=-1, keepdim=True)
+            scores = (pick_model.logit_scale.exp() * torch.sum(text_embs * image_embs, dim=-1)).cpu().tolist()
+        return scores
+    except Exception as e:
+        print(f" ⚠️ Lỗi tính PickScore: {e}")
+        return None
 
 
 def load_geneval_prompts(prompt_path="prompt_files/geneval_metadata.jsonl", max_prompts=-1, seed=42):
@@ -247,6 +291,14 @@ def run_test_1_solver_robustness(
     delta_hps_ours_list = []
     kendall_hps_lidar_list = []
     kendall_hps_ours_list = []
+    delta_as_lidar_list = []
+    delta_as_ours_list = []
+    kendall_as_lidar_list = []
+    kendall_as_ours_list = []
+    delta_pick_lidar_list = []
+    delta_pick_ours_list = []
+    kendall_pick_lidar_list = []
+    kendall_pick_ours_list = []
     start_local_idx = 0
 
     # Dữ liệu cho khảo sát Ablation Sigma
@@ -255,7 +307,9 @@ def run_test_1_solver_robustness(
         sig: {
             "delta_ir": [], "kendall_ir": [],
             "delta_clip": [], "kendall_clip": [],
-            "delta_hps": [], "kendall_hps": []
+            "delta_hps": [], "kendall_hps": [],
+            "delta_as": [], "kendall_as": [],
+            "delta_pick": [], "kendall_pick": []
         } for sig in active_sigmas
     }
 
@@ -277,6 +331,14 @@ def run_test_1_solver_robustness(
                 delta_hps_ours_list = ckpt.get("delta_hps_ours", [])
                 kendall_hps_lidar_list = ckpt.get("kendall_hps_lidar", [])
                 kendall_hps_ours_list = ckpt.get("kendall_hps_ours", [])
+                delta_as_lidar_list = ckpt.get("delta_as_lidar", [])
+                delta_as_ours_list = ckpt.get("delta_as_ours", [])
+                kendall_as_lidar_list = ckpt.get("kendall_as_lidar", [])
+                kendall_as_ours_list = ckpt.get("kendall_as_ours", [])
+                delta_pick_lidar_list = ckpt.get("delta_pick_lidar", [])
+                delta_pick_ours_list = ckpt.get("delta_pick_ours", [])
+                kendall_pick_lidar_list = ckpt.get("kendall_pick_lidar", [])
+                kendall_pick_ours_list = ckpt.get("kendall_pick_ours", [])
                 start_local_idx = ckpt.get("processed_prompts", 0)
                 print(f"🔄 Shard {shard_id}: Đã khôi phục từ Checkpoint! Tiếp tục từ prompt thứ {start_local_idx + 1}/{len(prompt_slice)}...")
         except Exception as e:
@@ -325,12 +387,39 @@ def run_test_1_solver_robustness(
 
             # 3. HPS v2.1 thô
             if do_human_preference_score is not None:
-                r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
-                r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
+                try:
+                    r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
+                    r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
+                except Exception:
+                    r_5step_hps_raw, r_50step_hps_raw = None, None
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             else:
                 r_5step_hps_raw, r_50step_hps_raw = None, None
+
+            # 4. Aesthetic Score thô
+            if do_AS is not None:
+                try:
+                    r_5step_as_raw = np.array(do_AS(images=img_5step, prompts=[prompt] * num_particles))
+                    r_50step_as_raw = np.array(do_AS(images=img_50step, prompts=[prompt] * num_particles))
+                except Exception:
+                    r_5step_as_raw, r_50step_as_raw = None, None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                r_5step_as_raw, r_50step_as_raw = None, None
+
+            # 5. PickScore thô
+            if do_pickscore is not None:
+                try:
+                    r_5step_pick_raw = np.array(do_pickscore(images=img_5step, prompts=[prompt] * num_particles, device=device))
+                    r_50step_pick_raw = np.array(do_pickscore(images=img_50step, prompts=[prompt] * num_particles, device=device))
+                except Exception:
+                    r_5step_pick_raw, r_50step_pick_raw = None, None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            else:
+                r_5step_pick_raw, r_50step_pick_raw = None, None
 
         # 1. LiDAR Gốc (sigma = 0): Chấm điểm thô trực tiếp
         delta_r_lidar_list.extend(np.abs(r_5step_ir_raw - r_50step_ir_raw).tolist())
@@ -342,20 +431,32 @@ def run_test_1_solver_robustness(
             t_c_l, _ = scipy.stats.kendalltau(r_5step_clip_raw, r_50step_clip_raw)
             if not np.isnan(t_c_l): kendall_clip_lidar_list.append(t_c_l)
 
-        if r_5step_hps_raw is not None:
+        if r_5step_hps_raw is not None and not np.all(r_5step_hps_raw == 0.0):
             delta_hps_lidar_list.extend(np.abs(r_5step_hps_raw - r_50step_hps_raw).tolist())
             t_h_l, _ = scipy.stats.kendalltau(r_5step_hps_raw, r_50step_hps_raw)
             if not np.isnan(t_h_l): kendall_hps_lidar_list.append(t_h_l)
 
+        if r_5step_as_raw is not None and not np.all(r_5step_as_raw == 0.0):
+            delta_as_lidar_list.extend(np.abs(r_5step_as_raw - r_50step_as_raw).tolist())
+            t_a_l, _ = scipy.stats.kendalltau(r_5step_as_raw, r_50step_as_raw)
+            if not np.isnan(t_a_l): kendall_as_lidar_list.append(t_a_l)
+
+        if r_5step_pick_raw is not None and not np.all(r_5step_pick_raw == 0.0):
+            delta_pick_lidar_list.extend(np.abs(r_5step_pick_raw - r_50step_pick_raw).tolist())
+            t_p_l, _ = scipy.stats.kendalltau(r_5step_pick_raw, r_50step_pick_raw)
+            if not np.isnan(t_p_l): kendall_pick_lidar_list.append(t_p_l)
+
         # 2. Phương pháp của Bạn: Quét qua danh sách active_sigmas để khảo sát Ablation với M=4
         M_sweep = 4
         total_eval_steps = len(active_sigmas) * M_sweep
-        pbar_eval = tqdm(total=total_eval_steps, desc=f"  ↳ Chấm điểm đa mô hình (IR, CLIP, HPS) [{p_local_idx + 1}/{len(prompt_slice)}]", leave=False)
+        pbar_eval = tqdm(total=total_eval_steps, desc=f"  ↳ Chấm điểm đa mô hình (IR, CLIP, HPS, AS, Pick) [{p_local_idx + 1}/{len(prompt_slice)}]", leave=False)
 
         for current_sig in active_sigmas:
             r_5_ir_smooth, r_50_ir_smooth = [], []
             r_5_clip_smooth, r_50_clip_smooth = [], []
             r_5_hps_smooth, r_50_hps_smooth = [], []
+            r_5_as_smooth, r_50_as_smooth = [], []
+            r_5_pick_smooth, r_50_pick_smooth = [], []
 
             for _ in range(M_sweep):
                 # Image-Space Randomized Smoothing: Cộng nhiễu trực tiếp lên tensor ảnh [-1.0, 1.0]
@@ -372,9 +473,28 @@ def run_test_1_solver_robustness(
                     r_50_clip_smooth.append(do_clip_score(images=noisy_img_50, prompts=[prompt] * num_particles))
 
                 # HPS v2.1
-                if do_human_preference_score is not None:
-                    r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
-                    r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
+                if do_human_preference_score is not None and r_5step_hps_raw is not None:
+                    try:
+                        r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
+                        r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
+                    except Exception:
+                        pass
+
+                # Aesthetic Score
+                if do_AS is not None and r_5step_as_raw is not None:
+                    try:
+                        r_5_as_smooth.append(do_AS(images=noisy_img_5, prompts=[prompt] * num_particles))
+                        r_50_as_smooth.append(do_AS(images=noisy_img_50, prompts=[prompt] * num_particles))
+                    except Exception:
+                        pass
+
+                # PickScore
+                if do_pickscore is not None and r_5step_pick_raw is not None:
+                    try:
+                        r_5_pick_smooth.append(do_pickscore(images=noisy_img_5, prompts=[prompt] * num_particles, device=device))
+                        r_50_pick_smooth.append(do_pickscore(images=noisy_img_50, prompts=[prompt] * num_particles, device=device))
+                    except Exception:
+                        pass
 
                 del noisy_img_5, noisy_img_50
                 if torch.cuda.is_available():
@@ -405,6 +525,22 @@ def run_test_1_solver_robustness(
                 sigma_sweep_data[current_sig]["delta_hps"].extend(d_hps)
                 if not np.isnan(t_hps): sigma_sweep_data[current_sig]["kendall_hps"].append(t_hps)
 
+            if r_5_as_smooth:
+                r_5_as_ours = np.mean(r_5_as_smooth, axis=0)
+                r_50_as_ours = np.mean(r_50_as_smooth, axis=0)
+                d_as = np.abs(r_5_as_ours - r_50_as_ours).tolist()
+                t_as, _ = scipy.stats.kendalltau(r_5_as_ours, r_50_as_ours)
+                sigma_sweep_data[current_sig]["delta_as"].extend(d_as)
+                if not np.isnan(t_as): sigma_sweep_data[current_sig]["kendall_as"].append(t_as)
+
+            if r_5_pick_smooth:
+                r_5_pick_ours = np.mean(r_5_pick_smooth, axis=0)
+                r_50_pick_ours = np.mean(r_50_pick_smooth, axis=0)
+                d_pick = np.abs(r_5_pick_ours - r_50_pick_ours).tolist()
+                t_pick, _ = scipy.stats.kendalltau(r_5_pick_ours, r_50_pick_ours)
+                sigma_sweep_data[current_sig]["delta_pick"].extend(d_pick)
+                if not np.isnan(t_pick): sigma_sweep_data[current_sig]["kendall_pick"].append(t_pick)
+
             # Cập nhật kết quả chính cho sigma mặc định
             if current_sig == sigma or (not delta_r_ours_list and current_sig == active_sigmas[0]):
                 delta_r_ours_list.extend(d_ir)
@@ -415,6 +551,12 @@ def run_test_1_solver_robustness(
                 if r_5_hps_smooth:
                     delta_hps_ours_list.extend(d_hps)
                     if not np.isnan(t_hps): kendall_hps_ours_list.append(t_hps)
+                if r_5_as_smooth:
+                    delta_as_ours_list.extend(d_as)
+                    if not np.isnan(t_as): kendall_as_ours_list.append(t_as)
+                if r_5_pick_smooth:
+                    delta_pick_ours_list.extend(d_pick)
+                    if not np.isnan(t_pick): kendall_pick_ours_list.append(t_pick)
 
         del img_tensor_5, img_tensor_50, img_5step, img_50step, latents_5step, latents_50step
         if torch.cuda.is_available():
@@ -439,6 +581,14 @@ def run_test_1_solver_robustness(
                 "delta_hps_ours": delta_hps_ours_list,
                 "kendall_hps_lidar": kendall_hps_lidar_list,
                 "kendall_hps_ours": kendall_hps_ours_list,
+                "delta_as_lidar": delta_as_lidar_list,
+                "delta_as_ours": delta_as_ours_list,
+                "kendall_as_lidar": kendall_as_lidar_list,
+                "kendall_as_ours": kendall_as_ours_list,
+                "delta_pick_lidar": delta_pick_lidar_list,
+                "delta_pick_ours": delta_pick_ours_list,
+                "kendall_pick_lidar": kendall_pick_lidar_list,
+                "kendall_pick_ours": kendall_pick_ours_list,
                 "sigma_sweep_data": sigma_sweep_data
             }, f)
 
@@ -454,13 +604,19 @@ def run_test_1_solver_robustness(
     ir_stats = calc_stats(delta_r_lidar_list, delta_r_ours_list, kendall_lidar_list, kendall_ours_list)
     clip_stats = calc_stats(delta_clip_lidar_list, delta_clip_ours_list, kendall_clip_lidar_list, kendall_clip_ours_list)
     hps_stats = calc_stats(delta_hps_lidar_list, delta_hps_ours_list, kendall_hps_lidar_list, kendall_hps_ours_list)
+    as_stats = calc_stats(delta_as_lidar_list, delta_as_ours_list, kendall_as_lidar_list, kendall_as_ours_list)
+    pick_stats = calc_stats(delta_pick_lidar_list, delta_pick_ours_list, kendall_pick_lidar_list, kendall_pick_ours_list)
 
-    print(f"\n📊 KẾT QUẢ BÀI TEST 1 [Shard {shard_id}] ĐA MÔ HÌNH REWARD:")
+    print(f"\n📊 KẾT QUẢ BÀI TEST 1 [Shard {shard_id}] ĐA MÔ HÌNH REWARD (5-BENCHMARK):")
     print(f" • [ImageReward]  |Δr|: {ir_stats['delta_lidar']:.4f} -> {ir_stats['delta_ours']:.4f} | tau: {ir_stats['tau_lidar']:.4f} -> {ir_stats['tau_ours']:.4f} | L_sigma <= {ir_stats['lipschitz_bound']:.2f}")
     if delta_clip_lidar_list:
         print(f" • [CLIP-Score]   |Δr|: {clip_stats['delta_lidar']:.4f} -> {clip_stats['delta_ours']:.4f} | tau: {clip_stats['tau_lidar']:.4f} -> {clip_stats['tau_ours']:.4f} | L_sigma <= {clip_stats['lipschitz_bound']:.2f}")
     if delta_hps_lidar_list:
         print(f" • [HPS v2.1]     |Δr|: {hps_stats['delta_lidar']:.4f} -> {hps_stats['delta_ours']:.4f} | tau: {hps_stats['tau_lidar']:.4f} -> {hps_stats['tau_ours']:.4f} | L_sigma <= {hps_stats['lipschitz_bound']:.2f}")
+    if delta_as_lidar_list:
+        print(f" • [Aesthetic]    |Δr|: {as_stats['delta_lidar']:.4f} -> {as_stats['delta_ours']:.4f} | tau: {as_stats['tau_lidar']:.4f} -> {as_stats['tau_ours']:.4f} | L_sigma <= {as_stats['lipschitz_bound']:.2f}")
+    if delta_pick_lidar_list:
+        print(f" • [PickScore]    |Δr|: {pick_stats['delta_lidar']:.4f} -> {pick_stats['delta_ours']:.4f} | tau: {pick_stats['tau_lidar']:.4f} -> {pick_stats['tau_ours']:.4f} | L_sigma <= {pick_stats['lipschitz_bound']:.2f}")
 
     # Tổng hợp bảng Ablation Study theo từng sigma
     ablation_summary = {}
@@ -468,10 +624,14 @@ def run_test_1_solver_robustness(
         s_ir = calc_stats(delta_r_lidar_list, s_data["delta_ir"], kendall_lidar_list, s_data["kendall_ir"])
         s_clip = calc_stats(delta_clip_lidar_list, s_data["delta_clip"], kendall_clip_lidar_list, s_data["kendall_clip"])
         s_hps = calc_stats(delta_hps_lidar_list, s_data["delta_hps"], kendall_hps_lidar_list, s_data["kendall_hps"])
+        s_as = calc_stats(delta_as_lidar_list, s_data["delta_as"], kendall_as_lidar_list, s_data["kendall_as"])
+        s_pick = calc_stats(delta_pick_lidar_list, s_data["delta_pick"], kendall_pick_lidar_list, s_data["kendall_pick"])
         ablation_summary[s_val] = {
             "ImageReward": s_ir,
             "CLIP-Score": s_clip,
             "HPS-v2.1": s_hps,
+            "Aesthetic": s_as,
+            "PickScore": s_pick,
             "lipschitz_bound": s_ir["lipschitz_bound"]
         }
 
@@ -485,13 +645,17 @@ def run_test_1_solver_robustness(
         "metrics": {
             "ImageReward": ir_stats,
             "CLIP-Score": clip_stats,
-            "HPS-v2.1": hps_stats
+            "HPS-v2.1": hps_stats,
+            "Aesthetic": as_stats,
+            "PickScore": pick_stats
         },
         "sigma_ablation": ablation_summary,
         "baseline_lidar": {
             "ImageReward": {"delta": float(np.mean(delta_r_lidar_list)) if delta_r_lidar_list else 0.0, "tau": float(np.mean(kendall_lidar_list)) if kendall_lidar_list else 0.0},
             "CLIP-Score": {"delta": float(np.mean(delta_clip_lidar_list)) if delta_clip_lidar_list else 0.0, "tau": float(np.mean(kendall_clip_lidar_list)) if kendall_clip_lidar_list else 0.0},
             "HPS-v2.1": {"delta": float(np.mean(delta_hps_lidar_list)) if delta_hps_lidar_list else 0.0, "tau": float(np.mean(kendall_hps_lidar_list)) if kendall_hps_lidar_list else 0.0},
+            "Aesthetic": {"delta": float(np.mean(delta_as_lidar_list)) if delta_as_lidar_list else 0.0, "tau": float(np.mean(kendall_as_lidar_list)) if kendall_as_lidar_list else 0.0},
+            "PickScore": {"delta": float(np.mean(delta_pick_lidar_list)) if delta_pick_lidar_list else 0.0, "tau": float(np.mean(kendall_pick_lidar_list)) if kendall_pick_lidar_list else 0.0}
         }
     }
 
@@ -1057,6 +1221,10 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             merged_kendall_clip_lidar, merged_kendall_clip_ours = [], []
             merged_delta_hps_lidar, merged_delta_hps_ours = [], []
             merged_kendall_hps_lidar, merged_kendall_hps_ours = [], []
+            merged_delta_as_lidar, merged_delta_as_ours = [], []
+            merged_kendall_as_lidar, merged_kendall_as_ours = [], []
+            merged_delta_pick_lidar, merged_delta_pick_ours = [], []
+            merged_kendall_pick_lidar, merged_kendall_pick_ours = [], []
 
             for ckpt_p in shard_ckpts:
                 try:
@@ -1075,6 +1243,14 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                         merged_delta_hps_ours.extend(c_data.get("delta_hps_ours", []))
                         merged_kendall_hps_lidar.extend(c_data.get("kendall_hps_lidar", []))
                         merged_kendall_hps_ours.extend(c_data.get("kendall_hps_ours", []))
+                        merged_delta_as_lidar.extend(c_data.get("delta_as_lidar", []))
+                        merged_delta_as_ours.extend(c_data.get("delta_as_ours", []))
+                        merged_kendall_as_lidar.extend(c_data.get("kendall_as_lidar", []))
+                        merged_kendall_as_ours.extend(c_data.get("kendall_as_ours", []))
+                        merged_delta_pick_lidar.extend(c_data.get("delta_pick_lidar", []))
+                        merged_delta_pick_ours.extend(c_data.get("delta_pick_ours", []))
+                        merged_kendall_pick_lidar.extend(c_data.get("kendall_pick_lidar", []))
+                        merged_kendall_pick_ours.extend(c_data.get("kendall_pick_ours", []))
                 except Exception:
                     pass
 
@@ -1091,6 +1267,8 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 ir_m = calc_merged_stats(merged_delta_lidar, merged_delta_ours, merged_kendall_lidar, merged_kendall_ours)
                 clip_m = calc_merged_stats(merged_delta_clip_lidar, merged_delta_clip_ours, merged_kendall_clip_lidar, merged_kendall_clip_ours)
                 hps_m = calc_merged_stats(merged_delta_hps_lidar, merged_delta_hps_ours, merged_kendall_hps_lidar, merged_kendall_hps_ours)
+                as_m = calc_merged_stats(merged_delta_as_lidar, merged_delta_as_ours, merged_kendall_as_lidar, merged_kendall_as_ours)
+                pick_m = calc_merged_stats(merged_delta_pick_lidar, merged_delta_pick_ours, merged_kendall_pick_lidar, merged_kendall_pick_ours)
 
                 res1 = {
                     "error_norms": merged_error_norms,
@@ -1102,7 +1280,9 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                     "metrics": {
                         "ImageReward": ir_m,
                         "CLIP-Score": clip_m,
-                        "HPS-v2.1": hps_m
+                        "HPS-v2.1": hps_m,
+                        "Aesthetic": as_m,
+                        "PickScore": pick_m
                     }
                 }
 
@@ -1555,9 +1735,11 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
     base_lidar = res1.get("baseline_lidar", {}) if res1 else {}
 
     if sigma_abl and len(sigma_abl) > 1:
-        # Kiểm tra xem CLIP và HPS có thực sự có dữ liệu hợp lệ không
+        # Kiểm tra xem CLIP, HPS, Aesthetic, PickScore có thực sự có dữ liệu hợp lệ không
         has_clip = any(s_dict.get("CLIP-Score", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
         has_hps = any(s_dict.get("HPS-v2.1", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
+        has_as = any(s_dict.get("Aesthetic", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
+        has_pick = any(s_dict.get("PickScore", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
         ent_by_sig = res2.get("entropy_ours_by_sigma", {}) if res2 else {}
         cos_by_sig = res3.get("cossim_ours_by_sigma", {}) if res3 else {}
         has_ent = bool(ent_by_sig)
@@ -1576,6 +1758,12 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
         if has_hps:
             r0["HPS v2.1 |Δr| ↓"] = f"{base_lidar.get('HPS-v2.1', {}).get('delta', 0.0):.4f}"
             r0["Kendall τ (HPS) ↑"] = f"{base_lidar.get('HPS-v2.1', {}).get('tau', 0.0):.4f}"
+        if has_as:
+            r0["Aesthetic |Δr| ↓"] = f"{base_lidar.get('Aesthetic', {}).get('delta', 0.0):.4f}"
+            r0["Kendall τ (AS) ↑"] = f"{base_lidar.get('Aesthetic', {}).get('tau', 0.0):.4f}"
+        if has_pick:
+            r0["PickScore |Δr| ↓"] = f"{base_lidar.get('PickScore', {}).get('delta', 0.0):.4f}"
+            r0["Kendall τ (Pick) ↑"] = f"{base_lidar.get('PickScore', {}).get('tau', 0.0):.4f}"
         if has_ent:
             e_lidar_m = float(np.mean(res2.get("entropy_lidar", [0.0])))
             r0["Test 2 Entropy ↑"] = f"{e_lidar_m:.2f} bits"
@@ -1613,6 +1801,14 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 hps_info = s_dict.get("HPS-v2.1", {})
                 row["HPS v2.1 |Δr| ↓"] = f"{hps_info.get('delta_ours', 0.0):.4f}"
                 row["Kendall τ (HPS) ↑"] = f"{hps_info.get('tau_ours', 0.0):.4f}"
+            if has_as:
+                as_info = s_dict.get("Aesthetic", {})
+                row["Aesthetic |Δr| ↓"] = f"{as_info.get('delta_ours', 0.0):.4f}"
+                row["Kendall τ (AS) ↑"] = f"{as_info.get('tau_ours', 0.0):.4f}"
+            if has_pick:
+                pick_info = s_dict.get("PickScore", {})
+                row["PickScore |Δr| ↓"] = f"{pick_info.get('delta_ours', 0.0):.4f}"
+                row["Kendall τ (Pick) ↑"] = f"{pick_info.get('tau_ours', 0.0):.4f}"
             if has_ent:
                 matched_ent = None
                 for ek, ev in ent_by_sig.items():
@@ -1658,9 +1854,13 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 metrics_to_plot.append(("CLIP-Score", "CLIP", "#E63946", "#1D3557"))
             if has_hps:
                 metrics_to_plot.append(("HPS-v2.1", "HPS", "#E63946", "#7209B7"))
+            if has_as:
+                metrics_to_plot.append(("Aesthetic", "AS", "#E63946", "#F4A261"))
+            if has_pick:
+                metrics_to_plot.append(("PickScore", "Pick", "#E63946", "#457B9D"))
 
             n_panels = len(metrics_to_plot)
-            fig_abl, axes_abl = plt.subplots(1, n_panels, figsize=(6.5 * n_panels, 5), squeeze=False)
+            fig_abl, axes_abl = plt.subplots(1, n_panels, figsize=(6.0 * n_panels, 5), squeeze=False)
 
             for p_idx, (m_key, m_short, col_err, col_tau) in enumerate(metrics_to_plot):
                 ax1 = axes_abl[0, p_idx]
@@ -1676,11 +1876,21 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                     tau_0 = float(abl_rows[0].get("Kendall τ (CLIP) ↑", 0.0))
                     err_pts = [err_0] + [float(sigma_abl[s]["CLIP-Score"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
                     tau_pts = [tau_0] + [float(sigma_abl[s]["CLIP-Score"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
-                else:
+                elif m_key == "HPS-v2.1":
                     err_0 = float(abl_rows[0].get("HPS v2.1 |Δr| ↓", 0.0))
                     tau_0 = float(abl_rows[0].get("Kendall τ (HPS) ↑", 0.0))
                     err_pts = [err_0] + [float(sigma_abl[s]["HPS-v2.1"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
                     tau_pts = [tau_0] + [float(sigma_abl[s]["HPS-v2.1"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                elif m_key == "Aesthetic":
+                    err_0 = float(abl_rows[0].get("Aesthetic |Δr| ↓", 0.0))
+                    tau_0 = float(abl_rows[0].get("Kendall τ (AS) ↑", 0.0))
+                    err_pts = [err_0] + [float(sigma_abl[s]["Aesthetic"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
+                    tau_pts = [tau_0] + [float(sigma_abl[s]["Aesthetic"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                else: # PickScore
+                    err_0 = float(abl_rows[0].get("PickScore |Δr| ↓", 0.0))
+                    tau_0 = float(abl_rows[0].get("Kendall τ (Pick) ↑", 0.0))
+                    err_pts = [err_0] + [float(sigma_abl[s]["PickScore"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
+                    tau_pts = [tau_0] + [float(sigma_abl[s]["PickScore"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
 
                 ax1.set_xlabel(r"Bán kính làm mịn $\sigma$", fontsize=11, fontweight="bold")
                 ax1.set_ylabel(rf"Sai số {m_short} $|\Delta r|$ ↓", color=col_err, fontsize=11)
@@ -1694,7 +1904,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
 
                 ax1.set_title(f"Ablation: {m_key}", fontsize=12, fontweight="bold")
 
-            fig_abl.suptitle(r"Ablation Study: Tác động của $\sigma \in \{0.10, 0.25, 0.50, 1.00\}$ Đa Mô Hình Reward", fontsize=13, fontweight="bold", y=1.02)
+            fig_abl.suptitle(r"Ablation Study: Tác động của $\sigma$ Đa Mô Hình Reward (5-Benchmark Suite)", fontsize=13, fontweight="bold", y=1.02)
             fig_abl.tight_layout()
             abl_plot_path = os.path.join(output_dir, "sigma_ablation_curves.png")
             fig_abl.savefig(abl_plot_path, dpi=300, bbox_inches="tight")
@@ -1717,14 +1927,17 @@ def get_args():
     parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
     parser.add_argument("--sigma", type=float, default=0.05, help="Randomized Smoothing standard deviation")
     parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
-    parser.add_argument("--sigmas", type=str, default="0.05,0.10,0.15,0.25", help="Comma-separated sigma values for ablation study")
+    parser.add_argument("--sigmas", type=str, default="0.05,0.10,0.15,0.25,0.50", help="Comma-separated sigma values for ablation study")
     parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
     parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl", help="Prompt dataset path")
-    parser.add_argument("--use_hps", action="store_true", default=False, help="Whether to evaluate HPS v2.1 (very slow ViT-H/14, default False)")
+    parser.add_argument("--use_hps", action="store_true", default=False, help="Whether to evaluate HPS v2.1")
+    parser.add_argument("--use_aesthetic", action="store_true", default=False, help="Whether to evaluate Aesthetic Score (LAION MLP)")
+    parser.add_argument("--use_pickscore", action="store_true", default=False, help="Whether to evaluate PickScore (yuvalkirstain/PickScore_v1)")
+    parser.add_argument("--all_rewards", action="store_true", default=False, help="Enable all 5 reward models: ImageReward, CLIP, HPS v2.1, Aesthetic, PickScore")
     return parser.parse_args()
 
 
@@ -1750,11 +1963,16 @@ if __name__ == "__main__":
     device = f"cuda:{actual_gpu}"
     print(f"🎯 Thiết bị thực thi: GPU {actual_gpu} ({torch.cuda.get_device_name(actual_gpu)})")
 
+    if args.all_rewards:
+        args.use_hps = True
+        args.use_aesthetic = True
+        args.use_pickscore = True
+
     test_prompts = load_geneval_prompts(args.prompt_path, max_prompts=args.num_prompts)
     print(f"📝 Đã nạp {len(test_prompts)} prompts để chạy thực nghiệm.")
 
     res1, res2, res3, res4, res5 = None, None, None, None, None
-    sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25]
+    sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25, 0.50]
     requested_tests = [t.strip().lower() for t in args.test.split(",") if t.strip()]
     run_all = ("all" in requested_tests)
 
@@ -1782,12 +2000,12 @@ if __name__ == "__main__":
 
         from PIL import Image
         dummy_img = Image.new("RGB", (64, 64), color="blue")
-        print("\n🔍 ĐANG KIỂM TRA TÍNH KHẢ DỤNG CỦA CÁC MÔ HÌNH REWARD...")
+        print("\n🔍 ĐANG KIỂM TRA TÍNH KHẢ DỤNG CỦA CÁC MÔ HÌNH REWARD (5-BENCHMARK SUITE)...")
         try:
             _ = ir_model.score_batched(["a blue image"], [dummy_img])
-            print(" ✅ [ImageReward] Hoạt động hoàn hảo.")
+            print(" ✅ [1/5 ImageReward] Hoạt động hoàn hảo.")
         except Exception as e:
-            print(f" ⚠️ [ImageReward] Lỗi: {e}")
+            print(f" ⚠️ [1/5 ImageReward] Lỗi: {e}")
 
         clip_ok = False
         if do_clip_score is not None:
@@ -1795,12 +2013,12 @@ if __name__ == "__main__":
                 res_c = do_clip_score(images=[dummy_img], prompts=["a blue image"])
                 if res_c is not None and len(res_c) > 0 and float(res_c[0]) != 0.0:
                     clip_ok = True
-                    print(" ✅ [CLIP-Score] Hoạt động hoàn hảo.")
+                    print(" ✅ [2/5 CLIP-Score] Hoạt động hoàn hảo.")
             except Exception as e:
-                print(f" ⚠️ [CLIP-Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
+                print(f" ⚠️ [2/5 CLIP-Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
         if not clip_ok:
             do_clip_score = None
-            print(" ℹ️ [CLIP-Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+            print(" ℹ️ [2/5 CLIP-Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
         hps_ok = False
         if args.use_hps and do_human_preference_score is not None:
@@ -1808,15 +2026,48 @@ if __name__ == "__main__":
                 res_h = do_human_preference_score(images=[dummy_img], prompts=["a blue image"])
                 if res_h is not None and len(res_h) > 0 and float(res_h[0]) != 0.0:
                     hps_ok = True
-                    print(" ✅ [HPS v2.1] Hoạt động hoàn hảo.")
+                    print(" ✅ [3/5 HPS v2.1] Hoạt động hoàn hảo.")
             except Exception as e:
-                print(f" ⚠️ [HPS v2.1] Không khả dụng ({e}). Tạm thời bỏ qua.")
+                print(f" ⚠️ [3/5 HPS v2.1] Không khả dụng ({e}). Tạm thời bỏ qua.")
         if not hps_ok:
             do_human_preference_score = None
             if not args.use_hps:
-                print(" ⏸️ [HPS v2.1] Đã tạm tắt để chạy siêu tốc trên T4/L4 (bật lại bằng cờ --use_hps nếu cần).")
+                print(" ⏸️ [3/5 HPS v2.1] Tạm tắt để tăng tốc (bật bằng --use_hps hoặc --all_rewards).")
             else:
-                print(" ℹ️ [HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+                print(" ℹ️ [3/5 HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+
+        as_ok = False
+        if args.use_aesthetic and do_AS is not None:
+            try:
+                res_a = do_AS(images=[dummy_img], prompts=["a blue image"])
+                if res_a is not None and len(res_a) > 0 and float(res_a[0]) != 0.0:
+                    as_ok = True
+                    print(" ✅ [4/5 Aesthetic Score] Hoạt động hoàn hảo.")
+            except Exception as e:
+                print(f" ⚠️ [4/5 Aesthetic Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
+        if not as_ok:
+            do_AS = None
+            if not args.use_aesthetic:
+                print(" ⏸️ [4/5 Aesthetic Score] Tạm tắt (bật bằng --use_aesthetic hoặc --all_rewards).")
+            else:
+                print(" ℹ️ [4/5 Aesthetic Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+
+        pick_ok = False
+        if args.use_pickscore:
+            if load_pickscore_model(device=device):
+                try:
+                    res_p = do_pickscore(images=[dummy_img], prompts=["a blue image"], device=device)
+                    if res_p is not None and len(res_p) > 0 and float(res_p[0]) != 0.0:
+                        pick_ok = True
+                        print(" ✅ [5/5 PickScore] Hoạt động hoàn hảo.")
+                except Exception as e:
+                    print(f" ⚠️ [5/5 PickScore] Lỗi test ({e}). Tạm thời bỏ qua.")
+        if not pick_ok:
+            do_pickscore = None
+            if not args.use_pickscore:
+                print(" ⏸️ [5/5 PickScore] Tạm tắt (bật bằng --use_pickscore hoặc --all_rewards).")
+            else:
+                print(" ℹ️ [5/5 PickScore] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
     if run_all or "1" in requested_tests:
         res1 = run_test_1_solver_robustness(
