@@ -385,11 +385,19 @@ def run_test_1_solver_robustness(
             else:
                 r_5step_clip_raw, r_50step_clip_raw = None, None
 
-            # 3. HPS v2.1 thô
+            # 3. HPS v2.1 thô (chấm trọn bộ 40 ảnh DPM-5 và DDIM-50 trong 1 lượt GPU duy nhất)
             if do_human_preference_score is not None:
                 try:
-                    r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
-                    r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
+                    all_hps_raw = do_human_preference_score(
+                        images=list(img_5step) + list(img_50step),
+                        prompts=[prompt] * (len(img_5step) + len(img_50step))
+                    )
+                    if all_hps_raw is not None and len(all_hps_raw) == (len(img_5step) + len(img_50step)):
+                        r_5step_hps_raw = np.array(all_hps_raw[:len(img_5step)])
+                        r_50step_hps_raw = np.array(all_hps_raw[len(img_5step):])
+                    else:
+                        r_5step_hps_raw = np.array(do_human_preference_score(images=img_5step, prompts=[prompt] * num_particles))
+                        r_50step_hps_raw = np.array(do_human_preference_score(images=img_50step, prompts=[prompt] * num_particles))
                 except Exception:
                     r_5step_hps_raw, r_50step_hps_raw = None, None
                 if torch.cuda.is_available():
@@ -472,11 +480,20 @@ def run_test_1_solver_robustness(
                     r_5_clip_smooth.append(do_clip_score(images=noisy_img_5, prompts=[prompt] * num_particles))
                     r_50_clip_smooth.append(do_clip_score(images=noisy_img_50, prompts=[prompt] * num_particles))
 
-                # HPS v2.1
+                # HPS v2.1 (chấm đồng thời cả 40 ảnh noisy của DPM-5 và DDIM-50)
                 if do_human_preference_score is not None and r_5step_hps_raw is not None:
                     try:
-                        r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
-                        r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
+                        all_noisy_imgs = list(noisy_img_5) + list(noisy_img_50)
+                        all_hps_batch = do_human_preference_score(
+                            images=all_noisy_imgs,
+                            prompts=[prompt] * len(all_noisy_imgs)
+                        )
+                        if all_hps_batch is not None and len(all_hps_batch) == len(all_noisy_imgs):
+                            r_5_hps_smooth.append(all_hps_batch[:len(noisy_img_5)])
+                            r_50_hps_smooth.append(all_hps_batch[len(noisy_img_5):])
+                        else:
+                            r_5_hps_smooth.append(do_human_preference_score(images=noisy_img_5, prompts=[prompt] * num_particles))
+                            r_50_hps_smooth.append(do_human_preference_score(images=noisy_img_50, prompts=[prompt] * num_particles))
                     except Exception:
                         pass
 

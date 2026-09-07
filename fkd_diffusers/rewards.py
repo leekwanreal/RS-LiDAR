@@ -94,14 +94,28 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
         lock_path = os.path.join(cache_dir, "hpsv2_download.lock")
         scores = []
         with FileLock(lock_path):
-            for i, img in enumerate(images):
-                p_text = prompt_texts[i]
-                score = hpsv2.score(img, p_text, hps_version="v2.1")
-                if isinstance(score, (list, tuple, np.ndarray, torch.Tensor)):
-                    val = float(score[0])
-                else:
-                    val = float(score)
-                scores.append(val)
+            # Tối ưu tốc độ cao: Nếu toàn bộ ảnh dùng chung prompt, truyền trọn batch vào hpsv2.score 1 lượt
+            if len(prompt_texts) > 0 and len(set(prompt_texts)) <= 1:
+                try:
+                    raw_res = hpsv2.score(images, prompt_texts[0], hps_version="v2.1")
+                    if isinstance(raw_res, (list, tuple, np.ndarray, torch.Tensor)):
+                        scores = [float(x) for x in raw_res]
+                    else:
+                        scores = [float(raw_res)]
+                except Exception:
+                    scores = []
+
+            # Fallback tuần tự nếu xử lý cả batch gặp lỗi hoặc không đủ số lượng
+            if len(scores) != len(images):
+                scores = []
+                for i, img in enumerate(images):
+                    p_text = prompt_texts[i]
+                    score = hpsv2.score(img, p_text, hps_version="v2.1")
+                    if isinstance(score, (list, tuple, np.ndarray, torch.Tensor)):
+                        val = float(score[0])
+                    else:
+                        val = float(score)
+                    scores.append(val)
         return scores
     except Exception as e:
         print(f"Warning computing HPS on {device}: {e}")
