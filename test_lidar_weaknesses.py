@@ -256,7 +256,7 @@ def run_test_1_solver_robustness(
     pipe, vae, ir_model, prompt_list, sigma=0.05,
     tune_sigma=False, sigmas_to_sweep=None,
     num_particles=20, device="cuda", output_dir="experiments/test_results",
-    num_shards=1, shard_id=0
+    num_shards=1, shard_id=0, overwrite=False
 ):
     if sigmas_to_sweep is None:
         sigmas_to_sweep = [0.05, 0.10, 0.15, 0.25]
@@ -319,8 +319,8 @@ def run_test_1_solver_robustness(
         } for sig in active_sigmas
     }
 
-    # Tự động đọc checkpoint nếu có
-    if os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
+    # Tự động đọc checkpoint nếu có (trừ khi bật --overwrite để chạy lại từ đầu)
+    if not overwrite and os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
         try:
             with open(checkpoint_file, "r", encoding="utf-8") as f:
                 ckpt = json.load(f)
@@ -2001,6 +2001,7 @@ def get_args():
     parser.add_argument("--use_aesthetic", action="store_true", default=False, help="Whether to evaluate Aesthetic Score (LAION MLP)")
     parser.add_argument("--use_pickscore", action="store_true", default=False, help="Whether to evaluate PickScore (yuvalkirstain/PickScore_v1)")
     parser.add_argument("--all_rewards", action="store_true", default=False, help="Enable all 5 reward models: ImageReward, CLIP, HPS v2.1, Aesthetic, PickScore")
+    parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing checkpoints and re-run tests from prompt 1")
     return parser.parse_args()
 
 
@@ -2138,7 +2139,8 @@ if __name__ == "__main__":
             sigma=args.sigma, tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
             num_particles=args.num_particles,
             device=device, output_dir=args.output_dir,
-            num_shards=args.num_shards, shard_id=args.shard_id
+            num_shards=args.num_shards, shard_id=args.shard_id,
+            overwrite=args.overwrite
         )
 
     if run_all or "2" in requested_tests:
