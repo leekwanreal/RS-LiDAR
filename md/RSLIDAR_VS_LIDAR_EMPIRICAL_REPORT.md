@@ -23,37 +23,7 @@
 
 ---
 
-## 2. Bảng Tổng Hợp So Sánh Đối Đầu Thực Tế (553 Prompts GenEval)
-
-### 2.1. Cấu Hình DDPM 100 Bước (Row 1 Benchmark)
-Toàn bộ thí nghiệm sử dụng bộ giải DDPM 100 bước ($\eta=1.0$), scale dẫn hướng $s=12.5$, $\lambda=5000$, $M=4$ mẫu Monte Carlo cho RS.
-
-| Phương Pháp | Cấu Hình | ImageReward ↑ | CLIP-Score ↑ | HPS v2.1 ↑ | GenEval ↑ | So Sánh với Vanilla LiDAR |
-| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **SD v1.5 Gốc (Chưa Lái)** | 50 DDIM | -0.1250 | 0.2690 | 0.2700 | 0.4230 | Baseline không có reward guidance |
-| **LiDAR Tái Lập (Vanilla)** | DDPM-100 | **0.3414** | **0.2771** | **0.2678** | **0.4287** | Mốc đối chứng thực nghiệm gốc |
-| **RS-LiDAR ($\sigma=0.25$)** | DDPM-100 | 0.3199 | 0.2771 | 0.2671 | 0.4293 | $\Delta$ IR: -0.0215 \| GenEval: +0.0006 |
-| **RS-LiDAR ($\sigma=0.50$)** | DDPM-100 | 0.3504 | 0.2777 | 0.2678 | 0.4296 | $\Delta$ IR: +0.0090 \| GenEval: +0.0009 |
-| **🔥 RS-LiDAR ($\sigma=1.00$)** | DDPM-100 | $\mathbf{0.3760}$ | $\mathbf{0.2783}$ | $\mathbf{0.2685}$ | $\mathbf{0.4480}$ | **🏆 Toàn diện: $\Delta$ IR: +0.0346 (+10.1%), GenEval: +0.0193** |
-| **RS-LiDAR ($\sigma=2.00$)** | DDPM-100 | 0.3314 | 0.2779 | 0.2671 | 0.4345 | $\Delta$ IR: -0.0100 \| GenEval: +0.0058 |
-
----
-
-### 2.2. Cấu Hình DDIM 50 Bước (Row 2 Benchmark)
-Toàn bộ thí nghiệm sử dụng bộ giải DDIM 50 bước ($\eta=0.0$), scale dẫn hướng $s=12.5$, $\lambda=5000$, $M=4$ mẫu Monte Carlo cho RS.
-
-| Phương Pháp | Cấu Hình | ImageReward ↑ | CLIP-Score ↑ | HPS v2.1 ↑ | GenEval ↑ | So Sánh với Vanilla LiDAR |
-| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **SD v1.5 Gốc (Chưa Lái)** | 50 DDIM | -0.1250 | 0.2690 | 0.2700 | 0.4230 | Baseline không có reward guidance |
-| **LiDAR Tái Lập (Vanilla)** | DDIM-50 | **0.3466** | **0.2772** | **0.2674** | **0.4303** | Mốc đối chứng thực nghiệm gốc |
-| **RS-LiDAR ($\sigma=0.25$)** | DDIM-50 | 0.3365 | 0.2770 | 0.2675 | 0.4180 | $\Delta$ IR: -0.0101 \| CLIP: -0.0002 |
-| **RS-LiDAR ($\sigma=0.50$)** | DDIM-50 | 0.3460 | 0.2776 | 0.2680 | 0.4259 | $\Delta$ IR: -0.0006 \| HPS: +0.0006 |
-| **🔥 RS-LiDAR ($\sigma=1.00$)** | DDIM-50 | $\mathbf{0.3676}$ | $\mathbf{0.2786}$ | $\mathbf{0.2681}$ | $\mathbf{0.4315}$ | **🏆 Toàn diện: $\Delta$ IR: +0.0210 (+6.1%), CLIP: +0.0014, GenEval: +0.0012** |
-| **RS-LiDAR ($\sigma=2.00$)** | DDIM-50 | 0.3280 | 0.2776 | 0.2675 | $\mathbf{0.4359}$ | $\Delta$ IR: -0.0186 \| **GenEval cao nhất: 0.4359 (+0.0056)** |
-
----
-
-## 3. Khảo Sát Tác Động Của Bán Kính Làm Mịn $\sigma$ (Ablation Dynamics)
+## 2. Khảo Sát Chuyên Sâu 5 Mô Hình Thưởng (Ablation Dynamics & Kendall Tau / Solver Error)
 
 Bảng dưới đây trích xuất từ dữ liệu `test_results/sigma_ablation_table.csv`, đánh giá trực tiếp trên các tiêu chí bảo toàn thứ hạng (Kendall $\tau$), sai số bộ giải ($|\Delta r|$) và Chặn Lipschitz $L_\sigma$ trên 5 mô hình thưởng:
 
@@ -73,6 +43,36 @@ Bảng dưới đây trích xuất từ dữ liệu `test_results/sigma_ablation
    * Sai số $|\Delta r|$ của PickScore giảm mạnh từ $0.8858 \to \mathbf{0.7441}$ (giảm $16.0\%$).
    * Sai số $|\Delta r|$ của HPS v2.1 giảm từ $0.0288 \to \mathbf{0.0240}$ (giảm $16.7\%$).
 3. **Chặn Lipschitz hữu hạn toán học**: Khác với Vanilla LiDAR có hằng số Lipschitz $L_0 \to \infty$ dẫn tới hiện tượng rung lắc gradient, RS-LiDAR ép chặt chặn Lipschitz xuống $L_\sigma \le 26.37$ (với $\sigma=1.00$), tạo bề mặt gradient cực kỳ ổn định.
+
+---
+
+## 3. Bảng Tổng Hợp So Sánh Đối Đầu Thực Tế (553 Prompts GenEval)
+
+### 3.1. Cấu Hình DDPM 100 Bước (Row 1 Benchmark)
+Toàn bộ thí nghiệm sử dụng bộ giải DDPM 100 bước ($\eta=1.0$), scale dẫn hướng $s=12.5$, $\lambda=5000$, $M=4$ mẫu Monte Carlo cho RS.
+
+| Phương Pháp | Cấu Hình | ImageReward ↑ | CLIP-Score ↑ | HPS v2.1 ↑ | GenEval ↑ | So Sánh với Vanilla LiDAR |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **SD v1.5 Gốc (Chưa Lái)** | 50 DDIM | -0.1250 | 0.2690 | 0.2700 | 0.4230 | Baseline không có reward guidance |
+| **LiDAR Tái Lập (Vanilla)** | DDPM-100 | **0.3414** | **0.2771** | **0.2678** | **0.4287** | Mốc đối chứng thực nghiệm gốc |
+| **RS-LiDAR ($\sigma=0.25$)** | DDPM-100 | 0.3199 | 0.2771 | 0.2671 | 0.4293 | $\Delta$ IR: -0.0215 \| GenEval: +0.0006 |
+| **RS-LiDAR ($\sigma=0.50$)** | DDPM-100 | 0.3504 | 0.2777 | 0.2678 | 0.4296 | $\Delta$ IR: +0.0090 \| GenEval: +0.0009 |
+| **🔥 RS-LiDAR ($\sigma=1.00$)** | DDPM-100 | $\mathbf{0.3760}$ | $\mathbf{0.2783}$ | $\mathbf{0.2685}$ | $\mathbf{0.4480}$ | **🏆 Toàn diện: $\Delta$ IR: +0.0346 (+10.1%), GenEval: +0.0193** |
+| **RS-LiDAR ($\sigma=2.00$)** | DDPM-100 | 0.3314 | 0.2779 | 0.2671 | 0.4345 | $\Delta$ IR: -0.0100 \| GenEval: +0.0058 |
+
+---
+
+### 3.2. Cấu Hình DDIM 50 Bước (Row 2 Benchmark)
+Toàn bộ thí nghiệm sử dụng bộ giải DDIM 50 bước ($\eta=0.0$), scale dẫn hướng $s=12.5$, $\lambda=5000$, $M=4$ mẫu Monte Carlo cho RS.
+
+| Phương Pháp | Cấu Hình | ImageReward ↑ | CLIP-Score ↑ | HPS v2.1 ↑ | GenEval ↑ | So Sánh với Vanilla LiDAR |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **SD v1.5 Gốc (Chưa Lái)** | 50 DDIM | -0.1250 | 0.2690 | 0.2700 | 0.4230 | Baseline không có reward guidance |
+| **LiDAR Tái Lập (Vanilla)** | DDIM-50 | **0.3466** | **0.2772** | **0.2674** | **0.4303** | Mốc đối chứng thực nghiệm gốc |
+| **RS-LiDAR ($\sigma=0.25$)** | DDIM-50 | 0.3365 | 0.2770 | 0.2675 | 0.4180 | $\Delta$ IR: -0.0101 \| CLIP: -0.0002 |
+| **RS-LiDAR ($\sigma=0.50$)** | DDIM-50 | 0.3460 | 0.2776 | 0.2680 | 0.4259 | $\Delta$ IR: -0.0006 \| HPS: +0.0006 |
+| **🔥 RS-LiDAR ($\sigma=1.00$)** | DDIM-50 | $\mathbf{0.3676}$ | $\mathbf{0.2786}$ | $\mathbf{0.2681}$ | $\mathbf{0.4315}$ | **🏆 Toàn diện: $\Delta$ IR: +0.0210 (+6.1%), CLIP: +0.0014, GenEval: +0.0012** |
+| **RS-LiDAR ($\sigma=2.00$)** | DDIM-50 | 0.3280 | 0.2776 | 0.2675 | $\mathbf{0.4359}$ | $\Delta$ IR: -0.0186 \| **GenEval cao nhất: 0.4359 (+0.0056)** |
 
 ---
 
