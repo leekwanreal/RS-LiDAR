@@ -358,15 +358,6 @@ def main(args):
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
                 decoded_tensor = torch.cat(decoded_chunks, dim=0)
                 clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
-            elif "xl" in args.model_name.lower():
-                scaled_latents = latents / pipe.vae.config.scaling_factor
-                vae_batch_size = 1
-                decoded_chunks = []
-                for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
-                    chunk = scaled_latents[v_i : v_i + vae_batch_size]
-                    decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
-                decoded_tensor = torch.cat(decoded_chunks, dim=0)
-                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
                 decoded_tensor = pipe.vae.decode(scaled_latents, return_dict=False)[0]
@@ -382,13 +373,7 @@ def main(args):
                 for m_idx in range(args.num_mc_samples):
                     if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
                         noisy_lat = scaled_latents + torch.randn_like(scaled_latents) * args.sigma
-                        if "xl" in args.model_name.lower():
-                            noisy_chunks = []
-                            for v_i in range(0, noisy_lat.shape[0], 1):
-                                noisy_chunks.append(pipe.vae.decode(noisy_lat[v_i : v_i + 1], return_dict=False)[0])
-                            noisy_t = torch.cat(noisy_chunks, dim=0).clamp(-1.0, 1.0)
-                        else:
-                            noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
+                        noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
                     else:
                         if args.sigma > 0:
                             noisy_t = (decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0)
