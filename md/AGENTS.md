@@ -5,7 +5,13 @@
 
 ## Project Context
 - **Repository Overview & Fixes History**: Refer to `README_CONTEXT.md` (kept in `.gitignore`) for a summary of the project architecture, key scripts (`lookahead_sampling.py`, `LiDAR_sampling.py`), and past resolved bugs/fixes.
-- Always maintain and update `README_CONTEXT.md` with newly resolved issues or codebase updates.
+- Always maintain and update `README_CONTEXT.md` with any newly resolved issues or architectural changes.
+
+## Mandatory Onboarding for "Read/Understand Repo" Requests
+Whenever the user asks you to read, understand, or familiarize yourself with the repo (e.g. "đọc hiểu repo", "hiểu codebase", "read repo context"), you MUST ALWAYS immediately read the following 3 foundational files using `view_file` BEFORE answering or taking any further action:
+1. `README_CONTEXT.md`: Architecture overview, key scripts, and full history of all resolved issues and fixes.
+2. `txt/LIDAR_PAPER_EXTRACTED.txt`: Paper theorems (Theorem 3.1 & 3.3), Table 2 benchmarks, and mathematical formulas.
+3. `LiDAR_Table2_Replication_Colab.ipynb`: Official Colab execution workflow, setup, hyperparameter configurations, and evaluation logic.
 
 ## Code Integrity & Safe Modification Rules (Strict - Never Violate)
 - **Zero Accidental Deletions**: When editing, replacing, or refactoring code or notebooks, **NEVER delete, truncate, or omit surrounding lines** (such as variable/object initializations like `parser = argparse.ArgumentParser()`, imports, working directory switches like `%cd`, or environment configs).

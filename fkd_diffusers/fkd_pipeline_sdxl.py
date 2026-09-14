@@ -20,6 +20,7 @@ from fkd_class import FKD
 from rewards import get_reward_function
 
 import torch
+import torch.nn.functional as F
 from transformers import (
     CLIPImageProcessor,
     CLIPTextModel,
@@ -77,6 +78,16 @@ else:
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def collate_like_dataloader(batch):
+    out = {}
+    for k in batch[0].keys():
+        if torch.is_tensor(batch[0][k]):
+            out[k] = torch.stack([x[k] for x in batch])
+        else:
+            out[k] = [x[k] for x in batch]
+    return out
 
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.rescale_noise_cfg
@@ -292,10 +303,49 @@ class FKDStableDiffusionXL(
 
         self.watermark = None
 
+    def get_sample_guide(self, subset, t, latents, lamda):
+        """
+        latents: (B, 4, H, W)
+        subset["latents"][0]: (K, 4, H, W)
+        subset["rewards"][0]: (K,)
+        """
+        device = latents.device
+        alpha_prod_t = self.scheduler.alphas_cumprod[t].to(device)
+
+        B = latents.shape[0]
+        K = subset["latents"][0].shape[0]
+        # --------------------------------------------------
+        # reshape for broadcasting
+        # --------------------------------------------------
+        latents_expanded = latents.unsqueeze(1)  # (B, 1, 4, H, W)
+        lookahead_latents = subset["latents"][0].to(device)  # (K, 4, H, W)
+        lookahead_latents_expanded = lookahead_latents.unsqueeze(0)  # (1, K, 4, H, W)
+        # --------------------------------------------------
+        # potential: (B, K)
+        # --------------------------------------------------
+        potential = - (latents_expanded.float() - (alpha_prod_t ** 0.5) * lookahead_latents_expanded) ** 2
+        potential = potential / (2 * (1 - alpha_prod_t))
+        potential = potential.sum(dim=(2, 3, 4))  # (B, K)
+        # --------------------------------------------------
+        # weights
+        # --------------------------------------------------
+        rewards = subset["rewards"][0].to(device).float()  # (K,)
+        rewards = rewards.view(1, K)  # (1, K)
+        w = F.softmax(potential, dim=1)  # (B, K)
+        w_r = F.softmax((lamda * rewards + potential), dim=1)  # (B, K)
+
+        delta_w = (w_r - w)[..., None, None, None]
+        guide = delta_w * lookahead_latents_expanded
+        guide *= (alpha_prod_t ** 0.5) / (1 - alpha_prod_t)
+        guide = guide.sum(dim=1).to(dtype=latents.dtype)
+
+        return guide
+
     @torch.no_grad()
     def __call__(
         self,
         prompt: Union[str, List[str]] = None,
+        prompt_idx: Optional[int] = None,
         fkd_args=None,
         prompt_2: Optional[Union[str, List[str]]] = None,
         height: Optional[int] = None,
@@ -304,7 +354,7 @@ class FKDStableDiffusionXL(
         timesteps: List[int] = None,
         sigmas: List[float] = None,
         denoising_end: Optional[float] = None,
-        guidance_scale: float = 5.0,
+        guidance_scale: float = 7.5,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         negative_prompt_2: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: Optional[int] = 1,
@@ -704,6 +754,16 @@ class FKDStableDiffusionXL(
                 **fkd_args,
             )
 
+        if fkd_args is not None and fkd_args.get("use_rag", False):
+            rag_data = fkd_args['rag_dataset'].data
+            if prompt_idx not in rag_data:
+                raise KeyError(
+                    f"Lookahead dataset missing prompt_idx {prompt_idx}! Available keys: {len(rag_data)}. "
+                    f"Ensure Phase 1 lookahead sampling has completed for this prompt before running Phase 2."
+                )
+            subset = rag_data[prompt_idx]
+            subset = collate_like_dataloader([subset])
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
@@ -752,6 +812,12 @@ class FKDStableDiffusionXL(
                         noise_pred_text,
                         guidance_rescale=self.guidance_rescale,
                     )
+
+                if fkd_args is not None and fkd_args.get("use_rag", False):
+                    alpha_prod_t = self.scheduler.alphas_cumprod[t].to(latents.device)
+                    if t > fkd_args.get("resampling_t_end", 200):
+                        reward_grad = self.get_sample_guide(subset, t, latents, fkd_args["lmbda"])
+                        noise_pred = noise_pred - ((1 - alpha_prod_t) ** 0.5 * fkd_args["scale"] * reward_grad).to(noise_pred.dtype)
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
@@ -888,7 +954,8 @@ class FKDStableDiffusionXL(
         if not return_dict:
             return (image,)
 
-        return StableDiffusionXLPipelineOutput(images=image)
+        res = [StableDiffusionXLPipelineOutput(images=image)]
+        return tuple(res)
 
 
                 

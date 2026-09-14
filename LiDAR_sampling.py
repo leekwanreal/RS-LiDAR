@@ -269,7 +269,15 @@ def main(args):
         end_time = datetime.now()
         time_taken = end_time - start_time
 
-        images = images[0][0]
+        if isinstance(images, tuple) and len(images) > 0:
+            if hasattr(images[0], "images"):
+                images = images[0].images
+            elif isinstance(images[0], (list, tuple)):
+                images = images[0][0] if isinstance(images[0][0], (list, tuple)) else images[0]
+            else:
+                images = images[0]
+        elif hasattr(images, "images"):
+            images = images.images
 
         results = do_eval(
             prompt=prompt, images=images, metrics_to_compute=metrics_to_compute
