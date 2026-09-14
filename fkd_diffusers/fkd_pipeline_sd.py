@@ -308,6 +308,12 @@ class FKDStableDiffusion(
         # --------------------------------------------------
         latents = latents.unsqueeze(1)  # (B, 1, 4, 64, 64)
         lookahead_latents = subset["latents"][0].to(device)  # (K, 4, 64, 64)
+        if lookahead_latents.shape[-1] != latents.shape[-1] or lookahead_latents.shape[-2] != latents.shape[-2]:
+            raise RuntimeError(
+                f"Spatial dimension mismatch in lookahead guidance! "
+                f"Current target latents are {latents.shape[-2]}x{latents.shape[-1]}, "
+                f"but lookahead latents are {lookahead_latents.shape[-2]}x{lookahead_latents.shape[-1]}."
+            )
         lookahead_latents = lookahead_latents.unsqueeze(0)  # (1, K, 4, 64, 64)
         # --------------------------------------------------
         # potential: (B, K)

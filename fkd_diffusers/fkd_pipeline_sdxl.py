@@ -319,6 +319,14 @@ class FKDStableDiffusionXL(
         # --------------------------------------------------
         latents_expanded = latents.unsqueeze(1)  # (B, 1, 4, H, W)
         lookahead_latents = subset["latents"][0].to(device)  # (K, 4, H, W)
+        if lookahead_latents.shape[-1] != latents.shape[-1] or lookahead_latents.shape[-2] != latents.shape[-2]:
+            raise RuntimeError(
+                f"Spatial dimension mismatch in lookahead guidance! "
+                f"Current SDXL latents are {latents.shape[-2]}x{latents.shape[-1]}, "
+                f"but lookahead latents loaded from dataset are {lookahead_latents.shape[-2]}x{lookahead_latents.shape[-1]}. "
+                f"This indicates the lookahead dataset was generated from a different model architecture (e.g. SD 1.5 64x64). "
+                f"Please re-run Phase 1 with SDXL to produce matching 128x128 lookahead latents."
+            )
         lookahead_latents_expanded = lookahead_latents.unsqueeze(0)  # (1, K, 4, H, W)
         # --------------------------------------------------
         # potential: (B, K)

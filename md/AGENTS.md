@@ -29,4 +29,10 @@ Whenever the user asks you to read, understand, or familiarize yourself with the
 - **Phase 1 Latent Reuse**: DPM-8 seed 100 latents are mathematically identical between Vanilla and RS-LiDAR. Never regenerate them from scratch if a completed lookahead run exists; pass `--reuse_latents_from` to evaluate raw ImageReward in minutes rather than hours.
 - **Dynamic Table 2 Benchmark Dispatch**: Always ensure Cell 18 dynamically dispatches to SDXL Table 2 paper baselines (Vanilla 0.722, DATE 0.960, LiDAR 0.994) when `MODEL_CHOICE` starts with `SDXL`.
 
+## Cross-Model Latent Integrity & Resolution Matching Rules
+- **Strict Spatial Dimension Matching (128x128 for SDXL vs 64x64 for SD 1.5)**: Lookahead latents must always match the exact spatial resolution of the target diffusion model ($128 \times 128$ for SDXL/Flux, $64 \times 64$ for SD 1.5).
+- **No Cross-Architecture Fallback Candidates**: Candidate search for `--reuse_latents_from` must NEVER fallback to hardcoded paths of another architecture (e.g. `100_50_5` of SD 1.5 when running SDXL). Always verify `shape[-1] == expected_dim` before reusing or loading any cached `latent.pt`.
+- **Pre-Flight Validation & Self-Healing**: Always validate lookahead dataset latent shapes against the active model architecture before launching iterative sampling loops in Phase 2, and automatically trigger `--overwrite` if a cache directory is contaminated with latents from a different model architecture.
+
+
 

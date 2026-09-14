@@ -198,7 +198,21 @@ def main(args):
     average_time = 0
 
     if args.use_rag:
-        lookaheads = gen_lookahead_samples(args.lookahead_path,args.top_k)
+        lookaheads = gen_lookahead_samples(args.lookahead_path, args.top_k)
+        if len(lookaheads) > 0:
+            first_idx = next(iter(lookaheads.data.keys()))
+            first_lat = lookaheads[first_idx]["latents"]
+            expected_dim = 128 if ("xl" in args.model_name.lower() or "flux" in args.model_name.lower()) else 64
+            if first_lat.shape[-1] != expected_dim:
+                raise ValueError(
+                    f"\n{'='*70}\n"
+                    f"❌ [LỖI KHÔNG TƯƠNG THÍCH KÍCH THƯỚC LATENT]\n"
+                    f"Lookahead dataset '{args.lookahead_path}' có spatial dimension là {first_lat.shape[-1]}x{first_lat.shape[-1]},\n"
+                    f"trong khi mô hình hiện tại '{args.model_name}' yêu cầu {expected_dim}x{expected_dim}!\n"
+                    f"Nguyên nhân: Phase 1 đã chạy với mô hình khác (hoặc bị tái sử dụng nhầm latents SD 1.5 64x64 cho SDXL 128x128).\n"
+                    f"Giải pháp: Vui lòng chạy lại Phase 1 với cờ --overwrite để sinh lookahead latents {expected_dim}x{expected_dim} chuẩn xác!\n"
+                    f"{'='*70}"
+                )
 
     total_prompts = len(prompt_data)
     if args.num_shards > 1:

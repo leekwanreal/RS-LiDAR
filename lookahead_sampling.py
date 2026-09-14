@@ -255,6 +255,9 @@ def main(args):
         start_idx = 0
         end_idx = total_prompts
 
+    is_xl = "xl" in args.model_name.lower() or "flux" in args.model_name.lower()
+    expected_latent_dim = 128 if is_xl else 64
+
     for prompt_idx in tqdm(range(start_idx, end_idx), desc=f"Shard-{args.shard_id}"):
         item = prompt_data[prompt_idx]
         prompt = [item["prompt"]] * args.num_particles
@@ -266,16 +269,24 @@ def main(args):
         latent_file = os.path.join(prompt_path, "samples", "latent.pt")
         if args.resume and not getattr(args, "overwrite", False) and os.path.exists(results_file) and os.path.exists(latent_file):
             try:
-                with open(results_file, "r") as f:
-                    res_cached = json.load(f)
-                for metric in metrics_to_compute:
-                    if metric in res_cached:
-                        metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
-                        metrics_arr[metric]["max"] += res_cached[metric]["max"]
-                        metrics_arr[metric]["min"] += res_cached[metric]["min"]
-                        metrics_arr[metric]["std"] += res_cached[metric]["std"]
-                n_samples += 1
-                continue
+                lat_valid = True
+                lat_check = torch.load(latent_file, map_location="cpu")
+                check_t = lat_check[0] if isinstance(lat_check, (list, tuple)) else lat_check
+                if hasattr(check_t, "shape") and check_t.shape[-1] != expected_latent_dim:
+                    lat_valid = False
+                    print(f"⚠️ [Prompt {prompt_idx:05d}] latent.pt có kích thước {check_t.shape[-1]}x{check_t.shape[-1]} != {expected_latent_dim}x{expected_latent_dim} ({args.model_name}). Bỏ qua cache hỏng và tạo lại!")
+
+                if lat_valid:
+                    with open(results_file, "r") as f:
+                        res_cached = json.load(f)
+                    for metric in metrics_to_compute:
+                        if metric in res_cached:
+                            metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
+                            metrics_arr[metric]["max"] += res_cached[metric]["max"]
+                            metrics_arr[metric]["min"] += res_cached[metric]["min"]
+                            metrics_arr[metric]["std"] += res_cached[metric]["std"]
+                    n_samples += 1
+                    continue
             except Exception as e:
                 print(f"Error loading cached result for prompt {prompt_idx}: {e}")
 
@@ -290,14 +301,23 @@ def main(args):
                 os.path.join(args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
                 os.path.join("Lookahead_samples", args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
                 os.path.join(args.output_dir, args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                os.path.join("Lookahead_samples", "100_50_5", f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
             ]
+            if not is_xl:
+                candidates.extend([
+                    os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                    os.path.join("Lookahead_samples", "100_50_5", f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                    os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                ])
             for c in candidates:
                 if os.path.exists(c):
-                    reused_latent_file = c
-                    break
+                    try:
+                        test_lat = torch.load(c, map_location="cpu")
+                        test_t = test_lat[0] if isinstance(test_lat, (list, tuple)) else test_lat
+                        if hasattr(test_t, "shape") and test_t.shape[-1] == expected_latent_dim:
+                            reused_latent_file = c
+                            break
+                    except Exception:
+                        continue
 
         start_time = datetime.now()
         with torch.inference_mode():
@@ -338,6 +358,15 @@ def main(args):
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
                 decoded_tensor = torch.cat(decoded_chunks, dim=0)
                 clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
+            elif "xl" in args.model_name.lower():
+                scaled_latents = latents / pipe.vae.config.scaling_factor
+                vae_batch_size = 1
+                decoded_chunks = []
+                for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
+                    chunk = scaled_latents[v_i : v_i + vae_batch_size]
+                    decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
+                decoded_tensor = torch.cat(decoded_chunks, dim=0)
+                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
                 decoded_tensor = pipe.vae.decode(scaled_latents, return_dict=False)[0]
@@ -353,7 +382,13 @@ def main(args):
                 for m_idx in range(args.num_mc_samples):
                     if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
                         noisy_lat = scaled_latents + torch.randn_like(scaled_latents) * args.sigma
-                        noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
+                        if "xl" in args.model_name.lower():
+                            noisy_chunks = []
+                            for v_i in range(0, noisy_lat.shape[0], 1):
+                                noisy_chunks.append(pipe.vae.decode(noisy_lat[v_i : v_i + 1], return_dict=False)[0])
+                            noisy_t = torch.cat(noisy_chunks, dim=0).clamp(-1.0, 1.0)
+                        else:
+                            noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
                     else:
                         if args.sigma > 0:
                             noisy_t = (decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0)
