@@ -269,15 +269,19 @@ def main(args):
         end_time = datetime.now()
         time_taken = end_time - start_time
 
-        if isinstance(images, tuple) and len(images) > 0:
-            if hasattr(images[0], "images"):
-                images = images[0].images
-            elif isinstance(images[0], (list, tuple)):
-                images = images[0][0] if isinstance(images[0][0], (list, tuple)) else images[0]
-            else:
-                images = images[0]
-        elif hasattr(images, "images"):
-            images = images.images
+        def _extract_pil_images(raw_imgs):
+            if hasattr(raw_imgs, "images"):
+                return raw_imgs.images
+            if isinstance(raw_imgs, (tuple, list)) and len(raw_imgs) > 0:
+                first = raw_imgs[0]
+                if hasattr(first, "images"):
+                    return first.images
+                if isinstance(first, (tuple, list)):
+                    return _extract_pil_images(first)
+                return list(raw_imgs)
+            return raw_imgs
+
+        images = _extract_pil_images(images)
 
         results = do_eval(
             prompt=prompt, images=images, metrics_to_compute=metrics_to_compute

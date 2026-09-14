@@ -18,3 +18,8 @@ Whenever the user asks you to read, understand, or familiarize yourself with the
 - **Minimal Diff Only**: Apply surgical, minimal modifications strictly to the targeted lines. Do not rewrite surrounding blocks or entire functions/cells when only modifying specific parameters or lines.
 - **Mandatory Diff Verification Before Commit**: Always run `git diff` on modified files before staging/committing to verify that no essential lines were unintentionally dropped or wiped out.
 - **Python Syntax & Import Sanity Check**: After modifying Python scripts, perform a quick verification (`python -c "import ..."` or syntax check) to prevent runtime `NameError`, missing dependencies, or broken entrypoints.
+
+## Anti-Regression & Notebook Integrity Rules
+- **No Brittle In-Place Monkey-Patching in Notebooks**: NEVER write or retain notebook cells that perform blind string/regex replacements (`code.replace(...)` or modifying `.py` files on disk). All bug fixes and architectural changes must be applied cleanly and directly to the repository source files. Notebook cells should only perform verification (`py_compile.compile`), never mutate source code at runtime.
+- **Substring Match Collision Prevention**: When writing or refactoring Python code, avoid using fragile expressions that could partially match legacy substring search-and-replace patterns, which can corrupt file indentation and produce fatal runtime `IndentationError`s.
+
