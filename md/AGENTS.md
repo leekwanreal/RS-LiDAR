@@ -23,3 +23,10 @@ Whenever the user asks you to read, understand, or familiarize yourself with the
 - **No Brittle In-Place Monkey-Patching in Notebooks**: NEVER write or retain notebook cells that perform blind string/regex replacements (`code.replace(...)` or modifying `.py` files on disk). All bug fixes and architectural changes must be applied cleanly and directly to the repository source files. Notebook cells should only perform verification (`py_compile.compile`), never mutate source code at runtime.
 - **Substring Match Collision Prevention**: When writing or refactoring Python code, avoid using fragile expressions that could partially match legacy substring search-and-replace patterns, which can corrupt file indentation and produce fatal runtime `IndentationError`s.
 
+## SDXL Replication & VRAM Execution Rules
+- **SDXL Pipeline Steering**: When executing or modifying `fkd_pipeline_sdxl.py`, ensure `use_rag` Closed-form Guidance is active for $t > 200$, using FP32 for the potential matrix and softmax exponentiation $\lambda R$ ($\lambda = 5000$).
+- **VRAM Profiling & VAE Chunking**: Phase 1 (50 particles of $1024 \times 1024$) naturally peaks at ~33.84 GiB on A100. Phase 2 retains `vae_batch_size = 1` chunking to stay within ~18–22 GiB.
+- **Phase 1 Latent Reuse**: DPM-8 seed 100 latents are mathematically identical between Vanilla and RS-LiDAR. Never regenerate them from scratch if a completed lookahead run exists; pass `--reuse_latents_from` to evaluate raw ImageReward in minutes rather than hours.
+- **Dynamic Table 2 Benchmark Dispatch**: Always ensure Cell 18 dynamically dispatches to SDXL Table 2 paper baselines (Vanilla 0.722, DATE 0.960, LiDAR 0.994) when `MODEL_CHOICE` starts with `SDXL`.
+
+
