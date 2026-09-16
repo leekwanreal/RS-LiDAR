@@ -296,6 +296,7 @@ def main(args):
 
         # Kiểm tra xem có thể tái sử dụng latent.pt đã chạy từ trước hay không
         reused_latent_file = None
+        cached_reused_latents = None
         if getattr(args, "reuse_latents_from", None):
             candidates = [
                 os.path.join(args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
@@ -315,6 +316,7 @@ def main(args):
                         test_t = test_lat[0] if isinstance(test_lat, (list, tuple)) else test_lat
                         if hasattr(test_t, "shape") and test_t.shape[-1] == expected_latent_dim:
                             reused_latent_file = c
+                            cached_reused_latents = test_lat
                             break
                     except Exception:
                         continue
@@ -324,11 +326,15 @@ def main(args):
             if reused_latent_file is not None:
                 if prompt_idx == start_idx or prompt_idx % 50 == 0:
                     print(f"⚡ [Prompt {prompt_idx:05d}] Tái sử dụng latents có sẵn: {reused_latent_file}")
-                loaded_latents = torch.load(reused_latent_file, map_location=device)
+                if cached_reused_latents is not None:
+                    loaded_latents = cached_reused_latents
+                else:
+                    loaded_latents = torch.load(reused_latent_file, map_location=device)
                 if isinstance(loaded_latents, (list, tuple)):
                     latents = torch.stack([x.to(device) for x in loaded_latents])
                 else:
                     latents = loaded_latents.to(device)
+                cached_reused_latents = None
             else:
                 if "dmd2_sdxl_4step_lora_fp16.safetensors" in args.model_name:
                     latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, timesteps=[999, 749, 499, 249], output_type="latent").images
@@ -357,11 +363,17 @@ def main(args):
                     chunk = latents_unpacked[v_i : v_i + vae_batch_size]
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
                 decoded_tensor = torch.cat(decoded_chunks, dim=0)
-                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
+                if args.save_individual_images or not getattr(args, "use_smoothing", False):
+                    clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
+                else:
+                    clean_images = None
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
                 decoded_tensor = pipe.vae.decode(scaled_latents, return_dict=False)[0]
-                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
+                if args.save_individual_images or not getattr(args, "use_smoothing", False):
+                    clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
+                else:
+                    clean_images = None
 
         end_time = datetime.now()
         time_taken = end_time - start_time
@@ -421,7 +433,8 @@ def main(args):
         # sort images by reward
         guidance_reward = np.array(results[args.guidance_reward_fn]["result"])
         sorted_idx = np.argsort(guidance_reward)[::-1]
-        images = [images[i] for i in sorted_idx]
+        if images is not None:
+            images = [images[i] for i in sorted_idx]
         latents = [latents[i] for i in sorted_idx]
         for metric in metrics_to_compute:
             results[metric]["result"] = [
@@ -445,7 +458,7 @@ def main(args):
         os.makedirs(sample_path, exist_ok=True)
         torch.save(latents, os.path.join(sample_path, "latent.pt"))
 
-        if args.save_individual_images:
+        if args.save_individual_images and images is not None:
             for image_idx, image in enumerate(images):
                 image.save(os.path.join(sample_path, f"{image_idx:05}.png"))
 
