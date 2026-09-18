@@ -43,6 +43,7 @@ def load_and_clean_data():
     """Loads all CSV files and strips any original paper claims (0.378, 0.384)."""
     ddpm_records = []
     ddim_records = []
+    sdxl_records = []
 
     # 1. Vanilla LiDAR DDPM-100
     p_ddpm_vanilla = os.path.join(CSV_DIR, 'table2_publication_summary_lidar_ddpm.csv')
@@ -123,10 +124,53 @@ def load_and_clean_data():
                     'Solver': 'DDIM-50'
                 })
 
+    # 5. Vanilla LiDAR SDXL (DDPM 100 steps)
+    p_sdxl_vanilla = os.path.join(CSV_DIR, 'table2_publication_summary_lidar_sdxl.csv')
+    if os.path.exists(p_sdxl_vanilla):
+        df = pd.read_csv(p_sdxl_vanilla)
+        df_real = df[df['Phương Pháp'].str.contains('Thực Tế|Tái Lập', case=False, na=False)]
+        for _, row in df_real.iterrows():
+            ir_val = float(row['ImageReward ↑'])
+            if np.isclose(ir_val, 0.994) or np.isclose(ir_val, 1.006):
+                continue
+            sdxl_records.append({
+                'Model': 'SDXL (2.6B)',
+                'Method': 'Vanilla LiDAR',
+                'Sigma': 0.0,
+                'Label': 'Vanilla\n(σ=0)',
+                'ImageReward': ir_val,
+                'CLIP-Score': float(row['CLIP-Score ↑']),
+                'HPS v2.1': float(row['HPS v2.1 ↑']),
+                'GenEval': float(row['GenEval ↑']),
+                'Solver': 'DDPM-100'
+            })
+
+    # 6. RS-LiDAR SDXL (DDPM 100 steps, σ=1.0, M=4)
+    p_sdxl_rslidar = os.path.join(CSV_DIR, 'table2_publication_summary_rslidar_sdxl_1.0.csv')
+    if os.path.exists(p_sdxl_rslidar):
+        df = pd.read_csv(p_sdxl_rslidar)
+        df_rs = df[df['Phương Pháp'].str.contains('RS-LiDAR', case=False, na=False)]
+        for _, row in df_rs.iterrows():
+            ir_val = float(row['ImageReward ↑'])
+            if np.isclose(ir_val, 0.994) or np.isclose(ir_val, 1.006):
+                continue
+            sdxl_records.append({
+                'Model': 'SDXL (2.6B)',
+                'Method': 'RS-LiDAR (σ=1.0)',
+                'Sigma': 1.0,
+                'Label': 'RS-LiDAR\n(σ=1.0)',
+                'ImageReward': ir_val,
+                'CLIP-Score': float(row['CLIP-Score ↑']),
+                'HPS v2.1': float(row['HPS v2.1 ↑']),
+                'GenEval': float(row['GenEval ↑']),
+                'Solver': 'DDPM-100'
+            })
+
     df_ddpm = pd.DataFrame(ddpm_records).sort_values('Sigma').reset_index(drop=True)
     df_ddim = pd.DataFrame(ddim_records).sort_values('Sigma').reset_index(drop=True)
+    df_sdxl = pd.DataFrame(sdxl_records).sort_values('Sigma').reset_index(drop=True)
 
-    return df_ddpm, df_ddim
+    return df_ddpm, df_ddim, df_sdxl
 
 
 def plot_grouped_bar_comparison(df_ddpm, df_ddim):
@@ -303,7 +347,60 @@ def plot_kendall_tau_ablation():
     print(f" Saved Figure 3: {out_path}")
 
 
-def print_summary(df_ddpm, df_ddim):
+def plot_sdxl_comparison(df_sdxl):
+    """Figure 4: Head-to-head comparison between Vanilla LiDAR and RS-LiDAR on SDXL (2.6B)."""
+    if len(df_sdxl) < 2:
+        return
+
+    metrics_sdxl = [
+        ('ImageReward', 'ImageReward ↑ (Alignment)', (1.02, 1.07), '%0.4f'),
+        ('GenEval', 'GenEval Score ↑ (Composition)', (0.54, 0.595), '%0.4f'),
+        ('CLIP-Score', 'CLIP-Score ↑ (Semantic)', (0.284, 0.290), '%0.4f'),
+        ('HPS v2.1', 'Human Preference v2.1 ↑', (0.304, 0.309), '%0.4f')
+    ]
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5), dpi=300)
+
+    for idx, (metric, title, ylim, fmt) in enumerate(metrics_sdxl):
+        ax = axes[idx]
+        v_val = df_sdxl[df_sdxl['Method'] == 'Vanilla LiDAR'][metric].values[0]
+        rs_val = df_sdxl[df_sdxl['Method'].str.contains('RS-LiDAR')][metric].values[0]
+        delta_rel = ((rs_val - v_val) / v_val) * 100.0
+        delta_abs = rs_val - v_val
+
+        bars = ax.bar(['Vanilla LiDAR\n(Tái lập)', 'RS-LiDAR\n(σ=1.0, M=4)'], [v_val, rs_val],
+                      width=0.52, color=['#7f7f7f', '#2ca02c'], edgecolor='black', linewidth=1.0)
+        bars[1].set_color('#2ca02c')
+        bars[1].set_edgecolor('#1b7837')
+        bars[1].set_linewidth(2.0)
+
+        # Value annotations
+        ax.annotate(fmt % v_val, xy=(0, v_val), xytext=(0, 4), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='#333333')
+        ax.annotate(fmt % rs_val, xy=(1, rs_val), xytext=(0, 4), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=10, fontweight='bold', color='#1b7837')
+
+        # Gain badge
+        badge_text = f"+{delta_abs:.4f}\n(+{delta_rel:.2f}%)"
+        ax.annotate(badge_text, xy=(1, rs_val), xytext=(0, 22), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=9, fontweight='bold', color='#1b7837',
+                    bbox=dict(boxstyle='round,pad=0.25', facecolor='#e5f5e0', edgecolor='#1b7837', alpha=0.9))
+
+        ax.set_title(title, fontsize=12.5, fontweight='bold', pad=12)
+        ax.set_ylim(ylim)
+        ax.tick_params(axis='y', labelsize=9)
+        ax.tick_params(axis='x', labelsize=10.5)
+
+    plt.suptitle('SDXL (2.6B Backbone, DDPM-100) Pure Empirical Head-to-Head: Vanilla LiDAR vs. RS-LiDAR (σ=1.0)\n(100% Actual Runs on 553 GenEval Prompts — Paper Claims Excluded)',
+                 fontsize=13.5, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    out_path = os.path.join(OUTPUT_DIR, 'sdxl_lidar_vs_rslidar.png')
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f" Saved Figure 4: {out_path}")
+
+
+def print_summary(df_ddpm, df_ddim, df_sdxl):
     """Prints a clean, concise tabular comparison directly in terminal output."""
     print("\n" + "="*85)
     print("  VANILLA LIDAR vs. RS-LIDAR EMPIRICAL DATA SUMMARY (100% REAL RUNS)")
@@ -311,21 +408,30 @@ def print_summary(df_ddpm, df_ddim):
     print(f"{'Solver':<10} | {'Method / Sigma':<22} | {'ImageReward':<11} | {'CLIP-Score':<10} | {'HPS v2.1':<10} | {'GenEval':<10}")
     print("-" * 85)
 
+    print(" [SD 1.5 DDPM-100]")
     for _, r in df_ddpm.iterrows():
         m_str = str(r['Method']).replace('σ', 'sigma')
         print(f"{r['Solver']:<10} | {m_str:<22} | {r['ImageReward']:<11.4f} | {r['CLIP-Score']:<10.4f} | {r['HPS v2.1']:<10.4f} | {r['GenEval']:<10.4f}")
 
     print("-" * 85)
+    print(" [SD 1.5 DDIM-50]")
     for _, r in df_ddim.iterrows():
+        m_str = str(r['Method']).replace('σ', 'sigma')
+        print(f"{r['Solver']:<10} | {m_str:<22} | {r['ImageReward']:<11.4f} | {r['CLIP-Score']:<10.4f} | {r['HPS v2.1']:<10.4f} | {r['GenEval']:<10.4f}")
+
+    print("-" * 85)
+    print(" [SDXL 2.6B DDPM-100]")
+    for _, r in df_sdxl.iterrows():
         m_str = str(r['Method']).replace('σ', 'sigma')
         print(f"{r['Solver']:<10} | {m_str:<22} | {r['ImageReward']:<11.4f} | {r['CLIP-Score']:<10.4f} | {r['HPS v2.1']:<10.4f} | {r['GenEval']:<10.4f}")
     print("="*85 + "\n")
 
 
 if __name__ == '__main__':
-    df_ddpm, df_ddim = load_and_clean_data()
-    print_summary(df_ddpm, df_ddim)
+    df_ddpm, df_ddim, df_sdxl = load_and_clean_data()
+    print_summary(df_ddpm, df_ddim, df_sdxl)
     plot_grouped_bar_comparison(df_ddpm, df_ddim)
     plot_sigma_trajectories(df_ddpm, df_ddim)
     plot_kendall_tau_ablation()
+    plot_sdxl_comparison(df_sdxl)
     print(" All plots successfully generated!")
