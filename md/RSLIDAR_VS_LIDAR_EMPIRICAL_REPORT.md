@@ -49,6 +49,27 @@ Bảng dưới đây trích xuất từ dữ liệu `test_results/sigma_ablation
 
 ## 3. Bảng Tổng Hợp So Sánh Đối Đầu Thực Tế (553 Prompts GenEval)
 
+### 3.0. Bảng Tổng Kết Đối Đầu Toàn Diện Xuyên Suốt 3 Cấu Hình Benchmark (SD 1.5 DDIM, SD 1.5 DDPM, SDXL DDPM)
+Toàn bộ số liệu dưới đây là **100% kết quả thực nghiệm thực tế** chạy trên toàn bộ 553 prompts GenEval (mỗi prompt sinh 4 hạt = 2.212 ảnh/cấu hình). **Tuyệt đối không sử dụng bất kỳ số liệu lý thuyết nào từ bài báo gốc**:
+
+| Cấu Hình Thử Nghiệm (Setting) | Phương Pháp | ImageReward ↑ | GenEval ↑ | CLIP-Score ↑ | HPS v2.1 ↑ | Đánh Giá & Mức Tăng (Δ) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
+| **SD v1.5 (DDIM-50, $\eta=0.0$)** | Vanilla LiDAR (Tái Lập Thực Tế) | 0.3466 | 0.4303 | 0.2772 | 0.2674 | Mốc đối chứng thực nghiệm gốc |
+| | **🔥 RS-LiDAR ($\sigma=1.0, M=4$)** | **0.3676** | **0.4315** | **0.2786** | **0.2681** | **+0.0210 IR (+6.06%) \| +0.0012 GE (+0.28%)** |
+| **SD v1.5 (DDPM-100, $\eta=1.0$)** | Vanilla LiDAR (Tái Lập Thực Tế) | 0.3414 | 0.4287 | 0.2771 | 0.2678 | Mốc đối chứng thực nghiệm gốc |
+| | **🔥 RS-LiDAR ($\sigma=1.0, M=4$)** | **0.3760** | **0.4480** | **0.2783** | **0.2685** | **+0.0346 IR (+10.13%) \| +0.0193 GE (+4.50%)** |
+| **SDXL 2.6B (DDPM-100, $\eta=1.0$)** | Vanilla LiDAR (Tái Lập Thực Tế) | 1.0476 | 0.5694 | 0.2870 | 0.3066 | Mốc đối chứng thực nghiệm gốc |
+| | **🔥 RS-LiDAR ($\sigma=1.0, M=4$)** | **1.0572** | **0.5796** | **0.2879** | **0.3072** | **+0.0096 IR (+0.92%) \| +0.0102 GE (+1.79%)** |
+
+#### Bảng Phân Tích Mức Tăng Trưởng Thực Nghiệm (Δ Tuyệt Đối & Tương Đối %) Trên Cả 3 Cấu Hình:
+| Cấu Hình Thử Nghiệm | ImageReward (LiDAR → RS) | Δ ImageReward (%) | GenEval (LiDAR → RS) | Δ GenEval (%) | Δ CLIP-Score (%) | Δ HPS v2.1 (%) | Kết Luận |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **SD v1.5 (DDIM-50, $\eta=0.0$)** | $0.3466 \to 0.3676$ | **+0.0210 (+6.06%)** | $0.4303 \to 0.4315$ | **+0.0012 (+0.28%)** | +0.0014 (+0.51%) | +0.0007 (+0.26%) | 🏆 Vượt trội toàn diện |
+| **SD v1.5 (DDPM-100, $\eta=1.0$)** | $0.3414 \to 0.3760$ | **+0.0346 (+10.13%)** | $0.4287 \to 0.4480$ | **+0.0193 (+4.50%)** | +0.0012 (+0.43%) | +0.0007 (+0.26%) | 🏆 Đột phá mạnh mẽ cả IR & GenEval |
+| **SDXL 2.6B (DDPM-100, $\eta=1.0$)** | $1.0476 \to 1.0572$ | **+0.0096 (+0.92%)** | $0.5694 \to 0.5796$ | **+0.0102 (+1.79%)** | +0.0009 (+0.31%) | +0.0006 (+0.20%) | 🏆 Khái quát hóa mô hình lớn |
+
+---
+
 ### 3.1. Cấu Hình DDPM 100 Bước (Row 1 Benchmark)
 Toàn bộ thí nghiệm sử dụng bộ giải DDPM 100 bước ($\eta=1.0$), scale dẫn hướng $s=12.5$, $\lambda=5000$, $M=4$ mẫu Monte Carlo cho RS.
 
