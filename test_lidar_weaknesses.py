@@ -821,6 +821,8 @@ def run_test_2_softmax_entropy(
 
     all_entropy_lidar = {int(t): [] for t in timesteps}
     all_entropy_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
+    all_dominant_id_lidar = {int(t): [] for t in timesteps}
+    all_dominant_w_lidar = {int(t): [] for t in timesteps}
 
     for idx in tqdm(idx_range, desc=f"Test 2 [Shard {shard_id}]"):
         if lookahead_folders and idx < len(lookahead_folders):
@@ -863,6 +865,11 @@ def run_test_2_softmax_entropy(
             h_lidar = - (w_r_lidar * (w_r_lidar + 1e-12).log2()).sum(dim=1).item()
             all_entropy_lidar[t_int].append(h_lidar)
 
+            dom_id_l = int(w_r_lidar.argmax(dim=1).item())
+            dom_w_l = float(w_r_lidar[0, dom_id_l].item())
+            all_dominant_id_lidar[t_int].append(dom_id_l)
+            all_dominant_w_lidar[t_int].append(dom_w_l)
+
             # RS-LiDAR cho từng sigma
             for s_val in active_sigmas:
                 w_r_ours = F.softmax(5000.0 * rewards_ours_dict[s_val] + potential_raw, dim=1)
@@ -878,13 +885,18 @@ def run_test_2_softmax_entropy(
     primary_sigma = sigma if sigma in entropy_ours_by_sigma else active_sigmas[0]
     mean_entropy_ours = entropy_ours_by_sigma[primary_sigma]
 
+    sample_dominant_id_lidar = [int(all_dominant_id_lidar[t][0]) if all_dominant_id_lidar[t] else 0 for t in t_list]
+    sample_dominant_w_lidar = [float(all_dominant_w_lidar[t][0]) if all_dominant_w_lidar[t] else 1.0 for t in t_list]
+
     ckpt_file = os.path.join(output_dir, f"test_2_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_2_checkpoint.json")
     with open(ckpt_file, "w", encoding="utf-8") as f:
         json.dump({
             "t_list": t_list,
             "entropy_lidar": mean_entropy_lidar,
             "entropy_ours": mean_entropy_ours,
-            "entropy_ours_by_sigma": {str(k): v for k, v in entropy_ours_by_sigma.items()}
+            "entropy_ours_by_sigma": {str(k): v for k, v in entropy_ours_by_sigma.items()},
+            "dominant_particle_id_lidar": sample_dominant_id_lidar,
+            "dominant_weight_lidar": sample_dominant_w_lidar
         }, f)
 
     print(f"\n📊 KẾT QUẢ BÀI TEST 2 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS:")
@@ -893,11 +905,21 @@ def run_test_2_softmax_entropy(
     for s_val, s_ent in sorted(entropy_ours_by_sigma.items()):
         print(f" • Entropy trung bình RS-LiDAR (σ={s_val:.2f}):            {np.mean(s_ent):.4f} bits (Phân bổ mượt mà đa hạt)")
 
+    print(f"\n🔍 CHI TIẾT ẢNH/HẠT CHIẾM TRỌNG SỐ LỚN NHẤT TẠI CÁC TIMESTEP (LiDAR Gốc mẫu Prompt 1):")
+    sample_steps = [t_list[0], t_list[len(t_list)//4], t_list[len(t_list)//2], t_list[3*len(t_list)//4], t_list[-1]]
+    for t_s in sample_steps:
+        idx_t = t_list.index(t_s)
+        p_id = sample_dominant_id_lidar[idx_t]
+        p_w = sample_dominant_w_lidar[idx_t]
+        print(f"   -> Bước t={t_s:3d}: Hạt #{p_id:02d} (Chiếm {p_w*100:.2f}% trọng số)")
+
     return {
         "t_list": t_list,
         "entropy_lidar": mean_entropy_lidar,
         "entropy_ours": mean_entropy_ours,
-        "entropy_ours_by_sigma": entropy_ours_by_sigma
+        "entropy_ours_by_sigma": entropy_ours_by_sigma,
+        "dominant_particle_id_lidar": sample_dominant_id_lidar,
+        "dominant_weight_lidar": sample_dominant_w_lidar
     }
 
 
@@ -1056,6 +1078,7 @@ def run_test_4_effective_sample_size(
     all_ess_lidar = {int(t): [] for t in timesteps}
     all_ess_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
     all_wmax_lidar = {int(t): [] for t in timesteps}
+    all_wmax_id_lidar = {int(t): [] for t in timesteps}
     all_wmax_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
     all_active_lidar = {int(t): [] for t in timesteps}
     all_active_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
@@ -1098,10 +1121,12 @@ def run_test_4_effective_sample_size(
             # ESS = 1 / sum(w_i^2)
             ess_l = (1.0 / (w_r_lidar ** 2).sum(dim=1)).item()
             wmax_l = w_r_lidar.max(dim=1).values.item()
+            wmax_id_l = int(w_r_lidar.argmax(dim=1).item())
             n_act_l = (w_r_lidar > (1.0 / num_particles)).sum(dim=1).item()
 
             all_ess_lidar[t_int].append(ess_l)
             all_wmax_lidar[t_int].append(wmax_l)
+            all_wmax_id_lidar[t_int].append(wmax_id_l)
             all_active_lidar[t_int].append(n_act_l)
 
             # RS-LiDAR cho từng sigma
@@ -1138,6 +1163,9 @@ def run_test_4_effective_sample_size(
     mean_wmax_ours = wmax_ours_by_sigma[primary_sigma]
     mean_active_ours = active_ours_by_sigma[primary_sigma]
 
+    sample_wmax_id_lidar = [int(all_wmax_id_lidar[t][0]) if all_wmax_id_lidar[t] else 0 for t in t_list]
+    sample_wmax_val_lidar = [float(all_wmax_lidar[t][0]) if all_wmax_lidar[t] else 1.0 for t in t_list]
+
     ckpt_file = os.path.join(output_dir, f"test_4_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_4_checkpoint.json")
     with open(ckpt_file, "w", encoding="utf-8") as f:
         json.dump({
@@ -1146,6 +1174,7 @@ def run_test_4_effective_sample_size(
             "ess_ours": mean_ess_ours,
             "ess_ours_by_sigma": {str(k): v for k, v in ess_ours_by_sigma.items()},
             "wmax_lidar": mean_wmax_lidar,
+            "wmax_id_lidar": sample_wmax_id_lidar,
             "wmax_ours": mean_wmax_ours,
             "active_lidar": mean_active_lidar,
             "active_ours": mean_active_ours
@@ -1160,12 +1189,21 @@ def run_test_4_effective_sample_size(
         print(f" • ESS trung bình RS-LiDAR (σ={s_val:.2f}):                 {np.mean(s_ess):.2f} hạt ({np.mean(s_ess)/num_particles*100:.1f}% số hạt)")
         print(f"   -> w_max (RS-LiDAR σ={s_val:.2f}):                 {np.mean(wmax_ours_by_sigma[s_val])*100:.2f}% | Active particles: {np.mean(active_ours_by_sigma[s_val]):.1f}/{num_particles}")
 
+    print(f"\n🔍 CHI TIẾT ẢNH/HẠT CHIẾM TRỌNG SỐ LỚN NHẤT w_max TẠI CÁC TIMESTEP (LiDAR Gốc mẫu Prompt 1):")
+    sample_steps = [t_list[0], t_list[len(t_list)//4], t_list[len(t_list)//2], t_list[3*len(t_list)//4], t_list[-1]]
+    for t_s in sample_steps:
+        idx_t = t_list.index(t_s)
+        p_id = sample_wmax_id_lidar[idx_t]
+        p_w = sample_wmax_val_lidar[idx_t]
+        print(f"   -> Bước t={t_s:3d}: Hạt #{p_id:02d} (Chiếm {p_w*100:.2f}% trọng số)")
+
     return {
         "t_list": t_list,
         "ess_lidar": mean_ess_lidar,
         "ess_ours": mean_ess_ours,
         "ess_ours_by_sigma": ess_ours_by_sigma,
         "wmax_lidar": mean_wmax_lidar,
+        "wmax_id_lidar": sample_wmax_id_lidar,
         "wmax_ours": mean_wmax_ours,
         "active_lidar": mean_active_lidar,
         "active_ours": mean_active_ours
@@ -1422,6 +1460,8 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             ent_lidar_shards = []
             ent_ours_shards = []
             ent_by_sig_shards = {}
+            dom_id_lidar_shards = []
+            dom_w_lidar_shards = []
             for cp in shard_ckpts_2:
                 try:
                     with open(cp, "r", encoding="utf-8") as f:
@@ -1429,6 +1469,10 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                         t_list = d.get("t_list", [])
                         ent_lidar_shards.append(d.get("entropy_lidar", []))
                         ent_ours_shards.append(d.get("entropy_ours", []))
+                        if "dominant_particle_id_lidar" in d:
+                            dom_id_lidar_shards.append(d["dominant_particle_id_lidar"])
+                        if "dominant_weight_lidar" in d:
+                            dom_w_lidar_shards.append(d["dominant_weight_lidar"])
                         for s_k, s_arr in d.get("entropy_ours_by_sigma", {}).items():
                             if s_k not in ent_by_sig_shards:
                                 ent_by_sig_shards[s_k] = []
@@ -1444,7 +1488,9 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                     "t_list": t_list,
                     "entropy_lidar": np.mean(ent_lidar_shards, axis=0).tolist(),
                     "entropy_ours": np.mean(ent_ours_shards, axis=0).tolist(),
-                    "entropy_ours_by_sigma": merged_by_sig
+                    "entropy_ours_by_sigma": merged_by_sig,
+                    "dominant_particle_id_lidar": dom_id_lidar_shards[0] if dom_id_lidar_shards else [],
+                    "dominant_weight_lidar": dom_w_lidar_shards[0] if dom_w_lidar_shards else []
                 }
 
     # 3. Tự động quét và gom kết quả Test 3 từ tất cả shard checkpoints
@@ -1489,6 +1535,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             ess_ours_shards = []
             ess_by_sig_shards = {}
             wmax_lidar_shards = []
+            wmax_id_lidar_shards = []
             wmax_ours_shards = []
             active_lidar_shards = []
             active_ours_shards = []
@@ -1500,6 +1547,8 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                         ess_lidar_shards.append(d.get("ess_lidar", []))
                         ess_ours_shards.append(d.get("ess_ours", []))
                         wmax_lidar_shards.append(d.get("wmax_lidar", []))
+                        if "wmax_id_lidar" in d:
+                            wmax_id_lidar_shards.append(d["wmax_id_lidar"])
                         wmax_ours_shards.append(d.get("wmax_ours", []))
                         active_lidar_shards.append(d.get("active_lidar", []))
                         active_ours_shards.append(d.get("active_ours", []))
@@ -1519,6 +1568,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                     "ess_ours": np.mean(ess_ours_shards, axis=0).tolist(),
                     "ess_ours_by_sigma": merged_ess_by_sig,
                     "wmax_lidar": np.mean(wmax_lidar_shards, axis=0).tolist() if wmax_lidar_shards else [],
+                    "wmax_id_lidar": wmax_id_lidar_shards[0] if wmax_id_lidar_shards else [],
                     "wmax_ours": np.mean(wmax_ours_shards, axis=0).tolist() if wmax_ours_shards else [],
                     "active_lidar": np.mean(active_lidar_shards, axis=0).tolist() if active_lidar_shards else [],
                     "active_ours": np.mean(active_ours_shards, axis=0).tolist() if active_ours_shards else []
