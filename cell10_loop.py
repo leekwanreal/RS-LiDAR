@@ -52,10 +52,6 @@ def evaluate_geneval_for_folder(target_dir, exp_name):
         for img_path in imgs:
             try:
                 img = Image.open(img_path).convert('RGB')
-                if max(img.size) > 512:
-                    image_processor.size = {"shortest_edge": 800, "longest_edge": 1333}
-                else:
-                    image_processor.size = {"height": 384, "width": 384}
                 inputs = image_processor(images=img, return_tensors="pt").to(device)
                 with torch.inference_mode():
                     outputs = detector(**inputs)
