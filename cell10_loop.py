@@ -52,6 +52,8 @@ def evaluate_geneval_for_folder(target_dir, exp_name):
         for img_path in imgs:
             try:
                 img = Image.open(img_path).convert('RGB')
+                # Cấu hình chuẩn bài báo GenEval gốc: Cạnh ngắn luôn là 800px (chuẩn MMDetection COCO)
+                image_processor.size = {'shortest_edge': 800, 'longest_edge': 1333}
                 inputs = image_processor(images=img, return_tensors="pt").to(device)
                 with torch.inference_mode():
                     outputs = detector(**inputs)
