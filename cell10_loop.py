@@ -1,3 +1,20 @@
+def relative_position(box_a, box_b):
+    """Tính vị trí tương quan của A đối với B (chuẩn bài báo GenEval gốc)"""
+    boxes = np.array([box_a[:4], box_b[:4]])[:, :4].reshape(2, 2, 2)
+    center_a, center_b = boxes.mean(axis=-2)
+    dim_a, dim_b = np.abs(np.diff(boxes, axis=-2))[..., 0, :]
+    offset = center_a - center_b
+    revised_offset = np.maximum(np.abs(offset) - 0.1 * (dim_a + dim_b), 0) * np.sign(offset)
+    if np.all(np.abs(revised_offset) < 1e-3):
+        return set()
+    dx, dy = revised_offset / np.linalg.norm(offset)
+    relations = set()
+    if dx < -0.5: relations.add("left of")
+    if dx > 0.5: relations.add("right of")
+    if dy < -0.5: relations.add("above")
+    if dy > 0.5: relations.add("below")
+    return relations
+
 def evaluate_geneval_for_folder(target_dir, exp_name):
     """Đánh giá ảnh bằng Mask2Former Swin-S, lưu geneval_summary.csv tại chỗ"""
     assert os.path.exists(target_dir), f"❌ Thư mục không tồn tại: {target_dir}"
@@ -66,6 +83,9 @@ def evaluate_geneval_for_folder(target_dir, exp_name):
                 segmentation = results["segmentation"].detach().cpu().numpy()
                 segments_info = results["segments_info"]
 
+                # Sắp xếp các vật thể theo confidence giảm dần (chuẩn bài báo GenEval gốc)
+                segments_info = sorted(segments_info, key=lambda s: s.get("score", 0.0), reverse=True)
+
                 detected_objects = []
                 for seg in segments_info:
                     c_name = id2label[seg["label_id"]].lower()
@@ -74,19 +94,18 @@ def evaluate_geneval_for_folder(target_dir, exp_name):
                     if len(x_indices) > 0 and len(y_indices) > 0:
                         x1, x2 = float(np.min(x_indices)), float(np.max(x_indices))
                         y1, y2 = float(np.min(y_indices)), float(np.max(y_indices))
-                        box = [x1, y1, x2, y2]
+                        box = [x1, y1, x2, y2, seg.get("score", 1.0)]
                         center_x = (x1 + x2) / 2.0
                         center_y = (y1 + y2) / 2.0
 
-                        if (x2 - x1 > 12 and y2 - y1 > 12):
-                            crop = img.crop((max(0, x1), max(0, y1), min(img.width, x2), min(img.height, y2)))
-                            pred_color = classify_crop_color(crop)
-                        else:
-                            pred_color = 'unknown'
+                        pred_color = 'unknown'
+                        if (x2 - x1 > 12 and y2 - y1 > 12) and (tag in ['colors', 'color_attr']):
+                            pred_color = classify_crop_color(img, box, mask, c_name)
+
                         detected_objects.append({
-                            'class': c_name, 'box': box,
+                            'class': c_name, 'box': box, 'mask': mask,
                             'center_x': center_x, 'center_y': center_y,
-                            'color': pred_color
+                            'color': pred_color, 'score': seg.get("score", 1.0)
                         })
 
                 success = False
@@ -107,16 +126,14 @@ def evaluate_geneval_for_folder(target_dir, exp_name):
                     success = any((req_cls in obj['class'] or obj['class'] in req_cls) and (obj['color'] == req_color) for obj in detected_objects)
                 elif tag == 'position':
                     req1, req2 = includes[0]['class'].lower(), includes[1]['class'].lower()
-                    pos_type = includes[1].get('position', ['right of', 0])[0]
+                    pos_info = includes[1].get('position', ['right of', 0])
+                    expected_rel = pos_info[0]
                     o1_list = [o for o in detected_objects if req1 in o['class'] or o['class'] in req1]
                     o2_list = [o for o in detected_objects if req2 in o['class'] or o['class'] in req2]
                     if o1_list and o2_list:
                         o1, o2 = o1_list[0], o2_list[0]
-                        if 'right' in pos_type: success = (o2['center_x'] > o1['center_x'])
-                        elif 'left' in pos_type: success = (o2['center_x'] < o1['center_x'])
-                        elif 'above' in pos_type or 'top' in pos_type: success = (o2['center_y'] < o1['center_y'])
-                        elif 'below' in pos_type or 'bottom' in pos_type: success = (o2['center_y'] > o1['center_y'])
-                        else: success = True
+                        rels = relative_position(o2['box'], o1['box'])
+                        success = (expected_rel in rels)
                 elif tag == 'color_attr':
                     success = all(any((inc['class'].lower() in obj['class'] or obj['class'] in inc['class'].lower()) and (obj['color'] == inc['color'].lower()) for obj in detected_objects) for inc in includes)
 
