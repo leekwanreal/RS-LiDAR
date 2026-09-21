@@ -58,8 +58,10 @@ def evaluate_geneval_for_folder(target_dir, exp_name):
                 with torch.inference_mode():
                     outputs = detector(**inputs)
 
+                # Ngưỡng tin cậy chuẩn bài báo GenEval gốc: 0.9 cho counting, 0.3 cho tất cả các task khác
+                conf_thr = 0.9 if tag == 'counting' else 0.3
                 results = image_processor.post_process_instance_segmentation(
-                    outputs, target_sizes=[img.size[::-1]], threshold=0.5
+                    outputs, target_sizes=[img.size[::-1]], threshold=conf_thr
                 )[0]
                 segmentation = results["segmentation"].detach().cpu().numpy()
                 segments_info = results["segments_info"]
