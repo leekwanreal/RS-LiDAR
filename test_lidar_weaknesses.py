@@ -823,6 +823,8 @@ def run_test_2_softmax_entropy(
     all_entropy_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
     all_dominant_id_lidar = {int(t): [] for t in timesteps}
     all_dominant_w_lidar = {int(t): [] for t in timesteps}
+    all_dominant_id_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
+    all_dominant_w_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
 
     for idx in tqdm(idx_range, desc=f"Test 2 [Shard {shard_id}]"):
         if lookahead_folders and idx < len(lookahead_folders):
@@ -875,6 +877,10 @@ def run_test_2_softmax_entropy(
                 w_r_ours = F.softmax(5000.0 * rewards_ours_dict[s_val] + potential_raw, dim=1)
                 h_ours = - (w_r_ours * (w_r_ours + 1e-12).log2()).sum(dim=1).item()
                 all_entropy_ours[s_val][t_int].append(h_ours)
+                dom_id_o = int(w_r_ours.argmax(dim=1).item())
+                dom_w_o = float(w_r_ours[0, dom_id_o].item())
+                all_dominant_id_ours[s_val][t_int].append(dom_id_o)
+                all_dominant_w_ours[s_val][t_int].append(dom_w_o)
 
     t_list = [int(t) for t in timesteps]
     mean_entropy_lidar = [float(np.mean(all_entropy_lidar[t])) if all_entropy_lidar[t] else 0.0 for t in t_list]
@@ -887,6 +893,81 @@ def run_test_2_softmax_entropy(
 
     sample_dominant_id_lidar = [int(all_dominant_id_lidar[t][0]) if all_dominant_id_lidar[t] else 0 for t in t_list]
     sample_dominant_w_lidar = [float(all_dominant_w_lidar[t][0]) if all_dominant_w_lidar[t] else 1.0 for t in t_list]
+    sample_dominant_id_ours = [int(all_dominant_id_ours[primary_sigma][t][0]) if all_dominant_id_ours[primary_sigma][t] else 0 for t in t_list]
+    sample_dominant_w_ours = [float(all_dominant_w_ours[primary_sigma][t][0]) if all_dominant_w_ours[primary_sigma][t] else 1.0/num_particles for t in t_list]
+
+    # Xuất file CSV chi tiết sụp đổ entropy từng bước (Step-by-Step Particle Collapse)
+    step_rows = []
+    for step_i, t_val in enumerate(t_list):
+        e_l = mean_entropy_lidar[step_i]
+        d_id_l = sample_dominant_id_lidar[step_i]
+        d_w_l = sample_dominant_w_lidar[step_i]
+        neff_l = 2 ** e_l
+
+        e_o = mean_entropy_ours[step_i]
+        d_id_o = sample_dominant_id_ours[step_i]
+        d_w_o = sample_dominant_w_ours[step_i]
+        neff_o = 2 ** e_o
+
+        status = "⚠️ SỤP ĐỔ VỀ 1 HẠT (Mode Collapse)" if d_w_l > 0.9 else ("⚡ BẮT ĐẦU SỤP ĐỔ" if d_w_l > 0.5 else "✅ PHÂN BỐ ĐỀU")
+
+        step_rows.append({
+            "Step": step_i + 1,
+            "Timestep": t_val,
+            "LiDAR_Dominant_Particle": f"Hạt #{d_id_l:02d}",
+            "LiDAR_Dominant_Weight": f"{d_w_l * 100:.2f}%",
+            "LiDAR_Entropy_bits": f"{e_l:.4f}",
+            "LiDAR_N_eff": f"{neff_l:.2f}",
+            "RSLiDAR_Dominant_Particle": f"Hạt #{d_id_o:02d}",
+            "RSLiDAR_Dominant_Weight": f"{d_w_o * 100:.2f}%",
+            "RSLiDAR_Entropy_bits": f"{e_o:.4f}",
+            "RSLiDAR_N_eff": f"{neff_o:.2f}",
+            "Trạng Thái": status
+        })
+
+    os.makedirs(output_dir, exist_ok=True)
+    try:
+        import pandas as pd
+        df_step = pd.DataFrame(step_rows)
+        step_csv_name = f"test_2_entropy_collapse_by_step_shard_{shard_id}.csv" if num_shards > 1 else "test_2_entropy_collapse_by_step.csv"
+        step_csv_path = os.path.join(output_dir, step_csv_name)
+        df_step.to_csv(step_csv_path, index=False)
+        print(f"💾 Đã lưu chi tiết sụp đổ entropy từng bước tại: {step_csv_path}")
+    except Exception as e:
+        print(f"Lưu CSV step error: {e}")
+
+    # Tạo đồ thị chuyên biệt cho Test 2 (Entropy & Dominant Particle Weight)
+    try:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+        # Đồ thị 1: Softmax Entropy H(w)
+        ax1.plot(t_list, mean_entropy_lidar, 'r--', marker='o', linewidth=2.5, label="LiDAR (σ=0, Collapse)")
+        for s_val, s_ent in sorted(entropy_ours_by_sigma.items()):
+            ax1.plot(t_list, s_ent, marker='s', linewidth=2, label=f"RS-LiDAR (σ={s_val})")
+        ax1.axhline(y=np.log2(num_particles), color='gray', linestyle=':', label=f"Uniform Max ({np.log2(num_particles):.2f} bits)")
+        ax1.set_xlabel("Diffusion Timestep t", fontsize=12)
+        ax1.set_ylabel("Softmax Entropy H(w) (bits)", fontsize=12)
+        ax1.set_title("Test 2A: Softmax Entropy Collapse Across Timesteps", fontsize=13, fontweight="bold")
+        ax1.grid(True, linestyle="--", alpha=0.5)
+        ax1.legend(fontsize=10)
+
+        # Đồ thị 2: Trọng số hạt thống trị w_max (%)
+        ax2.plot(t_list, [w * 100 for w in sample_dominant_w_lidar], 'r--', marker='o', linewidth=2.5, label="LiDAR w_max (Best-of-1 Trap)")
+        ax2.plot(t_list, [w * 100 for w in sample_dominant_w_ours], 'g-', marker='s', linewidth=2, label=f"RS-LiDAR w_max (σ={primary_sigma})")
+        ax2.axhline(y=(1.0 / num_particles) * 100, color='gray', linestyle=':', label=f"Uniform Share ({100.0/num_particles:.1f}%)")
+        ax2.set_xlabel("Diffusion Timestep t", fontsize=12)
+        ax2.set_ylabel("Dominant Particle Weight w_max (%)", fontsize=12)
+        ax2.set_title("Test 2B: Dominant Particle Weight Surge (Mode Collapse)", fontsize=13, fontweight="bold")
+        ax2.grid(True, linestyle="--", alpha=0.5)
+        ax2.legend(fontsize=10)
+
+        fig.tight_layout()
+        plot_p = os.path.join(output_dir, "test_2_entropy_and_dominant_particles.png")
+        fig.savefig(plot_p, dpi=200)
+        plt.close(fig)
+        print(f"📈 Đã lưu đồ thị chuyên biệt Test 2 tại: {plot_p}")
+    except Exception as e:
+        print(f"Vẽ đồ thị Test 2 error: {e}")
 
     ckpt_file = os.path.join(output_dir, f"test_2_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_2_checkpoint.json")
     with open(ckpt_file, "w", encoding="utf-8") as f:
@@ -896,7 +977,9 @@ def run_test_2_softmax_entropy(
             "entropy_ours": mean_entropy_ours,
             "entropy_ours_by_sigma": {str(k): v for k, v in entropy_ours_by_sigma.items()},
             "dominant_particle_id_lidar": sample_dominant_id_lidar,
-            "dominant_weight_lidar": sample_dominant_w_lidar
+            "dominant_weight_lidar": sample_dominant_w_lidar,
+            "dominant_particle_id_ours": sample_dominant_id_ours,
+            "dominant_weight_ours": sample_dominant_w_ours
         }, f)
 
     print(f"\n📊 KẾT QUẢ BÀI TEST 2 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS:")
@@ -905,13 +988,16 @@ def run_test_2_softmax_entropy(
     for s_val, s_ent in sorted(entropy_ours_by_sigma.items()):
         print(f" • Entropy trung bình RS-LiDAR (σ={s_val:.2f}):            {np.mean(s_ent):.4f} bits (Phân bổ mượt mà đa hạt)")
 
-    print(f"\n🔍 CHI TIẾT ẢNH/HẠT CHIẾM TRỌNG SỐ LỚN NHẤT TẠI CÁC TIMESTEP (LiDAR Gốc mẫu Prompt 1):")
-    sample_steps = [t_list[0], t_list[len(t_list)//4], t_list[len(t_list)//2], t_list[3*len(t_list)//4], t_list[-1]]
-    for t_s in sample_steps:
-        idx_t = t_list.index(t_s)
-        p_id = sample_dominant_id_lidar[idx_t]
-        p_w = sample_dominant_w_lidar[idx_t]
-        print(f"   -> Bước t={t_s:3d}: Hạt #{p_id:02d} (Chiếm {p_w*100:.2f}% trọng số)")
+    print(f"\n" + "="*98)
+    print(f"🔍 BẢNG CHI TIẾT SỰ SỤP ĐỔ ENTROPY VỀ HẠT NÀO Ở TỪNG BƯỚC (Prompt 1, N={num_particles} hạt):")
+    print("="*98)
+    print(f"{'Bước':<6} {'Timestep':<10} {'LiDAR Hạt #':<14} {'LiDAR Trọng Số':<16} {'LiDAR Entropy':<16} {'RS-LiDAR Entropy':<18} {'Trạng Thái'}")
+    print("-" * 98)
+    for r in step_rows:
+        step_num = r['Step']
+        if step_num <= 5 or step_num % 5 == 0 or step_num >= len(step_rows) - 2:
+            print(f"{r['Step']:<6} {r['Timestep']:<10} {r['LiDAR_Dominant_Particle']:<14} {r['LiDAR_Dominant_Weight']:<16} {r['LiDAR_Entropy_bits']:<16} {r['RSLiDAR_Entropy_bits']:<18} {r['Trạng Thái']}")
+    print("="*98)
 
     return {
         "t_list": t_list,
@@ -919,7 +1005,9 @@ def run_test_2_softmax_entropy(
         "entropy_ours": mean_entropy_ours,
         "entropy_ours_by_sigma": entropy_ours_by_sigma,
         "dominant_particle_id_lidar": sample_dominant_id_lidar,
-        "dominant_weight_lidar": sample_dominant_w_lidar
+        "dominant_weight_lidar": sample_dominant_w_lidar,
+        "dominant_particle_id_ours": sample_dominant_id_ours,
+        "dominant_weight_ours": sample_dominant_w_ours
     }
 
 
@@ -1462,6 +1550,8 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             ent_by_sig_shards = {}
             dom_id_lidar_shards = []
             dom_w_lidar_shards = []
+            dom_id_ours_shards = []
+            dom_w_ours_shards = []
             for cp in shard_ckpts_2:
                 try:
                     with open(cp, "r", encoding="utf-8") as f:
@@ -1473,6 +1563,10 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                             dom_id_lidar_shards.append(d["dominant_particle_id_lidar"])
                         if "dominant_weight_lidar" in d:
                             dom_w_lidar_shards.append(d["dominant_weight_lidar"])
+                        if "dominant_particle_id_ours" in d:
+                            dom_id_ours_shards.append(d["dominant_particle_id_ours"])
+                        if "dominant_weight_ours" in d:
+                            dom_w_ours_shards.append(d["dominant_weight_ours"])
                         for s_k, s_arr in d.get("entropy_ours_by_sigma", {}).items():
                             if s_k not in ent_by_sig_shards:
                                 ent_by_sig_shards[s_k] = []
@@ -1490,7 +1584,9 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                     "entropy_ours": np.mean(ent_ours_shards, axis=0).tolist(),
                     "entropy_ours_by_sigma": merged_by_sig,
                     "dominant_particle_id_lidar": dom_id_lidar_shards[0] if dom_id_lidar_shards else [],
-                    "dominant_weight_lidar": dom_w_lidar_shards[0] if dom_w_lidar_shards else []
+                    "dominant_weight_lidar": dom_w_lidar_shards[0] if dom_w_lidar_shards else [],
+                    "dominant_particle_id_ours": dom_id_ours_shards[0] if dom_id_ours_shards else [],
+                    "dominant_weight_ours": dom_w_ours_shards[0] if dom_w_ours_shards else []
                 }
 
     # 3. Tự động quét và gom kết quả Test 3 từ tất cả shard checkpoints
