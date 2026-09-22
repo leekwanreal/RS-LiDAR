@@ -794,11 +794,12 @@ def run_test_2_softmax_entropy(
     num_particles=50, num_steps=50, sigma=0.25,
     tune_sigma=False, sigmas_to_sweep=None,
     lookahead_dir=None, prompt_list=None, device="cuda",
-    num_shards=1, shard_id=0, output_dir="experiments/test_results"
+    num_shards=1, shard_id=0, output_dir="experiments/test_results",
+    num_mc_samples=4
 ):
     active_sigmas = sigmas_to_sweep if (tune_sigma and sigmas_to_sweep) else [sigma]
     print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 2] ĐO KHẢ NĂNG KHÁNG SỤP ĐỔ ENTROPY SOFTMAX (sigmas={active_sigmas}) (Shard {shard_id + 1}/{num_shards})")
+    print(f"🔬 [BÀI TEST 2] ĐO KHẢ NĂNG KHÁNG SỤP ĐỔ ENTROPY SOFTMAX (sigmas={active_sigmas}, M={num_mc_samples}) (Shard {shard_id + 1}/{num_shards})")
     print("="*80)
 
     scheduler = DDIMScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
@@ -851,7 +852,7 @@ def run_test_2_softmax_entropy(
         rewards_lidar = rewards_raw
 
         # 2. Phương pháp của Bạn: Kỳ vọng điểm thưởng khi thêm nhiễu Gaussian xi ~ N(0, sigma^2 I)
-        M_exp = 4
+        M_exp = num_mc_samples
         rewards_ours_dict = {}
         for s_val in active_sigmas:
             noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
@@ -1096,6 +1097,7 @@ def run_test_2_softmax_entropy(
             "dominant_weight_lidar": sample_dominant_w_lidar,
             "dominant_particle_id_ours": sample_dominant_id_ours,
             "dominant_weight_ours": sample_dominant_w_ours,
+            "M": num_mc_samples,
             "prompt_collapsed_rows": prompt_collapsed_rows
         }, f)
 
@@ -2333,6 +2335,7 @@ def get_args():
     parser.add_argument("--use_aesthetic", action="store_true", default=False, help="Whether to evaluate Aesthetic Score (LAION MLP)")
     parser.add_argument("--use_pickscore", action="store_true", default=False, help="Whether to evaluate PickScore (yuvalkirstain/PickScore_v1)")
     parser.add_argument("--all_rewards", action="store_true", default=False, help="Enable all 5 reward models: ImageReward, CLIP, HPS v2.1, Aesthetic, PickScore")
+    parser.add_argument("--num_mc_samples", "--M", type=int, default=4, help="Number of Monte Carlo samples M for Randomized Smoothing expectation")
     parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing checkpoints and re-run tests from prompt 1")
     return parser.parse_args()
 
@@ -2477,12 +2480,13 @@ if __name__ == "__main__":
 
     if run_all or "2" in requested_tests:
         res2 = run_test_2_softmax_entropy(
-            num_particles=50, sigma=args.sigma,
+            num_particles=args.num_particles, sigma=args.sigma,
             tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
             lookahead_dir=args.lookahead_dir,
             prompt_list=test_prompts, device=device,
             num_shards=args.num_shards, shard_id=args.shard_id,
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            num_mc_samples=args.num_mc_samples
         )
 
     if run_all or "3" in requested_tests:
