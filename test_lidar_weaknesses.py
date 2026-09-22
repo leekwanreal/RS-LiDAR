@@ -791,6 +791,7 @@ def run_test_1_solver_robustness(
 # 🔬 TEST 2: Kháng Sụp đổ Trọng số Softmax (Softmax Mode Collapse Prevention)
 # ======================================================================================
 def run_test_2_softmax_entropy(
+    pipe=None,
     num_particles=50, num_steps=50, sigma=0.25,
     tune_sigma=False, sigmas_to_sweep=None,
     lookahead_dir=None, prompt_list=None, device="cuda",
@@ -832,6 +833,19 @@ def run_test_2_softmax_entropy(
     vae_decoder = None
 
     for idx in tqdm(idx_range, desc=f"Test 2 [Shard {shard_id}]"):
+        prompt_str = f"Prompt #{idx:03d}"
+        if prompt_list and idx < len(prompt_list):
+            p_item = prompt_list[idx]
+            prompt_str = p_item.get("prompt", str(p_item)) if isinstance(p_item, dict) else str(p_item)
+        elif lookahead_folders and idx < len(lookahead_folders):
+            try:
+                res_f = os.path.join(lookahead_folders[idx], "results.json")
+                if os.path.exists(res_f):
+                    with open(res_f, "r", encoding="utf-8") as f_res:
+                        prompt_str = json.load(f_res).get("prompt", os.path.basename(lookahead_folders[idx]))
+            except Exception:
+                prompt_str = os.path.basename(lookahead_folders[idx])
+
         if lookahead_folders and idx < len(lookahead_folders):
             p_folder = lookahead_folders[idx]
             try:
@@ -858,16 +872,31 @@ def run_test_2_softmax_entropy(
             noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
             rewards_ours_dict[s_val] = rewards_raw + noise_evals.mean(dim=0, keepdim=True)
 
-        current_latent = torch.randn(1, 1, 4, 64, 64, device=device)
+        # 3. Chuẩn bị Prompt Embeddings nếu có Pipeline (cho UNet Denoising thật)
+        prompt_embeds = None
+        if pipe is not None:
+            text_inputs = pipe.tokenizer(
+                prompt_str, padding="max_length", max_length=pipe.tokenizer.model_max_length,
+                truncation=True, return_tensors="pt"
+            )
+            text_embeddings = pipe.text_encoder(text_inputs.input_ids.to(device))[0]
+            uncond_inputs = pipe.tokenizer(
+                [""], padding="max_length", max_length=pipe.tokenizer.model_max_length, return_tensors="pt"
+            )
+            uncond_embeddings = pipe.text_encoder(uncond_inputs.input_ids.to(device))[0]
+            prompt_embeds = torch.cat([uncond_embeddings, text_embeddings])
 
-        for t in timesteps:
+        current_latent = torch.randn(1, 4, 64, 64, device=device, dtype=pipe.unet.dtype if pipe else torch.float32)
+
+        for step_idx, t in enumerate(timesteps):
             t_int = int(t.item())
             alpha_prod_t = scheduler.alphas_cumprod[t_int].to(device)
 
-            raw_diff_sq = - (current_latent.float() - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
+            lat_expand = current_latent.unsqueeze(1).float()
+            raw_diff_sq = - (lat_expand - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
             potential_raw = (raw_diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
 
-            # LiDAR gốc: dùng reward thô r_i (Best-of-1 Trap)
+            # LiDAR gốc: dùng reward thô r_i (Best-of-1 Trap) trên x_t thật
             w_r_lidar = F.softmax(5000.0 * rewards_lidar + potential_raw, dim=1)
             h_lidar = - (w_r_lidar * (w_r_lidar + 1e-12).log2()).sum(dim=1).item()
             all_entropy_lidar[t_int].append(h_lidar)
@@ -887,6 +916,29 @@ def run_test_2_softmax_entropy(
                 all_dominant_id_ours[s_val][t_int].append(dom_id_o)
                 all_dominant_w_ours[s_val][t_int].append(dom_w_o)
 
+            # 4. BƯỚC KHỬ NHIỄU (DENOISING STEP): Cập nhật thực tế x_t -> x_{t-1}
+            if pipe is not None:
+                latent_input = torch.cat([current_latent] * 2)
+                latent_input = scheduler.scale_model_input(latent_input, t)
+                with torch.no_grad():
+                    noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=prompt_embeds).sample
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + 7.5 * (noise_pred_text - noise_pred_uncond)
+
+                # Dẫn đường LiDAR trên gradient nhiễu (Closed-form FKD steering)
+                w_base = F.softmax(potential_raw, dim=1)
+                delta_w = (w_r_lidar - w_base)[..., None, None, None]
+                guide = (delta_w * lookahead_latents).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
+                noise_pred = noise_pred - (1 - alpha_prod_t) ** 0.5 * guide.to(noise_pred.dtype) * 10.0
+
+                current_latent = scheduler.step(noise_pred, t, current_latent).prev_sample
+            else:
+                next_t = timesteps[step_idx + 1] if step_idx + 1 < len(timesteps) else 0
+                next_alpha = scheduler.alphas_cumprod[int(next_t)].to(device) if next_t > 0 else torch.tensor(1.0, device=device)
+                best_lat = lookahead_latents[:, dom_id_l:dom_id_l+1].squeeze(1)
+                eps = torch.randn_like(current_latent)
+                current_latent = (next_alpha ** 0.5) * best_lat + ((1 - next_alpha) ** 0.5) * eps
+
         # Trích xuất và lưu ảnh sụp đổ của Prompt hiện tại
         primary_sig = sigma if sigma in active_sigmas else active_sigmas[0]
         final_dom_l = dom_id_l
@@ -897,19 +949,6 @@ def run_test_2_softmax_entropy(
         final_w_o = dom_w_o
         final_r_o = float(rewards_ours_dict[primary_sig][0, final_dom_o].item())
         final_h_o = float(all_entropy_ours[primary_sig][int(timesteps[-1].item())][-1])
-
-        prompt_str = f"Prompt #{idx:03d}"
-        if prompt_list and idx < len(prompt_list):
-            p_item = prompt_list[idx]
-            prompt_str = p_item.get("prompt", str(p_item)) if isinstance(p_item, dict) else str(p_item)
-        elif lookahead_folders and idx < len(lookahead_folders):
-            try:
-                res_f = os.path.join(lookahead_folders[idx], "results.json")
-                if os.path.exists(res_f):
-                    with open(res_f, "r", encoding="utf-8") as f_res:
-                        prompt_str = json.load(f_res).get("prompt", os.path.basename(lookahead_folders[idx]))
-            except Exception:
-                prompt_str = os.path.basename(lookahead_folders[idx])
 
         collapsed_dir = os.path.join(output_dir, "collapsed_images")
         os.makedirs(collapsed_dir, exist_ok=True)
@@ -2375,10 +2414,10 @@ if __name__ == "__main__":
     requested_tests = [t.strip().lower() for t in args.test.split(",") if t.strip()]
     run_all = ("all" in requested_tests)
 
-    # Khởi tạo mô hình Pipeline & ImageReward khi chạy Test 1 hoặc Test 5
+    # Khởi tạo mô hình Pipeline & ImageReward khi chạy Test 1, Test 2 hoặc Test 5
     pipe, vae, ir_model = None, None, None
-    if run_all or "1" in requested_tests or "5" in requested_tests:
-        print("\n🚀 Khởi tạo Pipeline & ImageReward cho thực nghiệm...")
+    if run_all or "1" in requested_tests or "2" in requested_tests or "5" in requested_tests:
+        print("\n🚀 Khởi tạo Pipeline & Scheduler cho thực nghiệm...")
         pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16).to(device)
         vae = pipe.vae
         try:
@@ -2389,6 +2428,8 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
 
+    if run_all or "1" in requested_tests or "5" in requested_tests:
+        print("\n🚀 Nạp ImageReward Model...")
         try:
             ir_model = rm_load("ImageReward-v1.0", device=device)
         except TypeError:
@@ -2480,6 +2521,7 @@ if __name__ == "__main__":
 
     if run_all or "2" in requested_tests:
         res2 = run_test_2_softmax_entropy(
+            pipe=pipe,
             num_particles=args.num_particles, sigma=args.sigma,
             tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
             lookahead_dir=args.lookahead_dir,
