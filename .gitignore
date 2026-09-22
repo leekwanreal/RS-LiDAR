@@ -45,3 +45,4 @@ geneval_official_repo/
 # Notebook build & temporary helper scripts
 notebook_build_scripts/
 cell*.py
+scratch/

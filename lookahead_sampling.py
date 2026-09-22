@@ -494,10 +494,20 @@ def main(args):
         json.dump(metrics_arr, f, indent=4)
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="Lookahead_samples")
-    parser.add_argument("--save_individual_images", type=bool, default=False)
+    parser.add_argument("--save_individual_images", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--num_particles", type=int, default=100)
     parser.add_argument("--num_inference_steps", type=int, default=100)
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward")

@@ -827,6 +827,8 @@ def run_test_2_softmax_entropy(
     all_dominant_w_lidar = {int(t): [] for t in timesteps}
     all_dominant_id_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
     all_dominant_w_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
+    prompt_collapsed_rows = []
+    vae_decoder = None
 
     for idx in tqdm(idx_range, desc=f"Test 2 [Shard {shard_id}]"):
         if lookahead_folders and idx < len(lookahead_folders):
@@ -884,6 +886,105 @@ def run_test_2_softmax_entropy(
                 all_dominant_id_ours[s_val][t_int].append(dom_id_o)
                 all_dominant_w_ours[s_val][t_int].append(dom_w_o)
 
+        # Trích xuất và lưu ảnh sụp đổ của Prompt hiện tại
+        primary_sig = sigma if sigma in active_sigmas else active_sigmas[0]
+        final_dom_l = dom_id_l
+        final_w_l = dom_w_l
+        final_r_l = float(rewards_lidar[0, final_dom_l].item())
+
+        final_dom_o = dom_id_o
+        final_w_o = dom_w_o
+        final_r_o = float(rewards_ours_dict[primary_sig][0, final_dom_o].item())
+        final_h_o = float(all_entropy_ours[primary_sig][int(timesteps[-1].item())][-1])
+
+        prompt_str = f"Prompt #{idx:03d}"
+        if prompt_list and idx < len(prompt_list):
+            p_item = prompt_list[idx]
+            prompt_str = p_item.get("prompt", str(p_item)) if isinstance(p_item, dict) else str(p_item)
+        elif lookahead_folders and idx < len(lookahead_folders):
+            try:
+                res_f = os.path.join(lookahead_folders[idx], "results.json")
+                if os.path.exists(res_f):
+                    with open(res_f, "r", encoding="utf-8") as f_res:
+                        prompt_str = json.load(f_res).get("prompt", os.path.basename(lookahead_folders[idx]))
+            except Exception:
+                prompt_str = os.path.basename(lookahead_folders[idx])
+
+        collapsed_dir = os.path.join(output_dir, "collapsed_images")
+        os.makedirs(collapsed_dir, exist_ok=True)
+        saved_l_img_name = "N/A"
+        saved_o_img_name = "N/A"
+
+        if lookahead_folders and idx < len(lookahead_folders):
+            p_f = lookahead_folders[idx]
+            import shutil
+            # 1. Tìm hoặc lưu ảnh hạt mà LiDAR sụp đổ về
+            cands_l = [
+                os.path.join(p_f, "samples", f"{final_dom_l:05d}.png"),
+                os.path.join(p_f, "best_of_n_samples", f"{final_dom_l:05d}.png"),
+                os.path.join(p_f, "best_of_n_samples", "00000.png") if final_dom_l == 0 else None,
+            ]
+            src_l = next((p for p in cands_l if p and os.path.exists(p)), None)
+            dest_l = os.path.join(collapsed_dir, f"prompt_{idx:03d}_lidar_collapse_particle_{final_dom_l:02d}.png")
+            if src_l:
+                shutil.copy2(src_l, dest_l)
+                saved_l_img_name = os.path.basename(dest_l)
+            else:
+                try:
+                    if vae_decoder is None:
+                        from diffusers import AutoencoderKL
+                        vae_decoder = AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
+                    with torch.no_grad():
+                        lat_chunk = (lookahead_latents[:, final_dom_l].float() / vae_decoder.config.scaling_factor)
+                        img_t = vae_decoder.decode(lat_chunk).sample
+                        img_t = (img_t / 2 + 0.5).clamp(0, 1)
+                        from torchvision import transforms
+                        transforms.ToPILImage()(img_t[0].cpu()).save(dest_l)
+                        saved_l_img_name = os.path.basename(dest_l)
+                except Exception:
+                    pass
+
+            # 2. Tìm hoặc lưu ảnh hạt top của RS-LiDAR
+            cands_o = [
+                os.path.join(p_f, "samples", f"{final_dom_o:05d}.png"),
+                os.path.join(p_f, "best_of_n_samples", f"{final_dom_o:05d}.png"),
+                os.path.join(p_f, "best_of_n_samples", "00000.png") if final_dom_o == 0 else None,
+            ]
+            src_o = next((p for p in cands_o if p and os.path.exists(p)), None)
+            dest_o = os.path.join(collapsed_dir, f"prompt_{idx:03d}_rslidar_top_particle_{final_dom_o:02d}.png")
+            if src_o:
+                shutil.copy2(src_o, dest_o)
+                saved_o_img_name = os.path.basename(dest_o)
+            else:
+                try:
+                    if vae_decoder is None:
+                        from diffusers import AutoencoderKL
+                        vae_decoder = AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
+                    with torch.no_grad():
+                        lat_chunk_o = (lookahead_latents[:, final_dom_o].float() / vae_decoder.config.scaling_factor)
+                        img_t_o = vae_decoder.decode(lat_chunk_o).sample
+                        img_t_o = (img_t_o / 2 + 0.5).clamp(0, 1)
+                        from torchvision import transforms
+                        transforms.ToPILImage()(img_t_o[0].cpu()).save(dest_o)
+                        saved_o_img_name = os.path.basename(dest_o)
+                except Exception:
+                    pass
+
+        prompt_collapsed_rows.append({
+            "Prompt_ID": idx,
+            "Prompt_Text": prompt_str,
+            "LiDAR_Collapsed_Particle": f"Hạt #{final_dom_l:02d}",
+            "LiDAR_Weight": f"{final_w_l * 100:.2f}%",
+            "LiDAR_ImageReward": f"{final_r_l:.4f}",
+            "LiDAR_Image": saved_l_img_name,
+            "RSLiDAR_Top_Particle": f"Hạt #{final_dom_o:02d}",
+            "RSLiDAR_Top_Weight": f"{final_w_o * 100:.2f}%",
+            "RSLiDAR_Top_ImageReward": f"{final_r_o:.4f}",
+            "RSLiDAR_Entropy_bits": f"{final_h_o:.4f}",
+            "RSLiDAR_N_eff": f"{2 ** final_h_o:.2f}",
+            "RSLiDAR_Image": saved_o_img_name,
+        })
+
     t_list = [int(t) for t in timesteps]
     mean_entropy_lidar = [float(np.mean(all_entropy_lidar[t])) if all_entropy_lidar[t] else 0.0 for t in t_list]
     entropy_ours_by_sigma = {
@@ -935,8 +1036,21 @@ def run_test_2_softmax_entropy(
         step_csv_path = os.path.join(output_dir, step_csv_name)
         df_step.to_csv(step_csv_path, index=False)
         print(f"💾 Đã lưu chi tiết sụp đổ entropy từng bước tại: {step_csv_path}")
+
+        if prompt_collapsed_rows:
+            df_prompts = pd.DataFrame(prompt_collapsed_rows)
+            p_csv_name = f"test_2_prompt_collapsed_particles_shard_{shard_id}.csv" if num_shards > 1 else "test_2_prompt_collapsed_particles.csv"
+            p_csv_path = os.path.join(output_dir, p_csv_name)
+            df_prompts.to_csv(p_csv_path, index=False)
+            print(f"💾 Đã lưu bảng tổng hợp hạt sụp đổ theo từng prompt tại: {p_csv_path}")
+
+            p_md_name = f"test_2_prompt_collapsed_particles_shard_{shard_id}.md" if num_shards > 1 else "test_2_prompt_collapsed_particles.md"
+            p_md_path = os.path.join(output_dir, p_md_name)
+            with open(p_md_path, "w", encoding="utf-8") as f_p_md:
+                f_p_md.write(df_prompts.to_markdown(index=False))
+            print(f"📝 Đã lưu báo cáo Markdown hạt sụp đổ tại: {p_md_path}")
     except Exception as e:
-        print(f"Lưu CSV step error: {e}")
+        print(f"Lưu CSV step/prompts error: {e}")
 
     # Tạo đồ thị chuyên biệt cho Test 2 (Entropy & Dominant Particle Weight)
     try:
@@ -981,7 +1095,8 @@ def run_test_2_softmax_entropy(
             "dominant_particle_id_lidar": sample_dominant_id_lidar,
             "dominant_weight_lidar": sample_dominant_w_lidar,
             "dominant_particle_id_ours": sample_dominant_id_ours,
-            "dominant_weight_ours": sample_dominant_w_ours
+            "dominant_weight_ours": sample_dominant_w_ours,
+            "prompt_collapsed_rows": prompt_collapsed_rows
         }, f)
 
     print(f"\n📊 KẾT QUẢ BÀI TEST 2 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS:")
