@@ -809,6 +809,8 @@ def run_test_2_softmax_entropy(
     lookahead_folders = []
     if lookahead_dir and os.path.exists(lookahead_dir):
         lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
+        if prompt_list and len(prompt_list) > 0:
+            lookahead_folders = lookahead_folders[:len(prompt_list)]
 
     total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
     if num_shards > 1:
@@ -1032,6 +1034,8 @@ def run_test_3_guidance_stability(
     lookahead_folders = []
     if lookahead_dir and os.path.exists(lookahead_dir):
         lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
+        if prompt_list and len(prompt_list) > 0:
+            lookahead_folders = lookahead_folders[:len(prompt_list)]
 
     total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
     if num_shards > 1:
@@ -1153,6 +1157,8 @@ def run_test_4_effective_sample_size(
     lookahead_folders = []
     if lookahead_dir and os.path.exists(lookahead_dir):
         lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
+        if prompt_list and len(prompt_list) > 0:
+            lookahead_folders = lookahead_folders[:len(prompt_list)]
 
     total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
     if num_shards > 1:
