@@ -207,7 +207,15 @@ def main(args):
         pipe.to("cuda", dtype=torch.float16)
 
     # set device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        if getattr(args, "gpu_id", None) is not None:
+            actual_gpu = args.gpu_id if args.gpu_id < torch.cuda.device_count() else (args.gpu_id % torch.cuda.device_count())
+            torch.cuda.set_device(actual_gpu)
+            device = f"cuda:{actual_gpu}"
+        else:
+            device = "cuda:0"
+    else:
+        device = "cpu"
     pipe = pipe.to(device)
     if hasattr(pipe, "enable_vae_slicing"):
         try:
