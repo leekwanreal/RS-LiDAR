@@ -151,7 +151,7 @@ def main(args):
         base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
         repo_name = "tianweiy/DMD2"
         ckpt_name = "dmd2_sdxl_4step_lora_fp16.safetensors"
-        pipe = DiffusionPipeline.from_pretrained(base_model_id, torch_dtype=torch.float16, variant="fp16").to("cuda")
+        pipe = DiffusionPipeline.from_pretrained(base_model_id, torch_dtype=torch.float16, variant="fp16").to(device)
         pipe.load_lora_weights(hf_hub_download(repo_name, ckpt_name))
         pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
         pipe.fuse_lora(lora_scale=1.0)
@@ -161,9 +161,9 @@ def main(args):
         base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
         repo_name = "tianweiy/DMD2"
         ckpt_name = "dmd2_sdxl_1step_unet_fp16.bin"
-        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to("cuda", torch.float16)
-        unet.load_state_dict(torch.load(hf_hub_download(repo_name, ckpt_name), map_location="cuda"))
-        pipe = DiffusionPipeline.from_pretrained(base_model_id, unet=unet, torch_dtype=torch.float16, variant="fp16").to("cuda")
+        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
+        unet.load_state_dict(torch.load(hf_hub_download(repo_name, ckpt_name), map_location=device))
+        pipe = DiffusionPipeline.from_pretrained(base_model_id, unet=unet, torch_dtype=torch.float16, variant="fp16").to(device)
         pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
         pipe.vae.to(dtype=torch.float32)
 
@@ -172,7 +172,7 @@ def main(args):
         adapter_id = "latent-consistency/lcm-lora-sdxl"
         pipe = AutoPipelineForText2Image.from_pretrained(model_id, torch_dtype=torch.float16, variant="fp16")
         pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
-        pipe.to("cuda")
+        pipe.to(device)
         pipe.load_lora_weights(adapter_id)
         pipe.fuse_lora()
         pipe.vae.to(dtype=torch.float32)
@@ -181,7 +181,7 @@ def main(args):
         base = "stabilityai/stable-diffusion-xl-base-1.0"
         repo = "ByteDance/SDXL-Lightning"
         ckpt = "sdxl_lightning_4step_lora.safetensors"
-        pipe = StableDiffusionXLPipeline.from_pretrained(base, torch_dtype=torch.float16, variant="fp16").to("cuda")
+        pipe = StableDiffusionXLPipeline.from_pretrained(base, torch_dtype=torch.float16, variant="fp16").to(device)
         pipe.load_lora_weights(hf_hub_download(repo, ckpt))
         pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
         pipe.fuse_lora()
@@ -191,9 +191,9 @@ def main(args):
         base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
         repo_name = "ByteDance/Hyper-SD"
         ckpt_name = "Hyper-SDXL-1step-Unet.safetensors"
-        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to("cuda", torch.float16)
-        unet.load_state_dict(load_file(hf_hub_download(repo_name, ckpt_name), device="cuda"))
-        pipe = DiffusionPipeline.from_pretrained(base_model_id, unet=unet, torch_dtype=torch.float16,variant="fp16").to("cuda")
+        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
+        unet.load_state_dict(load_file(hf_hub_download(repo_name, ckpt_name), device=device))
+        pipe = DiffusionPipeline.from_pretrained(base_model_id, unet=unet, torch_dtype=torch.float16,variant="fp16").to(device)
         pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
         pipe.vae.to(dtype=torch.float32)
 
@@ -204,7 +204,7 @@ def main(args):
         pipe = FluxPipeline.from_pretrained(base_model_id, token=os.environ.get("HF_TOKEN", True))
         pipe.load_lora_weights(hf_hub_download(repo_name, ckpt_name))
         pipe.fuse_lora(lora_scale=0.125)
-        pipe.to("cuda", dtype=torch.float16)
+        pipe.to(device, dtype=torch.float16)
 
     # set device
     if torch.cuda.is_available():
@@ -517,7 +517,7 @@ def get_args():
     parser.add_argument("--output_dir", type=str, default="Lookahead_samples")
     parser.add_argument("--save_individual_images", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--num_particles", type=int, default=100)
-    parser.add_argument("--num_inference_steps", type=int, default=100)
+    parser.add_argument("--num_inference_steps", "--steps", dest="num_inference_steps", type=int, default=100)
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward")
     parser.add_argument("--metrics_to_compute",type=str,default="ImageReward#Clip-Score",help="# separated list of metrics")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl")

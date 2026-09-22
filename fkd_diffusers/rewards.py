@@ -92,30 +92,40 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
         cache_dir = os.path.expanduser("~/.cache/hpsv2")
         os.makedirs(cache_dir, exist_ok=True)
         lock_path = os.path.join(cache_dir, "hpsv2_download.lock")
-        scores = []
-        with FileLock(lock_path):
-            # Tối ưu tốc độ cao: Nếu toàn bộ ảnh dùng chung prompt, truyền trọn batch vào hpsv2.score 1 lượt
-            if len(prompt_texts) > 0 and len(set(prompt_texts)) <= 1:
-                try:
-                    raw_res = hpsv2.score(images, prompt_texts[0], hps_version="v2.1")
-                    if isinstance(raw_res, (list, tuple, np.ndarray, torch.Tensor)):
-                        scores = [float(x) for x in raw_res]
-                    else:
-                        scores = [float(raw_res)]
-                except Exception:
-                    scores = []
+        hps_weight_file = os.path.join(cache_dir, "HPS_v2.1_compressed.pt")
+        if not os.path.exists(hps_weight_file):
+            with FileLock(lock_path):
+                if not os.path.exists(hps_weight_file):
+                    try:
+                        from PIL import Image as _PILImg
+                        _dummy = _PILImg.new("RGB", (224, 224))
+                        _ = hpsv2.score(_dummy, "warmup", hps_version="v2.1")
+                    except Exception:
+                        pass
 
-            # Fallback tuần tự nếu xử lý cả batch gặp lỗi hoặc không đủ số lượng
-            if len(scores) != len(images):
+        scores = []
+        # Tối ưu tốc độ cao: Nếu toàn bộ ảnh dùng chung prompt, truyền trọn batch vào hpsv2.score 1 lượt
+        if len(prompt_texts) > 0 and len(set(prompt_texts)) <= 1:
+            try:
+                raw_res = hpsv2.score(images, prompt_texts[0], hps_version="v2.1")
+                if isinstance(raw_res, (list, tuple, np.ndarray, torch.Tensor)):
+                    scores = [float(x) for x in raw_res]
+                else:
+                    scores = [float(raw_res)]
+            except Exception:
                 scores = []
-                for i, img in enumerate(images):
-                    p_text = prompt_texts[i]
-                    score = hpsv2.score(img, p_text, hps_version="v2.1")
-                    if isinstance(score, (list, tuple, np.ndarray, torch.Tensor)):
-                        val = float(score[0])
-                    else:
-                        val = float(score)
-                    scores.append(val)
+
+        # Fallback tuần tự nếu xử lý cả batch gặp lỗi hoặc không đủ số lượng
+        if len(scores) != len(images):
+            scores = []
+            for i, img in enumerate(images):
+                p_text = prompt_texts[i]
+                score = hpsv2.score(img, p_text, hps_version="v2.1")
+                if isinstance(score, (list, tuple, np.ndarray, torch.Tensor)):
+                    val = float(score[0])
+                else:
+                    val = float(score)
+                scores.append(val)
         return scores
     except Exception as e:
         print(f"Warning computing HPS on {device}: {e}")
@@ -199,13 +209,15 @@ def do_AS(*, images, prompts):
     if REWARDS_DICT["AS"] is None:
         weight_path = "sac+logos+ava1-l14-linearMSE.pth"
         if not os.path.exists(weight_path):
-            try:
-                urllib.request.urlretrieve(
-                    "https://github.com/christophschuhmann/improved-aesthetic-predictor/raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth",
-                    weight_path
-                )
-            except Exception as e:
-                print(f"Warning downloading Aesthetic weights: {e}")
+            with FileLock("sac_aesthetic_download.lock"):
+                if not os.path.exists(weight_path):
+                    try:
+                        urllib.request.urlretrieve(
+                            "https://github.com/christophschuhmann/improved-aesthetic-predictor/raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth",
+                            weight_path
+                        )
+                    except Exception as e:
+                        print(f"Warning downloading Aesthetic weights: {e}")
         try:
             state_dict = torch.load(weight_path, map_location='cpu')
             REWARDS_DICT["AS"] = AestheticScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)

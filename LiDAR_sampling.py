@@ -161,8 +161,7 @@ def main(args):
     if "FLUX" not in args.model_name:
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
-    # set device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # set device (preserve assigned device cuda:actual_gpu_id)
     pipe = pipe.to(device)
     if hasattr(pipe, "enable_vae_slicing"):
         try:
