@@ -893,7 +893,7 @@ def run_test_2_softmax_entropy(
             alpha_prod_t = scheduler.alphas_cumprod[t_int].to(device)
 
             lat_expand = current_latent.unsqueeze(1).float()
-            raw_diff_sq = - (lat_expand - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
+            raw_diff_sq = - (lat_expand - (alpha_prod_t ** 0.5) * lookahead_latents.float()) ** 2
             potential_raw = (raw_diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
 
             # LiDAR gốc: dùng reward thô r_i (Best-of-1 Trap) trên x_t thật
@@ -925,11 +925,12 @@ def run_test_2_softmax_entropy(
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + 7.5 * (noise_pred_text - noise_pred_uncond)
 
-                # Dẫn đường LiDAR trên gradient nhiễu (Closed-form FKD steering)
-                w_base = F.softmax(potential_raw, dim=1)
-                delta_w = (w_r_lidar - w_base)[..., None, None, None]
-                guide = (delta_w * lookahead_latents).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
-                noise_pred = noise_pred - (1 - alpha_prod_t) ** 0.5 * guide.to(noise_pred.dtype) * 10.0
+                # Dẫn đường LiDAR trên gradient nhiễu (Closed-form FKD steering for t > 200)
+                if t_int > 200:
+                    w_base = F.softmax(potential_raw, dim=1)
+                    delta_w = (w_r_lidar - w_base)[..., None, None, None]
+                    guide = (delta_w * lookahead_latents.float()).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
+                    noise_pred = noise_pred - (1 - alpha_prod_t) ** 0.5 * guide.to(noise_pred.dtype) * 10.0
 
                 current_latent = scheduler.step(noise_pred, t, current_latent).prev_sample
             else:
@@ -944,6 +945,7 @@ def run_test_2_softmax_entropy(
         final_dom_l = dom_id_l
         final_w_l = dom_w_l
         final_r_l = float(rewards_lidar[0, final_dom_l].item())
+        final_h_l = float(all_entropy_lidar[int(timesteps[-1].item())][-1])
 
         final_dom_o = dom_id_o
         final_w_o = dom_w_o
@@ -972,8 +974,7 @@ def run_test_2_softmax_entropy(
             else:
                 try:
                     if vae_decoder is None:
-                        from diffusers import AutoencoderKL
-                        vae_decoder = AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
+                        vae_decoder = pipe.vae if pipe is not None else AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
                     with torch.no_grad():
                         lat_chunk = (lookahead_latents[:, final_dom_l].float() / vae_decoder.config.scaling_factor)
                         img_t = vae_decoder.decode(lat_chunk).sample
@@ -998,8 +999,7 @@ def run_test_2_softmax_entropy(
             else:
                 try:
                     if vae_decoder is None:
-                        from diffusers import AutoencoderKL
-                        vae_decoder = AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
+                        vae_decoder = pipe.vae if pipe is not None else AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
                     with torch.no_grad():
                         lat_chunk_o = (lookahead_latents[:, final_dom_o].float() / vae_decoder.config.scaling_factor)
                         img_t_o = vae_decoder.decode(lat_chunk_o).sample
@@ -1015,13 +1015,15 @@ def run_test_2_softmax_entropy(
             "Prompt_Text": prompt_str,
             "LiDAR_Collapsed_Particle": f"Hạt #{final_dom_l:02d}",
             "LiDAR_Weight": f"{final_w_l * 100:.2f}%",
+            "LiDAR_Entropy_bits": f"{final_h_l:.4f}",
+            "LiDAR_N_eff": f"{2 ** final_h_l:.2f}",
             "LiDAR_ImageReward": f"{final_r_l:.4f}",
             "LiDAR_Image": saved_l_img_name,
             "RSLiDAR_Top_Particle": f"Hạt #{final_dom_o:02d}",
             "RSLiDAR_Top_Weight": f"{final_w_o * 100:.2f}%",
-            "RSLiDAR_Top_ImageReward": f"{final_r_o:.4f}",
             "RSLiDAR_Entropy_bits": f"{final_h_o:.4f}",
             "RSLiDAR_N_eff": f"{2 ** final_h_o:.2f}",
+            "RSLiDAR_Top_ImageReward": f"{final_r_o:.4f}",
             "RSLiDAR_Image": saved_o_img_name,
         })
 
@@ -1036,35 +1038,38 @@ def run_test_2_softmax_entropy(
 
     sample_dominant_id_lidar = [int(all_dominant_id_lidar[t][0]) if all_dominant_id_lidar[t] else 0 for t in t_list]
     sample_dominant_w_lidar = [float(all_dominant_w_lidar[t][0]) if all_dominant_w_lidar[t] else 1.0 for t in t_list]
+    mean_dominant_w_lidar = [float(np.mean(all_dominant_w_lidar[t])) if all_dominant_w_lidar[t] else 1.0 for t in t_list]
+
     sample_dominant_id_ours = [int(all_dominant_id_ours[primary_sigma][t][0]) if all_dominant_id_ours[primary_sigma][t] else 0 for t in t_list]
     sample_dominant_w_ours = [float(all_dominant_w_ours[primary_sigma][t][0]) if all_dominant_w_ours[primary_sigma][t] else 1.0/num_particles for t in t_list]
+    mean_dominant_w_ours = [float(np.mean(all_dominant_w_ours[primary_sigma][t])) if all_dominant_w_ours[primary_sigma][t] else 1.0/num_particles for t in t_list]
 
     # Xuất file CSV chi tiết sụp đổ entropy từng bước (Step-by-Step Particle Collapse)
     step_rows = []
     for step_i, t_val in enumerate(t_list):
         e_l = mean_entropy_lidar[step_i]
         d_id_l = sample_dominant_id_lidar[step_i]
-        d_w_l = sample_dominant_w_lidar[step_i]
+        d_w_l_mean = mean_dominant_w_lidar[step_i]
         neff_l = 2 ** e_l
 
         e_o = mean_entropy_ours[step_i]
         d_id_o = sample_dominant_id_ours[step_i]
-        d_w_o = sample_dominant_w_ours[step_i]
+        d_w_o_mean = mean_dominant_w_ours[step_i]
         neff_o = 2 ** e_o
 
-        status = "⚠️ SỤP ĐỔ VỀ 1 HẠT (Mode Collapse)" if d_w_l > 0.9 else ("⚡ BẮT ĐẦU SỤP ĐỔ" if d_w_l > 0.5 else "✅ PHÂN BỐ ĐỀU")
+        status = "⚠️ SỤP ĐỔ VỀ 1 HẠT (Mode Collapse)" if d_w_l_mean > 0.9 else ("⚡ BẮT ĐẦU SỤP ĐỔ" if d_w_l_mean > 0.5 else "✅ PHÂN BỐ ĐỀU")
 
         step_rows.append({
             "Step": step_i + 1,
             "Timestep": t_val,
-            "LiDAR_Dominant_Particle": f"Hạt #{d_id_l:02d}",
-            "LiDAR_Dominant_Weight": f"{d_w_l * 100:.2f}%",
-            "LiDAR_Entropy_bits": f"{e_l:.4f}",
-            "LiDAR_N_eff": f"{neff_l:.2f}",
-            "RSLiDAR_Dominant_Particle": f"Hạt #{d_id_o:02d}",
-            "RSLiDAR_Dominant_Weight": f"{d_w_o * 100:.2f}%",
-            "RSLiDAR_Entropy_bits": f"{e_o:.4f}",
-            "RSLiDAR_N_eff": f"{neff_o:.2f}",
+            "LiDAR_Dominant_Particle_Sample": f"Hạt #{d_id_l:02d}",
+            "LiDAR_Dominant_Weight_Mean": f"{d_w_l_mean * 100:.2f}%",
+            "LiDAR_Entropy_Mean_bits": f"{e_l:.4f}",
+            "LiDAR_N_eff_Mean": f"{neff_l:.2f}",
+            "RSLiDAR_Dominant_Particle_Sample": f"Hạt #{d_id_o:02d}",
+            "RSLiDAR_Dominant_Weight_Mean": f"{d_w_o_mean * 100:.2f}%",
+            "RSLiDAR_Entropy_Mean_bits": f"{e_o:.4f}",
+            "RSLiDAR_N_eff_Mean": f"{neff_o:.2f}",
             "Trạng Thái": status
         })
 
@@ -1108,8 +1113,8 @@ def run_test_2_softmax_entropy(
         ax1.legend(fontsize=10)
 
         # Đồ thị 2: Trọng số hạt thống trị w_max (%)
-        ax2.plot(t_list, [w * 100 for w in sample_dominant_w_lidar], 'r--', marker='o', linewidth=2.5, label="LiDAR w_max (Best-of-1 Trap)")
-        ax2.plot(t_list, [w * 100 for w in sample_dominant_w_ours], 'g-', marker='s', linewidth=2, label=f"RS-LiDAR w_max (σ={primary_sigma})")
+        ax2.plot(t_list, [w * 100 for w in mean_dominant_w_lidar], 'r--', marker='o', linewidth=2.5, label="LiDAR Mean w_max (Best-of-1 Trap)")
+        ax2.plot(t_list, [w * 100 for w in mean_dominant_w_ours], 'g-', marker='s', linewidth=2, label=f"RS-LiDAR Mean w_max (σ={primary_sigma})")
         ax2.axhline(y=(1.0 / num_particles) * 100, color='gray', linestyle=':', label=f"Uniform Share ({100.0/num_particles:.1f}%)")
         ax2.set_xlabel("Diffusion Timestep t", fontsize=12)
         ax2.set_ylabel("Dominant Particle Weight w_max (%)", fontsize=12)
