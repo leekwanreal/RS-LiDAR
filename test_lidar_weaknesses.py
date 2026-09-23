@@ -1062,6 +1062,14 @@ def run_test_2_softmax_entropy(
         step_rows.append({
             "Step": step_i + 1,
             "Timestep": t_val,
+            "LiDAR_Dominant_Particle": f"Hạt #{d_id_l:02d}",
+            "LiDAR_Dominant_Weight": f"{d_w_l_mean * 100:.2f}%",
+            "LiDAR_Entropy_bits": f"{e_l:.4f}",
+            "LiDAR_N_eff": f"{neff_l:.2f}",
+            "RSLiDAR_Dominant_Particle": f"Hạt #{d_id_o:02d}",
+            "RSLiDAR_Dominant_Weight": f"{d_w_o_mean * 100:.2f}%",
+            "RSLiDAR_Entropy_bits": f"{e_o:.4f}",
+            "RSLiDAR_N_eff": f"{neff_o:.2f}",
             "LiDAR_Dominant_Particle_Sample": f"Hạt #{d_id_l:02d}",
             "LiDAR_Dominant_Weight_Mean": f"{d_w_l_mean * 100:.2f}%",
             "LiDAR_Entropy_Mean_bits": f"{e_l:.4f}",
@@ -1157,9 +1165,14 @@ def run_test_2_softmax_entropy(
     print(f"{'Bước':<6} {'Timestep':<10} {'LiDAR Hạt #':<14} {'LiDAR Trọng Số':<16} {'LiDAR Entropy':<16} {'RS-LiDAR Entropy':<18} {'Trạng Thái'}")
     print("-" * 98)
     for r in step_rows:
-        step_num = r['Step']
+        step_num = r.get("Step", 0)
         if step_num <= 5 or step_num % 5 == 0 or step_num >= len(step_rows) - 2:
-            print(f"{r['Step']:<6} {r['Timestep']:<10} {r['LiDAR_Dominant_Particle']:<14} {r['LiDAR_Dominant_Weight']:<16} {r['LiDAR_Entropy_bits']:<16} {r['RSLiDAR_Entropy_bits']:<18} {r['Trạng Thái']}")
+            p_lidar = r.get("LiDAR_Dominant_Particle", r.get("LiDAR_Dominant_Particle_Sample", ""))
+            w_lidar = r.get("LiDAR_Dominant_Weight", r.get("LiDAR_Dominant_Weight_Mean", ""))
+            e_lidar = r.get("LiDAR_Entropy_bits", r.get("LiDAR_Entropy_Mean_bits", ""))
+            e_ours = r.get("RSLiDAR_Entropy_bits", r.get("RSLiDAR_Entropy_Mean_bits", ""))
+            status_str = r.get("Trạng Thái", "")
+            print(f"{step_num:<6} {r.get('Timestep', ''):<10} {p_lidar:<14} {w_lidar:<16} {e_lidar:<16} {e_ours:<18} {status_str}")
     print("="*98)
 
     return {
