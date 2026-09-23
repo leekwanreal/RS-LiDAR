@@ -294,6 +294,7 @@ def main(args):
                             metrics_arr[metric]["min"] += res_cached[metric]["min"]
                             metrics_arr[metric]["std"] += res_cached[metric]["std"]
                     n_samples += 1
+                    print(f"⏩ [Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{prompt_idx:05d}: Đã có sẵn kết quả hợp lệ, tự động bỏ qua (Resume)!")
                     continue
             except Exception as e:
                 print(f"Error loading cached result for prompt {prompt_idx}: {e}")
@@ -500,6 +501,7 @@ def main(args):
     metrics_fname = f"final_metrics_shard_{args.shard_id}.json" if args.num_shards > 1 else "final_metrics.json"
     with open(os.path.join(output_dir, metrics_fname), "w") as f:
         json.dump(metrics_arr, f, indent=4)
+    print(f"🏁 [Shard {args.shard_id} | GPU {actual_gpu_id}] Đã hoàn thành toàn bộ shard ({start_idx} -> {end_idx - 1})!")
 
 
 def str2bool(v):
