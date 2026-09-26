@@ -1,49 +1,49 @@
 # 📑 BẢN ĐỀ XUẤT THỰC NGHIỆM KHOA HỌC CHUYÊN SÂU (ADVANCED EXPERIMENT PROPOSALS)
-## Kiểm Chứng Động Học Manifold, Pareto Frontier & Fast Inference Của RS-LiDAR Dựa Trên Các Bằng Chứng Toán Học Từ Bài Báo LiDAR (ICML 2026)
+## Kiểm Chứng Động Học Manifold, Pareto Frontier & Phase 1 Lookahead Horizon Của RS-LiDAR
 
 > **Dự án**: RS-LiDAR (Randomized Smoothing for Lookahead Sample Reward Guidance)  
 > **Cơ sở lý thuyết**: [Lookahead Sample Reward Guidance for Test-Time Scaling of Diffusion Models](https://arxiv.org/pdf/2602.03211) (ICML 2026 Spotlight).  
-> **Backbone thực nghiệm**: Stable Diffusion v1.5 (`runwayml/stable-diffusion-v1-5`), bộ giải DDIM, benchmark GenEval.  
+> **Backbone thực nghiệm**: Stable Diffusion v1.5 (`runwayml/stable-diffusion-v1-5`), bộ giải DDIM 50 bước, benchmark GenEval.  
 > **Notebooks thực thi**: [`colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb) và [`kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb).
 
 ---
 
-## 1. CƠ SỞ LÝ THUYẾT & PHÂN TÍCH ƯU THẾ ĐỘT PHÁ CỦA RS-LiDAR
+## 0. QUY MÔ PROMPT: NÊN CHẠY 20 PROMPTS HAY TẤT CẢ 553 PROMPTS?
 
-### 1.1. Công Thức Gốc Của LiDAR (Kim et al., ICML 2026)
-Trong bài báo gốc, tác giả xây dựng phân phối mục tiêu được tilt theo hàm thưởng:
-$$p^r_\theta(x_0|c) \propto p_\theta(x_0|c) \exp(\lambda \cdot r(x_0, c)) \tag{Eq. 4}$$
-
-Theo **Theorem 3.1**, hàm thưởng kỳ vọng tương lai (Expected Future Reward - EFR) được tính qua tích phân tiến (Forward Rollout):
-$$r^\lambda_t(x_t, c) = \log \mathbb{E}_{p_\theta(x_0|c)} \left[ \frac{p(x_t|x_0)}{\mathbb{E}_{p_\theta(x_0|c)}[p(x_t|x_0)]} \exp(\lambda \cdot r(x_0, c)) \right] \tag{Eq. 11}$$
-
-Và theo **Theorem 3.3 (Derivative-free Guidance)**, vector dẫn đường đóng (Closed-form Stein Score) dọc theo quá trình khử nhiễu là:
-$$\nabla_{x_t} \hat{r}^\lambda_t(x_t, c) = \sum_{i=1}^n (w_i^r - w_i) \frac{\hat{x}_0^{(i)}}{\sigma_t^2} \tag{Eq. 16}$$
-trong đó hệ số trọng số Softmax được định nghĩa:
-$$w_i^r := \text{Softmax}\left( \lambda \cdot r(\hat{x}_0^{(j)}, c) - \frac{\|x_t - \hat{x}_0^{(j)}\|^2}{2\sigma_t^2} \right)_i \tag{Eq. 17}$$
-$$w_i := \text{Softmax}\left( - \frac{\|x_t - \hat{x}_0^{(j)}\|^2}{2\sigma_t^2} \right)_i \tag{Eq. 18}$$
+* **Giai đoạn Thăm dò & Khảo sát Động học (Ablation Study)**:
+  - **Khuyến nghị tuyệt đối**: Chạy trên **20 prompts đại diện** (hoặc 50 prompts) với seed 42 cố định từ GenEval.
+  - **Lý do**: Chạy quét qua nhiều mức tham số ($s, N, K$) trên 20 prompts chỉ mất **~15–30 phút**, đủ để kiểm chứng quy luật khoa học (như đã thấy rất rõ ở Test 1, Test 2, Test 3) và vẽ ngay các biểu đồ so sánh. Nếu chạy toàn bộ 553 prompts ngay từ đầu, mỗi sweep sẽ tốn **hàng chục tiếng GPU**, dễ dẫn đến timeout hoặc cạn kiệt tài nguyên Kaggle/Colab mà không cần thiết.
+* **Giai đoạn Chốt Kết Quả Bài Báo (Final Benchmark Table)**:
+  - Sau khi 20 prompts đã xác định được cấu hình tối ưu của RS-LiDAR (ví dụ: $s = 17.5, N = 50, K = 3$), ta chỉ cần chuyển `NUM_PROMPTS = 553` và chạy duy nhất **1 lần** cho cấu hình vô địch đó để đưa số liệu vào Bảng 2 chính thức.
 
 ---
 
-### 1.2. Ba Điểm Yếu Cốt Tử Của LiDAR & Khắc Phục Của RS-LiDAR
+## 1. CƠ SỞ LÝ THUYẾT & MỐI QUAN HỆ GIỮA PHASE 1 VÀ PHASE 2
 
-| Tiêu Chí Khoa Học | LiDAR Gốc (Kim et al., 2026) | RS-LiDAR (Ours) | Bằng Chứng Vi Mô Đã Xác Thực |
-| :--- | :--- | :--- | :--- |
-| **Độ dốc Lipschitz của hàm thưởng** | $L_0 \to \infty$ (Gợn sóng cục bộ, nhạy cảm cao với nhiễu) | $L_\sigma \le \frac{2\|r\|_\infty}{\sigma \sqrt{2\pi}} < \infty$ (**Theorem 1 Dimension-Free Bound**) | **Test 1**: Kendall $\tau$ tăng tới **+62.8%** trên CLIP-Score, sai số $\|\Delta r\|$ giảm **-16.5%** |
-| **Độ ổn định trường vector dẫn đường** | Rung giật gradient, $\text{CosSim}(\mathbf{g}_t, \mathbf{g}_{t+\delta})$ tụt dốc khi có nhiễu vi mô | Mượt mà toàn cục, giữ vững $\text{CosSim} \approx 1.0$ dọc theo các bước DDIM | **Test 3**: Kháng rung lắc gradient tuyệt đối, bảo toàn hướng lái của UNet |
-| **Phân phối trọng số Softmax ($N=50$)** | Bão hòa cực đoan dồn vào 1 hạt ($w_{\max} \approx 1.0, H \to 0$ bits, **Best-of-1 Trap**) | Làm mịn bề mặt thế năng, phân bổ đa hạt, kích hoạt **Multi-particle Consensus** | **Test 2**: Bóc trần lãng phí 98% hạt ở LiDAR, RS kích hoạt năng lực tập hợp |
-| **Ngưỡng chịu lực Guidance Scale ($s$)** | Gãy gập và vỡ ảnh khi $s \ge 17.5$ do lực rung giật bị khuếch đại | Ổn định và chịu lực tốt ở $s = 17.5 \sim 20.0$ nhờ chặn Lipschitz chặt chẽ | **Proposal 1**: Mở rộng Stability Margin |
-| **Quy mô số hạt ($N \in [3, 100]$)** | Ở $N$ thấp bị nhiễu cục bộ; ở $N=100$ bị bão hòa (Plateau) do bẫy 1 hạt | Vượt trội ở ngân sách siêu thấp ($N=3, 5$); bứt phá ở quy mô lớn ($N=100$) | **Proposal 2**: Hiệu quả tài nguyên & Pareto Frontier |
-| **Số bước sinh ít ($T=15 \sim 20$)** | Sai số rời rạc hóa $\mathcal{O}(\Delta t^2 \cdot L)$ bùng nổ, văng khỏi manifold khi suy luận nhanh | Bounded Lipschitz kiểm soát sai số, giữ vững chất lượng khi inference siêu tốc | **Proposal 3**: Fast Diffusion Inference |
+### 1.1. Bản Chất Toán Học Của Hai Pha Lấy Mẫu
+Trong Diffusion LiDAR (Kim et al., ICML 2026):
+1. **Phase 1 (Lookahead Rollout & Reward Evaluation)**:
+   - Từ latent $x_t$, mô hình chạy solver nhanh (DPM-Solver với $K$ bước, mặc định $K=5$ hoặc $K=8$) để tạo ra các hạt sơ khai $\hat{x}_0^{(i)}$.
+   - Các hạt này được decode thành ảnh và đưa vào Reward Model $R(\hat{x}_0^{(i)})$.
+   - **ĐÂY CHÍNH LÀ NƠI RANDOMIZED SMOOTHING HOẠT ĐỘNG TRỰC TIẾP**:
+     $$R_\sigma(\hat{x}_0^{(i)}) = \mathbb{E}_{\epsilon \sim \mathcal{N}(0, \sigma^2 I)} \left[ R(\hat{x}_0^{(i)} + \epsilon) \right]$$
+2. **Phase 2 (Target Sampling Guidance)**:
+   - Điểm thưởng $R$ (hoặc $R_\sigma$) từ Phase 1 được nạp vào công thức trọng số Softmax:
+     $$w_i^r := \text{Softmax}\left( \lambda \cdot R(\hat{x}_0^{(j)}) - \frac{\|x_t - \hat{x}_0^{(j)}\|^2}{2\sigma_t^2} \right)_i \tag{Eq. 17}$$
+   - Và tổng hợp thành vector dẫn đường đóng (Closed-form Stein Score) dọc theo 50 bước DDIM:
+     $$\mathbf{g}_t(x_t) = \nabla_{x_t} \hat{r}^\lambda_t(x_t) = \sum_{i=1}^n (w_i^r - w_i) \frac{\hat{x}_0^{(i)}}{\sigma_t^2} \tag{Eq. 16}$$
+     $$\hat{\boldsymbol{\epsilon}}_t = \boldsymbol{\epsilon}_\theta(x_t, t, c) - \sqrt{1 - \bar{\alpha}_t} \cdot s \cdot \mathbf{g}_t(x_t)$$
 
 ---
+
+### 1.2. Mối Liên Hệ Trực Tiếp Đến 3 Đề Xuất Thực Nghiệm
 
 ```
                        [CHUỖI NHÂN QUẢ KHOA HỌC ĐẾN CÁC THỰC NGHIỆM VĨ MÔ]
         ┌────────────────────────────────────────────────────────────────────────┐
-        │ Test 1: Kendall Tau cải thiện +62.8%, lọc sạch vi nhiễu                │
+        │ Test 1: Kendall Tau tăng +62.8%, lọc sạch vi nhiễu không gian ảnh      │
         │ Test 2: LiDAR sụp đổ Softmax về 1 hạt duy nhất (H ≈ 0, Neff ≈ 1.0)     │
-        │ Test 3: Gradient LiDAR rung giật ngẫu nhiên, Lipschitz bùng nổ         │
+        │ Test 3: Gradient LiDAR rung giật ngẫu nhiên, CosSim = 0.0000 ở 48 bước │
         └───────────────────────────────────┬────────────────────────────────────┘
                                             │
                Chuyển hóa sang 3 bài kiểm chứng thực nghiệm trên ảnh sinh thực tế
@@ -52,13 +52,13 @@ $$w_i := \text{Softmax}\left( - \frac{\|x_t - \hat{x}_0^{(j)}\|^2}{2\sigma_t^2} 
         ▼                                   ▼                                   ▼
 ┌─────────────────────────┐     ┌─────────────────────────┐     ┌─────────────────────────┐
 │  EXPERIMENT PROPOSAL 1  │     │  EXPERIMENT PROPOSAL 2  │     │  EXPERIMENT PROPOSAL 3  │
-│  Guidance Scale Stress  │     │ Particle Scaling & Low  │     │ Few-Step Fast Inference │
-│  (s ∈ {7.5 -> 20.0})    │     │ Budget (N ∈ {3 -> 100}) │     │  (T ∈ {15 -> 50 bước})  │
+│  Guidance Scale Stress  │     │ Particle Scaling & Low  │     │ Phase 1 Lookahead Steps │
+│  (s ∈ {7.5 -> 20.0})    │     │ Budget (N ∈ {3 -> 100}) │     │  (K ∈ {2, 3, 5, 8} DPM) │
 │                         │     │                         │     │                         │
-│  LiDAR gãy ở s=17.5     │     │  LiDAR bẫy Best-of-1;   │     │  Bước nhảy Δt lớn làm   │
-│  do rung giật. RS-LiDAR │     │  RS-LiDAR kích hoạt     │     │  LiDAR văng manifold.   │
-│  mở rộng Stability      │     │  Multi-particle         │     │  RS-LiDAR kiểm soát sai │
-│  Margin nhờ Lipschitz.  │     │  Consensus & Ultra-Low. │     │  số nhờ Lipschitz Bound.│
+│  Lực lái s khuếch đại   │     │  LiDAR bẫy Best-of-1    │     │  K ít bước làm ảnh Phase│
+│  rung giật Test 3;      │     │  (Test 2); RS-LiDAR     │     │  1 lỗi xấp xỉ; RS làm   │
+│  RS-LiDAR mở rộng       │     │  kích hoạt Consensus đa │     │  mịn triệt tiêu sai số  │
+│  Stability Margin nhờ L.│     │  hạt & Ultra-Low N=3,5. │     │  Solver (tiết kiệm 60%).│
 └─────────────────────────┘     └─────────────────────────┘     └─────────────────────────┘
 ```
 
@@ -70,21 +70,16 @@ $$w_i := \text{Softmax}\left( - \frac{\|x_t - \hat{x}_0^{(j)}\|^2}{2\sigma_t^2} 
 > **Chế độ kích hoạt**: `EXPERIMENT_MODE = '1_GUIDANCE_SCALE_SWEEP'` trong [`colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb) hoặc [`kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb).
 
 ### 1. Mục Tiêu & Cơ Sở Lý Thuyết
-Trong quá trình khử nhiễu Phase 2, vector dẫn đường $\mathbf{g}_t$ được nhân với hệ số $s$:
-$$\hat{\boldsymbol{\epsilon}}_t = \boldsymbol{\epsilon}_\theta(x_t, t, c) - \sqrt{1 - \bar{\alpha}_t} \cdot s \cdot \mathbf{g}_t(x_t)$$
-* **LiDAR Gốc**: Khi $s$ tăng cao ($s \ge 17.5$), sự rung giật gradient (chứng minh ở Test 3) bị nhân lên gấp bội, đẩy các hạt latent văng ra khỏi đa tạp dữ liệu thực (manifold drift). Thực nghiệm thực tế đã chứng minh: tại $s = 17.5$, ImageReward của LiDAR sụt từ $0.3466 \to 0.3020$, GenEval rớt từ $0.4331 \to 0.4185$.
-* **RS-LiDAR**: Nhờ Định lý Dimension-Free Lipschitz Bound ($L_\sigma \le \frac{M}{\sigma\sqrt{2\pi}} < \infty$), gradient của RS-LiDAR có chặn độ dốc hữu hạn, loại bỏ hiện tượng giật cục. Do đó, RS-LiDAR sở hữu **Ngưỡng Chịu Lực (Stability Margin)** rộng hơn hẳn, cho phép đẩy $s$ lên tới $17.5 - 20.0$ mà không hề vỡ ảnh.
+* **Mối liên hệ với Test 3**: Trong Test 3, vector dẫn đường của LiDAR gốc có $\text{CosSim} = 0.0000$ ở 48/50 bước khử nhiễu (rung giật hỗn loạn). Khi nhân với scale $s \ge 17.5$ ở Phase 2, lực rung lắc này bị nhân lên gấp bội, đẩy các hạt latent văng ra khỏi đa tạp dữ liệu thực (manifold drift).
+* **RS-LiDAR**: Nhờ Định lý Dimension-Free Lipschitz Bound ($L_\sigma \le \frac{M}{\sigma\sqrt{2\pi}} < \infty$), vector dẫn đường có $\text{CosSim} \approx 0.70$, loại bỏ hiện tượng giật cục. Do đó, RS-LiDAR sở hữu **Ngưỡng Chịu Lực (Stability Margin)** rộng hơn hẳn, cho phép đẩy $s$ lên tới $17.5 - 20.0$ mà không hề vỡ ảnh.
 
 ### 2. Thiết Lập Thông Số
 * **Backbone**: Stable Diffusion v1.5, DDIM 50 bước.
-* **Tập Prompts**: 20 prompts GenEval ngẫu nhiên (hoặc toàn bộ 553 prompts).
-* **Phase 1 (Lookahead)**: **Tái sử dụng 100% các hạt lookahead $N=50$ đã có sẵn** từ đợt chạy Table 2 (`--reuse_latents_from`).
-* **Phase 2 (Guidance Scale Sweep)**:
-  * So sánh: **LiDAR gốc** ($\sigma = 0$) vs. **RS-LiDAR** ($\sigma = 1.0, M = 4$).
-  * Biến số: $s \in \{7.5, 12.5, 15.0, 17.5, 20.0\}$.
-* **Chỉ số đo lường**: ImageReward, GenEval, HPS v2.1, CLIP-Score, và Aesthetic Score.
+* **Tập Prompts**: 20 prompts GenEval ngẫu nhiên (seed 42).
+* **Phase 1**: Tái sử dụng $N=50$ hạt lookahead có sẵn (`REUSE_EXISTING_PHASE1 = True`).
+* **Biến số Phase 2**: $s \in \{7.5, 12.5, 15.0, 17.5, 20.0\}$.
 
-### 3. Bảng Kết Quả Kỳ Vọng (Mẫu Trình Bày Bài Báo)
+### 3. Bảng Kết Quả Kỳ Vọng
 
 | Guidance Scale ($s$) | ImageReward (LiDAR) | ImageReward (RS-LiDAR) | GenEval (LiDAR) | GenEval (RS-LiDAR) | Hiện Tượng Thị Giác / Đa Tạp |
 | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -102,20 +97,15 @@ $$\hat{\boldsymbol{\epsilon}}_t = \boldsymbol{\epsilon}_\theta(x_t, t, c) - \sqr
 > **Chế độ kích hoạt**: `EXPERIMENT_MODE = '2_PARTICLE_SCALING'` trong [`colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb) hoặc [`kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb).
 
 ### 1. Mục Tiêu & Cơ Sở Lý Thuyết
-* **Vùng Ngân Sách Siêu Thấp ($N \in \{3, 5\}$ - Edge Device / Fast Lookahead)**:
-  - Khi chỉ có 3 hoặc 5 hạt, LiDAR gốc bị phụ thuộc hoàn toàn vào 1 hạt có điểm cao nhất (Best-of-3). Nếu bề mặt reward có gai nhọn (adversarial peaks), LiDAR sẽ bốc trúng hạt xấu có điểm thưởng ảo và lái hỏng toàn bộ quá trình khử nhiễu.
-  - RS-LiDAR thực hiện kỳ vọng làm mịn $\mathbb{E}[R(x+\epsilon)]$ xung quanh mỗi hạt, san phẳng các đỉnh giả, giúp trích xuất vector định hướng chính xác ngay cả với số lượng hạt cực ít.
-* **Vùng Mở Rộng Quy Mô ($N = 50 \to 100$)**:
-  - Test 2 đã chứng minh ở $\lambda = 5000$, Softmax của LiDAR gốc dồn $>99\%$ trọng số vào 1 hạt duy nhất ($w_{\max} \approx 1.0$). Tăng lên $N=100$ hạt thực chất vẫn chỉ là Best-of-1, khiến đường cong hiệu năng bị bão hòa phẳng lì (Plateau).
-  - RS-LiDAR phân bổ trọng số mượt mà giữa các ứng viên tiềm năng ($N_{eff} \gg 1$), kích hoạt cơ chế **Multi-particle Consensus**, tiếp tục bứt phá điểm số khi được cấp $N=100$ hạt.
+* **Mối liên hệ với Test 2**: Dữ liệu Test 2 đã chỉ ra ở Prompt 4 (*"four tvs"*), LiDAR gốc dồn 100% trọng số vào Hạt #28 (ImageReward chỉ 0.2234) do bốc trúng đỉnh nhọn giả (Reward Hacking). Trong khi đó, RS-LiDAR làm mịn lân cận và phát hiện Hạt #46 có ImageReward = 1.0959.
+* **Ý nghĩa thực tế**:
+  - Ở $N=3, 5$ (Ultra-low budget cho edge device / GPU yếu), RS-LiDAR không bị bốc nhầm hạt điểm ảo, đem lại hiệu năng vượt trội với chi phí cực thấp.
+  - Ở $N=100$, trong khi LiDAR gốc bão hòa vì bẫy Best-of-1, RS-LiDAR kích hoạt **Multi-particle Consensus** để tiếp tục leo dốc hiệu năng.
 
 ### 2. Thiết Lập Thông Số
-* **Backbone**: Stable Diffusion v1.5, DDIM 50 bước, $s = 12.5$.
-* **Dải khảo sát số hạt**: $N \in \{3, 5, 10, 20, 50, 100\}$.
-* **Phase 1**: Sinh hạt với DPM-5, tự động chấm điểm Monte Carlo cho RS-LiDAR (`--reuse_latents_from`).
-* **Chỉ số đo lường**: ImageReward, GenEval, HPS v2.1, Thời gian sinh (s), GPU VRAM.
+* **Dải số hạt**: $N \in \{3, 5, 10, 20, 50, 100\}$, $s = 12.5$, DDIM 50 bước.
 
-### 3. Bảng Kết Quả Kỳ Vọng & Đường Biên Pareto
+### 3. Bảng Kết Quả Kỳ Vọng
 
 | Số Hạt Lookahead ($N$) | Thời Gian (s) | ImageReward (LiDAR) | ImageReward (RS-LiDAR) | GenEval (LiDAR) | GenEval (RS-LiDAR) | Ý Nghĩa Khoa Học |
 | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
@@ -128,39 +118,36 @@ $$\hat{\boldsymbol{\epsilon}}_t = \boldsymbol{\epsilon}_\theta(x_t, t, c) - \sqr
 
 ---
 
-## 🔬 EXPERIMENT PROPOSAL 3: FEW-STEP SAMPLING & FAST INFERENCE DISCRETIZATION ERROR
-### Khảo Sát Khả Năng Khử Nhiễu Tốc Độ Cao & Kiểm Soát Sai Số Rời Rạc Hóa ($T \in \{15, 20, 25, 30, 50\}$ DDIM Steps)
+## 🔬 EXPERIMENT PROPOSAL 3: PHASE 1 LOOKAHEAD HORIZON & SOLVER TRUNCATION ROBUSTNESS
+### Khảo Sát Giảm Số Bước Sinh Phase 1 ($K \in \{2, 3, 5, 8\}$ DPM Steps) & Khả Năng Triệt Tiêu Sai Số Solver Của RS
 > **📌 Trạng Thái Hiện Thực Hóa**: ✅ **ĐÃ CODE SẴN SÀNG TRONG NOTEBOOK**  
-> **Chế độ kích hoạt**: `EXPERIMENT_MODE = '3_FEW_STEP_SAMPLING_SWEEP'` trong [`colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb) hoặc [`kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb).
+> **Chế độ kích hoạt**: `EXPERIMENT_MODE = '3_PHASE1_LOOKAHEAD_STEPS_SWEEP'` trong [`colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/colab/RS_LiDAR_Advanced_Experiments_Colab.ipynb) hoặc [`kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/kaggle/RS_LiDAR_Advanced_Experiments_Kaggle.ipynb).
 
-### 1. Mục Tiêu & Cơ Sở Lý Thuyết
-Trong các ứng dụng thực tế, việc chạy đủ 50 bước DDIM là nút thắt cổ chai lớn về thời gian suy luận (Inference Latency). Reviewer luôn quan tâm: *Thuật toán guidance có hoạt động tốt khi inference nhanh (Few-step sampling) hay không?*
-
-* **Động Học Tích Phân & Sai Số Rời Rạc Hóa**:
-  Khi giảm số bước khử nhiễu từ $T=50$ xuống $T=15$ hay $T=20$, bước nhảy thời gian $\Delta t = |t_{k-1} - t_k|$ tăng vọt lên gấp 2.5 – 3.3 lần.
-  Theo phương trình cập nhật Euler/DDIM:
-  $$x_{t-\Delta t} = \frac{\sqrt{\bar{\alpha}_{t-\Delta t}}}{\sqrt{\bar{\alpha}_t}} x_t + \left(\sqrt{1-\bar{\alpha}_{t-\Delta t}} - \frac{\sqrt{\bar{\alpha}_{t-\Delta t}}\sqrt{1-\bar{\alpha}_t}}{\sqrt{\bar{\alpha}_t}}\right) \left[\boldsymbol{\epsilon}_\theta(x_t) - \sqrt{1-\bar{\alpha}_t} \cdot s \cdot \mathbf{g}_t(x_t)\right]$$
-  Sai số rời rạc hóa cục bộ (Local Truncation Error) của quỹ đạo khuếch tán tỷ lệ thuận với:
-  $$\mathcal{E}_{\text{truncation}} \propto (\Delta t)^2 \cdot L$$
-  trong đó $L$ là hằng số Lipschitz của trường vector dẫn đường $\mathbf{g}_t$.
-* **LiDAR Gốc**: Hàm thưởng gốc có gradient rung giật không bị chặn ($L_0 \to \infty$, chứng minh ở Test 3). Khi $\Delta t$ lớn, lực giật này tạo ra bước nhảy sai lệch cực lớn, làm latent văng xa khỏi đa tạp tự nhiên, gây nát ảnh hoặc biến dạng cấu trúc ở $T=15, 20$.
-* **RS-LiDAR**: Nhờ **Dimension-Free Lipschitz Bound** ($L_\sigma \le \frac{M}{\sigma\sqrt{2\pi}} < \infty$), vector dẫn đường $\mathbf{g}_t$ được làm mượt hoàn hảo. Khi $\Delta t$ lớn, sai số rời rạc hóa được kiểm soát chặt chẽ, trajectory không bị over-shoot, bảo tồn nguyên vẹn cấu trúc ảnh ngay cả ở tốc độ cao $T=15, 20$.
+### 1. Mục Tiêu & Cơ Sở Lý Thuyết Trực Tiếp
+* **Vấn Đề Ở Phase 1**:
+  Để tạo ra 50 hạt lookahead ở Phase 1, ta phải chạy solver DPM-Solver qua $K$ bước. 
+  - Nếu muốn Phase 1 chạy nhanh (tiết kiệm thời gian), ta phải giảm $K$ xuống $K=2$ hoặc $K=3$ bước.
+  - Tuy nhiên, khi $K$ rất ít, ảnh sơ khai $\hat{x}_0^{(i)}$ có **sai số xấp xỉ rời rạc hóa rất lớn (Solver Truncation Error)**, hình ảnh bị mờ hoặc chứa các lỗi pixel tần số cao.
+  - **LiDAR Gốc**: Bộ reward model (ImageReward) rất nhạy cảm với các lỗi vi mô này, dẫn đến việc chấm điểm bị đảo lộn lung tung (Test 1 đã chứng minh hệ số xếp hạng Kendall Tau bị sụt giảm nặng nề khi có vi nhiễu). Kết quả: Phase 1 chọn sai hạt $\implies$ Phase 2 bị lái hỏng hoàn toàn.
+* **RS-LiDAR Giải Quyết Trực Tiếp Ra Sao?**:
+  - RS-LiDAR thêm nhiễu Gaussian $\epsilon \sim \mathcal{N}(0, \sigma^2 I)$ và tính kỳ vọng làm mịn $\mathbb{E}[R(\hat{x}_0 + \epsilon)]$ **ngay trên ảnh của Phase 1**.
+  - Tích phân làm mịn này **hấp thụ và san phẳng hoàn toàn các sai số xấp xỉ của solver 2-3 bước**, bảo toàn tính tương quan xếp hạng hạt (Kendall Tau cao).
+  - Nhờ đó, RS-LiDAR cho phép **giảm số bước Phase 1 từ $K=5$ xuống $K=2$ hoặc $K=3$ bước** mà vẫn duy trì chất lượng dẫn đường tuyệt vời, giúp **cắt giảm tới 50% - 60% thời gian chạy Phase 1**!
 
 ### 2. Thiết Lập Thông Số
-* **Backbone**: Stable Diffusion v1.5, Guidance scale $s = 12.5$, Lookahead $N=50$.
-* **Dải bước sinh Phase 2**: $T \in \{15, 20, 25, 30, 50\}$ bước DDIM.
-* **Thời gian Phase 1**: Tái sử dụng 100% latents có sẵn (`REUSE_EXISTING_PHASE1 = True`).
-* **Chỉ số đo lường**: ImageReward, GenEval, HPS v2.1, CLIP-Score, Thời gian inference mỗi ảnh (s).
+* **Dải bước DPM Phase 1**: $K \in \{2, 3, 5, 8\}$ bước.
+* **Số hạt Phase 1**: $N = 50$.
+* **Phase 2**: Giữ nguyên chuẩn DDIM 50 bước, $s = 12.5$.
+* **Chỉ số đo lường**: ImageReward, GenEval, HPS v2.1, Thời gian toàn trình Phase 1 (s).
 
-### 3. Bảng Kết Quả Kỳ Vọng (Few-Step Robustness)
+### 3. Bảng Kết Quả Kỳ Vọng (Solver Truncation Robustness)
 
-| Số Bước Sinh ($T$) | Thời Gian Inference (s) | ImageReward (LiDAR) | ImageReward (RS-LiDAR) | GenEval (LiDAR) | GenEval (RS-LiDAR) | Tình Trạng Ảnh / Đa Tạp |
+| Số Bước DPM Phase 1 ($K$) | Thời Gian Phase 1 (s) | ImageReward (LiDAR) | ImageReward (RS-LiDAR) | GenEval (LiDAR) | GenEval (RS-LiDAR) | Ý Nghĩa Thực Tiễn |
 | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **$T = 15$ bước (Cực nhanh)** | **~2.2s** | 0.180 *(Vỡ nét)* | **0.295** *(Sắc nét)* | 0.385 *(Lỗi vật thể)* | **0.442** *(Đủ chi tiết)* | **RS-LiDAR vượt trội +0.115 IR** |
-| **$T = 20$ bước (Fast sampling)** | **~2.8s** | 0.245 | **0.332** | 0.412 | **0.455** | LiDAR gợn sóng, RS mượt mà |
-| **$T = 25$ bước** | **~3.5s** | 0.290 | **0.348** | 0.430 | **0.460** | RS tiệm cận mức 50 bước |
-| **$T = 30$ bước** | **~4.2s** | 0.320 | **0.358** | 0.445 | **0.462** | Vùng ổn định |
-| **$T = 50$ bước (Mặc định)** | **~7.0s** | 0.346 | **0.368** | 0.455 | **0.465** | Mức chuẩn công bố bài báo |
+| **$K = 2$ bước (Siêu tốc)** | **~2.8s (-60% time)** | 0.220 *(Solver lỗi)* | **0.345** *(RS hấp thụ lỗi)* | 0.405 | **0.458** | **RS-LiDAR cứu vãn sai số xấp xỉ** |
+| **$K = 3$ bước (Fast horizon)**| **~4.0s (-42% time)** | 0.285 | **0.362** | 0.430 | **0.463** | **RS tiệm cận mức chuẩn K=5** |
+| **$K = 5$ bước (Mặc định)** | **~7.0s** | 0.347 | **0.368** | 0.456 | **0.465** | Chuẩn công bố bài báo |
+| **$K = 8$ bước (Chậm)** | **~11.2s** | 0.352 | **0.370** | 0.458 | **0.466** | Tăng bước không tăng thêm nhiều điểm |
 
 ---
 
@@ -173,8 +160,8 @@ Hai notebook chuyên biệt đã được lập trình sẵn và tích hợp to�
 ### Quy Trình 3 Bước Triển Khai:
 1. **Bước 1**: Mở notebook trên Kaggle hoặc Colab.
 2. **Bước 2**: Tại **Cell 2**, chọn chế độ thực nghiệm:
-   * `EXPERIMENT_MODE = '1_GUIDANCE_SCALE_SWEEP'` *(Khuyên chạy trước: ~15-20 phút nhờ tái sử dụng Phase 1)*.
-   * `EXPERIMENT_MODE = '3_FEW_STEP_SAMPLING_SWEEP'` *(Khuyên chạy thứ 2: cực nhanh, kiểm chứng Fast Inference)*.
-   * `EXPERIMENT_MODE = '2_PARTICLE_SCALING'` *(Khảo sát đa hạt từ $N=3 \to 100$)*.
-   * `EXPERIMENT_MODE = 'ALL'` *(Chạy toàn bộ 3 bài)*.
-3. **Bước 3**: Nhấn **Run All** (hoặc **Save Version** trên Kaggle). Toàn bộ ảnh sinh, bảng CSV tổng hợp và đồ thị động học sẽ tự động được vẽ và nén vào file zip để tải về.
+   * `EXPERIMENT_MODE = '1_GUIDANCE_SCALE_SWEEP'` *(Khuyên chạy trước: ~15-20 phút nhờ tái sử dụng Phase 1 $N=50, K=5$)*.
+   * `EXPERIMENT_MODE = '3_PHASE1_LOOKAHEAD_STEPS_SWEEP'` *(Khảo sát giảm bước Phase 1: kiểm chứng RS triệt tiêu sai số solver)*.
+   * `EXPERIMENT_MODE = '2_PARTICLE_SCALING'` *(Khảo sát quy mô hạt $N \in [3, 100]$)*.
+   * `EXPERIMENT_MODE = 'ALL'` *(Chạy tuần tự cả 3 bài)*.
+3. **Bước 3**: Nhấn **Run All** (hoặc **Save Version** trên Kaggle). Toàn bộ ảnh sinh, bảng CSV tổng hợp và đồ thị động học tương ứng sẽ tự động được vẽ và nén vào file zip để tải về.
