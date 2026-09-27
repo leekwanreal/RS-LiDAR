@@ -74,8 +74,10 @@ def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_s
 # Compute human preference score
 def do_human_preference_score(*, images, prompts, use_paths=False):
     global REWARDS_DICT
+    if images is None or len(images) == 0:
+        return []
     if hpsv2 is None:
-        return None
+        return [0.0] * len(images)
     import numpy as np
     device = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     try:
@@ -129,14 +131,16 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
         return scores
     except Exception as e:
         print(f"Warning computing HPS on {device}: {e}")
-        return None
+        return [0.0] * len(images)
 
 
 # Compute CLIP-Score and diversity
 def do_clip_score_diversity(*, images, prompts):
     global REWARDS_DICT
+    if images is None or len(images) == 0:
+        return [], 0.0
     if clip is None:
-        return None, 0.0
+        return [0.0] * len(images), 0.0
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     try:
         if REWARDS_DICT["Clip-Score"] is None:
@@ -159,12 +163,12 @@ def do_clip_score_diversity(*, images, prompts):
                 diversity[i, j] = (arr_img_features[i] - arr_img_features[j]).pow(2).sum()
                 diversity[j, i] = diversity[i, j]
         n_samples = len(images)
-        diversity = diversity.sum() / (n_samples * (n_samples - 1))
+        diversity = diversity.sum() / (n_samples * (n_samples - 1)) if n_samples > 1 else 0.0
 
-        return arr_clip_result, diversity.item()
+        return arr_clip_result, diversity.item() if isinstance(diversity, torch.Tensor) else float(diversity)
     except Exception as e:
         print(f"Warning computing CLIP diversity on {dev}: {e}")
-        return None, 0.0
+        return [0.0] * len(images), 0.0
 
 
 # Compute ImageReward
@@ -200,8 +204,10 @@ def do_image_reward(*, images, prompts, diff=False):
 # Compute CLIP-Score
 def do_clip_score(*, images, prompts):
     global REWARDS_DICT
+    if images is None or len(images) == 0:
+        return []
     if clip is None:
-        return None
+        return [0.0] * len(images)
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     try:
         if REWARDS_DICT["Clip-Score"] is None:
@@ -213,8 +219,8 @@ def do_clip_score(*, images, prompts):
             ]
         return clip_result
     except Exception as e:
-        print(f"Warning computing CLIP-Score on {dev}: {e}")
-        return None
+        print(f"Warning computing CLIP score: {e}")
+        return [0.0] * len(images)
 
 
 def do_AS(*, images, prompts):

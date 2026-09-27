@@ -100,48 +100,59 @@ def do_eval(*, prompt, images, metrics_to_compute):
     for metric in metrics_to_compute:
         if metric == "Clip-Diversity":
             results[metric] = {}
-            (
-                results[metric]["result"],
-                results[metric]["diversity"],
-            ) = do_clip_score_diversity(images=images, prompts=prompt_list)
-            results_arr = torch.tensor(results[metric]["diversity"])
+            res, div = do_clip_score_diversity(images=images, prompts=prompt_list)
+            if res is None:
+                res = [0.0] * n_imgs
+            if div is None:
+                div = 0.0
+            results[metric]["result"] = res
+            results[metric]["diversity"] = div
+            results_arr = torch.tensor(div, dtype=torch.float32)
 
             results[metric]["mean"] = results_arr.mean().item()
-            results[metric]["std"] = results_arr.std().item()
+            results[metric]["std"] = 0.0
             results[metric]["max"] = results_arr.max().item()
             results[metric]["min"] = results_arr.min().item()
 
         elif metric == "ImageReward":
             results[metric] = {}
-            results[metric]["result"] = do_image_reward(images=images, prompts=prompt_list)
+            res = do_image_reward(images=images, prompts=prompt_list)
+            if res is None:
+                res = [0.0] * n_imgs
+            results[metric]["result"] = res
 
-            results_arr = torch.tensor(results[metric]["result"])
+            results_arr = torch.tensor(res, dtype=torch.float32)
 
             results[metric]["mean"] = results_arr.mean().item()
-            results[metric]["std"] = results_arr.std().item()
+            results[metric]["std"] = results_arr.std().item() if n_imgs > 1 else 0.0
             results[metric]["max"] = results_arr.max().item()
             results[metric]["min"] = results_arr.min().item()
 
         elif metric == "Clip-Score":
             results[metric] = {}
-            results[metric]["result"] = do_clip_score(images=images, prompts=prompt_list)
+            res = do_clip_score(images=images, prompts=prompt_list)
+            if res is None:
+                res = [0.0] * n_imgs
+            results[metric]["result"] = res
 
-            results_arr = torch.tensor(results[metric]["result"])
+            results_arr = torch.tensor(res, dtype=torch.float32)
 
             results[metric]["mean"] = results_arr.mean().item()
-            results[metric]["std"] = results_arr.std().item()
+            results[metric]["std"] = results_arr.std().item() if n_imgs > 1 else 0.0
             results[metric]["max"] = results_arr.max().item()
             results[metric]["min"] = results_arr.min().item()
+
         elif metric == "HumanPreference":
             results[metric] = {}
-            results[metric]["result"] = do_human_preference_score(
-                images=images, prompts=prompt_list
-            )
+            res = do_human_preference_score(images=images, prompts=prompt_list)
+            if res is None:
+                res = [0.0] * n_imgs
+            results[metric]["result"] = res
 
-            results_arr = torch.tensor(results[metric]["result"])
+            results_arr = torch.tensor(res, dtype=torch.float32)
 
             results[metric]["mean"] = results_arr.mean().item()
-            results[metric]["std"] = results_arr.std().item()
+            results[metric]["std"] = results_arr.std().item() if n_imgs > 1 else 0.0
             results[metric]["max"] = results_arr.max().item()
             results[metric]["min"] = results_arr.min().item()
 
@@ -149,13 +160,13 @@ def do_eval(*, prompt, images, metrics_to_compute):
             results[metric] = {}
             as_res = do_AS(images=images, prompts=prompt_list)
             if as_res is None:
-                as_res = [0.0] * len(images)
+                as_res = [0.0] * n_imgs
             results[metric]["result"] = as_res
 
             results_arr = torch.tensor(as_res, dtype=torch.float32)
 
             results[metric]["mean"] = results_arr.mean().item()
-            results[metric]["std"] = results_arr.std().item()
+            results[metric]["std"] = results_arr.std().item() if n_imgs > 1 else 0.0
             results[metric]["max"] = results_arr.max().item()
             results[metric]["min"] = results_arr.min().item()
 
