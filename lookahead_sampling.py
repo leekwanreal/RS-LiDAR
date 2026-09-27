@@ -313,17 +313,23 @@ def main(args):
                 os.path.join(args.output_dir, args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
             ]
             if not is_xl:
-                candidates.extend([
-                    os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                    os.path.join("Lookahead_samples", "100_50_5", f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                    os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                ])
+                candidates.append(
+                    os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{prompt_idx:0>5}", "samples", "latent.pt")
+                )
+                if args.num_particles <= 50:
+                    candidates.append(
+                        os.path.join("Lookahead_samples", "100_50_5", f"{prompt_idx:0>5}", "samples", "latent.pt")
+                    )
+                candidates.append(
+                    os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{prompt_idx:0>5}", "samples", "latent.pt")
+                )
             for c in candidates:
                 if os.path.exists(c):
                     try:
                         test_lat = torch.load(c, map_location="cpu")
                         test_t = test_lat[0] if isinstance(test_lat, (list, tuple)) else test_lat
-                        if hasattr(test_t, "shape") and test_t.shape[-1] == expected_latent_dim:
+                        n_avail = len(test_lat) if isinstance(test_lat, (list, tuple)) else (test_lat.shape[0] if hasattr(test_lat, "shape") else 0)
+                        if hasattr(test_t, "shape") and test_t.shape[-1] == expected_latent_dim and n_avail >= args.num_particles:
                             reused_latent_file = c
                             cached_reused_latents = test_lat
                             break
@@ -340,9 +346,9 @@ def main(args):
                 else:
                     loaded_latents = torch.load(reused_latent_file, map_location=device)
                 if isinstance(loaded_latents, (list, tuple)):
-                    latents = torch.stack([x.to(device) for x in loaded_latents])
+                    latents = torch.stack([x.to(device) for x in loaded_latents[:args.num_particles]])
                 else:
-                    latents = loaded_latents.to(device)
+                    latents = loaded_latents[:args.num_particles].to(device)
                 cached_reused_latents = None
             else:
                 if "dmd2_sdxl_4step_lora_fp16.safetensors" in args.model_name:
@@ -401,7 +407,8 @@ def main(args):
                         else:
                             noisy_t = decoded_tensor.clamp(-1.0, 1.0)
                     noisy_pil = pipe.image_processor.postprocess(noisy_t, output_type="pil")
-                    eval_m = do_eval(prompt=prompt, images=noisy_pil, metrics_to_compute=metrics_to_compute)
+                    eval_prompt = [prompt[0]] * len(noisy_pil)
+                    eval_m = do_eval(prompt=eval_prompt, images=noisy_pil, metrics_to_compute=metrics_to_compute)
                     for metric in metrics_to_compute:
                         mc_evals[metric].append(eval_m[metric]["result"])
 
@@ -419,8 +426,9 @@ def main(args):
             images = clean_images
         else:
             images = clean_images
+            eval_prompt = [prompt[0]] * len(images)
             results = do_eval(
-                prompt=prompt, images=images, metrics_to_compute=metrics_to_compute
+                prompt=eval_prompt, images=images, metrics_to_compute=metrics_to_compute
             )
 
         results["time_taken"] = time_taken.total_seconds()
@@ -475,8 +483,9 @@ def main(args):
             os.makedirs(best_of_n_sample_path, exist_ok=True)
             for image_idx, image in enumerate(images[:1]):
                 image.save(os.path.join(best_of_n_sample_path, f"{image_idx:05}.png"))
-            _, ax = plt.subplots(1, args.num_particles, figsize=(20, 20))
-            if args.num_particles == 1:
+            n_show = len(images)
+            _, ax = plt.subplots(1, n_show, figsize=(max(4, n_show * 4), 4))
+            if n_show == 1:
                 ax = [ax]
             for i, image in enumerate(images):
                 ax[i].imshow(image)

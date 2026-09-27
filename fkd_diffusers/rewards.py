@@ -170,6 +170,20 @@ def do_clip_score_diversity(*, images, prompts):
 # Compute ImageReward
 def do_image_reward(*, images, prompts, diff=False):
     global REWARDS_DICT
+    if images is None or len(images) == 0:
+        return []
+
+    if isinstance(prompts, str):
+        prompts = [prompts] * len(images)
+    elif isinstance(prompts, (list, tuple)):
+        prompts = list(prompts)
+        if len(prompts) == 1 and len(images) > 1:
+            prompts = prompts * len(images)
+        elif len(prompts) < len(images):
+            prompts = prompts + [prompts[0]] * (len(images) - len(prompts))
+        elif len(prompts) > len(images):
+            prompts = prompts[:len(images)]
+
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["ImageReward"] is None:
         REWARDS_DICT["ImageReward"] = rm_load("ImageReward-v1.0", device=dev)

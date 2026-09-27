@@ -78,6 +78,24 @@ def do_eval(*, prompt, images, metrics_to_compute):
     """
     Compute the metrics for the given images and prompt.
     """
+    if images is None or len(images) == 0:
+        return {}
+
+    n_imgs = len(images)
+    if isinstance(prompt, str):
+        prompt_list = [prompt] * n_imgs
+    elif isinstance(prompt, (list, tuple)):
+        if len(prompt) == 1:
+            prompt_list = list(prompt) * n_imgs
+        elif len(prompt) < n_imgs:
+            prompt_list = list(prompt) + [prompt[0]] * (n_imgs - len(prompt))
+        elif len(prompt) > n_imgs:
+            prompt_list = list(prompt)[:n_imgs]
+        else:
+            prompt_list = list(prompt)
+    else:
+        prompt_list = [str(prompt)] * n_imgs
+
     results = {}
     for metric in metrics_to_compute:
         if metric == "Clip-Diversity":
@@ -85,7 +103,7 @@ def do_eval(*, prompt, images, metrics_to_compute):
             (
                 results[metric]["result"],
                 results[metric]["diversity"],
-            ) = do_clip_score_diversity(images=images, prompts=prompt)
+            ) = do_clip_score_diversity(images=images, prompts=prompt_list)
             results_arr = torch.tensor(results[metric]["diversity"])
 
             results[metric]["mean"] = results_arr.mean().item()
@@ -95,7 +113,7 @@ def do_eval(*, prompt, images, metrics_to_compute):
 
         elif metric == "ImageReward":
             results[metric] = {}
-            results[metric]["result"] = do_image_reward(images=images, prompts=prompt)
+            results[metric]["result"] = do_image_reward(images=images, prompts=prompt_list)
 
             results_arr = torch.tensor(results[metric]["result"])
 
@@ -106,7 +124,7 @@ def do_eval(*, prompt, images, metrics_to_compute):
 
         elif metric == "Clip-Score":
             results[metric] = {}
-            results[metric]["result"] = do_clip_score(images=images, prompts=prompt)
+            results[metric]["result"] = do_clip_score(images=images, prompts=prompt_list)
 
             results_arr = torch.tensor(results[metric]["result"])
 
@@ -117,7 +135,7 @@ def do_eval(*, prompt, images, metrics_to_compute):
         elif metric == "HumanPreference":
             results[metric] = {}
             results[metric]["result"] = do_human_preference_score(
-                images=images, prompts=prompt
+                images=images, prompts=prompt_list
             )
 
             results_arr = torch.tensor(results[metric]["result"])
@@ -129,7 +147,7 @@ def do_eval(*, prompt, images, metrics_to_compute):
 
         elif metric == "AS":
             results[metric] = {}
-            as_res = do_AS(images=images, prompts=prompt)
+            as_res = do_AS(images=images, prompts=prompt_list)
             if as_res is None:
                 as_res = [0.0] * len(images)
             results[metric]["result"] = as_res

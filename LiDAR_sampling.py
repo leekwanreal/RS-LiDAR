@@ -296,8 +296,9 @@ def main(args):
 
         images = _extract_pil_images(images)
 
+        eval_prompt = [prompt[0]] * len(images) if isinstance(prompt, list) else [prompt] * len(images)
         results = do_eval(
-            prompt=prompt, images=images, metrics_to_compute=metrics_to_compute
+            prompt=eval_prompt, images=images, metrics_to_compute=metrics_to_compute
         )
 
         results["time_taken"] = time_taken.total_seconds()
@@ -344,8 +345,9 @@ def main(args):
             for image_idx, image in enumerate(images[:1]):
                 image.save(os.path.join(best_of_n_sample_path, f"{image_idx:05}.png"))
 
-            _, ax = plt.subplots(1, args.num_particles, figsize=(args.num_particles * 5, 5))
-            if args.num_particles == 1:
+            n_show = len(images)
+            _, ax = plt.subplots(1, n_show, figsize=(n_show * 5, 5))
+            if n_show == 1:
                 ax = [ax]
 
             for i, image in enumerate(images):

@@ -216,7 +216,23 @@ class IRSMC(nn.Module):
 
     @torch.inference_mode()
     def score_batched(self, prompts, images, batch_size=4):
-        assert isinstance(prompts, list)
+        if images is None or len(images) == 0:
+            return []
+
+        # Defensive normalization: ensure prompts is a list matching images length
+        if isinstance(prompts, str):
+            prompts = [prompts] * len(images)
+        elif isinstance(prompts, (list, tuple)):
+            prompts = list(prompts)
+            if len(prompts) == 1 and len(images) > 1:
+                prompts = prompts * len(images)
+            elif len(prompts) < len(images):
+                prompts = prompts + [prompts[0]] * (len(images) - len(prompts))
+            elif len(prompts) > len(images):
+                prompts = prompts[:len(images)]
+        else:
+            prompts = [str(prompts)] * len(images)
+
         assert isinstance(images, list)
 
         # text encode
