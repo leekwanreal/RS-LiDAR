@@ -355,15 +355,27 @@ def rm_load(
     model : torch.nn.Module
         The ImageReward model
     """
+    cache_root = download_root or os.path.expanduser("~/.cache/ImageReward")
+    os.makedirs(cache_root, exist_ok=True)
     if name in RM.utils._MODELS:
-        model_path = RM.ImageReward_download(
-            RM.utils._MODELS[name],
-            download_root or os.path.expanduser("~/.cache/ImageReward"),
-        )
+        model_path = os.path.join(cache_root, "ImageReward.pt")
+        if not os.path.exists(model_path) or os.path.getsize(model_path) < 1000000:
+            import urllib.request
+            try:
+                urllib.request.urlretrieve("https://huggingface.co/THUDM/ImageReward/resolve/main/ImageReward.pt", model_path)
+            except Exception as e:
+                model_path = RM.ImageReward_download(
+                    RM.utils._MODELS[name],
+                    cache_root,
+                )
     elif os.path.isfile(name):
         model_path = name
     else:
         raise RuntimeError(f"Model {name} not found;")
+
+    if not os.path.exists(model_path) or os.path.getsize(model_path) < 1000000:
+        import urllib.request
+        urllib.request.urlretrieve("https://huggingface.co/THUDM/ImageReward/resolve/main/ImageReward.pt", model_path)
 
     print('load checkpoint from %s' % model_path)
     state_dict = torch.load(model_path, map_location='cpu')
@@ -371,10 +383,19 @@ def rm_load(
 
     # med_config
     if med_config is None:
-        med_config = RM.ImageReward_download(
-            "https://huggingface.co/THUDM/ImageReward/blob/main/med_config.json",
-            download_root or os.path.expanduser("~/.cache/ImageReward"),
-        )
+        med_path = os.path.join(cache_root, "med_config.json")
+        if not os.path.exists(med_path) or os.path.getsize(med_path) < 10:
+            import urllib.request
+            try:
+                urllib.request.urlretrieve("https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json", med_path)
+                med_config = med_path
+            except Exception:
+                med_config = RM.ImageReward_download(
+                    "https://huggingface.co/THUDM/ImageReward/blob/main/med_config.json",
+                    cache_root,
+                )
+        else:
+            med_config = med_path
 
     model = IRSMC(device=device, med_config=med_config).to(device)
     msg = model.load_state_dict(state_dict, strict=False)
