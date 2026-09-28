@@ -1,23 +1,27 @@
 """
 ========================================================================================
-🧪 MODULE THỰC NGHIỆM ĐỘC LẬP: CHỨNG MINH 3 ĐIỂM YẾU CỦA LIDAR SO VỚI SMOOTHED SURROGATE
-   (DIMENSION-FREE LIPSCHITZ BOUND & RANDOMIZED SMOOTHING)
+🧪 MODULE THỰC NGHIỆM ĐỘC LẬP: CHỨNG MINH SAI SỐ BỘ GIẢI CỦA LIDAR SO VỚI RS-LIDAR
+   (TEST 1: DIMENSION-FREE LIPSCHITZ BOUND & KENDALL TAU RANKING PRESERVATION)
 ========================================================================================
 
-Module này được thiết kế ĐỘC LẬP, hỗ trợ:
-- Chạy 1 GPU hoặc 2 GPU song song (--num_shards=2, --shard_id=0/1)
-- Cấu hình số lượng prompt linh hoạt (--num_prompts)
-- Chọn bài test tùy ý (--test 1|2|3|all) để tiết kiệm thời gian hoặc chạy toàn bộ 553 prompt.
-- Tự động lưu checkpoint và tổng hợp kết quả đa GPU.
-
-Bộ 3 Bài Test:
-1. TEST 1: Kháng Sai số Bộ giải (Solver Error Robustness & Theorem 1 Lipschitz Bound)
-2. TEST 2: Kháng Sụp đổ Trọng số Softmax (Softmax Mode Collapse Prevention)
-3. TEST 3: Kháng Rung lắc Vector Dẫn đường (Guidance Field Lipschitz Stability)
+Module này được thiết kế ĐỘC LẬP cho Bài Test 1 (Solver Robustness & Multi-Reward Benchmark):
+- Chạy 1 GPU hoặc 2 GPU song song (--num_shards=2, --shard_id=0/1, --gpu_id=0/1)
+- Cấu hình số lượng prompt linh hoạt (--num_prompts, mặc định 553 prompts chuẩn GenEval)
+- Số hạt/ảnh mỗi prompt (--num_particles, mặc định 5 hạt để tối ưu tốc độ và bộ nhớ)
+- Khảo sát bán kính làm mịn Sigma (--tune_sigma, --sigmas 0.05,0.10,0.15,0.25,0.50,1.00)
+- Monte Carlo kỳ vọng E[r(x + xi)] (--M / --num_mc_samples, mặc định M=4)
+- 4 Mô hình Reward: ImageReward, CLIP-Score, HPS v2.1, Aesthetic Score
+- Tự động lưu checkpoint từng prompt (hỗ trợ Resume khi ngắt quãng) và gộp shard (--test merge).
 """
 
 import os
 import sys
+if hasattr(sys.stdout, "reconfigure"):
+    try: sys.stdout.reconfigure(encoding="utf-8")
+    except Exception: pass
+if hasattr(sys.stderr, "reconfigure"):
+    try: sys.stderr.reconfigure(encoding="utf-8")
+    except Exception: pass
 import types
 import json
 import argparse
@@ -92,8 +96,11 @@ except ImportError:
     try:
         from image_reward_utils import rm_load
     except ImportError:
-        import ImageReward as RM
-        rm_load = RM.load
+        try:
+            import ImageReward as RM
+            rm_load = RM.load
+        except Exception:
+            rm_load = None
 
 # Multi-metric reward scorers (CLIP-Score, HPS v2.1, Aesthetic Score & PickScore)
 try:
@@ -330,13 +337,14 @@ def generate_latents(pipe, prompt, num_particles, num_inference_steps, seed, dev
 # ======================================================================================
 @torch.inference_mode()
 def run_test_1_solver_robustness(
-    pipe, vae, ir_model, prompt_list, sigma=0.05,
-    tune_sigma=False, sigmas_to_sweep=None,
-    num_particles=20, device="cuda", output_dir="experiments/test_results",
+    pipe, vae, ir_model, prompt_list, sigma=0.25,
+    tune_sigma=True, sigmas_to_sweep=None,
+    num_particles=5, num_mc_samples=4, device="cuda",
+    output_dir="/kaggle/working/test1_results" if os.path.exists("/kaggle") else "experiments/test1_results",
     num_shards=1, shard_id=0, overwrite=False
 ):
     if sigmas_to_sweep is None:
-        sigmas_to_sweep = [0.05, 0.10, 0.15, 0.25]
+        sigmas_to_sweep = [0.05, 0.10, 0.15, 0.25, 0.50, 1.00]
 
     total_prompts = len(prompt_list)
     if num_shards > 1:
@@ -542,8 +550,8 @@ def run_test_1_solver_robustness(
             t_p_l, _ = scipy.stats.kendalltau(r_5step_pick_raw, r_50step_pick_raw)
             if not np.isnan(t_p_l): kendall_pick_lidar_list.append(t_p_l)
 
-        # 2. Phương pháp của Bạn: Quét qua danh sách active_sigmas để khảo sát Ablation với M=4
-        M_sweep = 4
+        # 2. Phương pháp của Bạn: Quét qua danh sách active_sigmas để khảo sát Ablation với M
+        M_sweep = num_mc_samples
         total_eval_steps = len(active_sigmas) * M_sweep
         pbar_eval = tqdm(total=total_eval_steps, desc=f"  ↳ Chấm điểm đa mô hình (IR, CLIP, HPS, AS, Pick) [{p_local_idx + 1}/{len(prompt_slice)}]", leave=False)
 
@@ -786,1008 +794,15 @@ def run_test_1_solver_robustness(
         }
     }
 
-
 # ======================================================================================
-# 🔬 TEST 2: Kháng Sụp đổ Trọng số Softmax (Softmax Mode Collapse Prevention)
+# 📊 XUẤT BIỂU ĐỒ & BÁO CÁO KHOA HỌC BÀI TEST 1 (TỰ ĐỘNG MERGE MULTI-SHARDS)
 # ======================================================================================
-def run_test_2_softmax_entropy(
-    pipe=None,
-    num_particles=50, num_steps=50, sigma=0.25,
-    tune_sigma=False, sigmas_to_sweep=None,
-    lookahead_dir=None, prompt_list=None, device="cuda",
-    num_shards=1, shard_id=0, output_dir="experiments/test_results",
-    num_mc_samples=4
-):
-    active_sigmas = sigmas_to_sweep if (tune_sigma and sigmas_to_sweep) else [sigma]
-    print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 2] ĐO KHẢ NĂNG KHÁNG SỤP ĐỔ ENTROPY SOFTMAX (sigmas={active_sigmas}, M={num_mc_samples}) (Shard {shard_id + 1}/{num_shards})")
-    print("="*80)
-
-    scheduler = DDIMScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
-    scheduler.set_timesteps(num_steps, device=device)
-    timesteps = scheduler.timesteps
-    D_latent = 4 * 64 * 64  # 16,384 dimensions
-
-    lookahead_folders = []
-    if lookahead_dir and os.path.exists(lookahead_dir):
-        lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
-        if prompt_list and len(prompt_list) > 0:
-            lookahead_folders = lookahead_folders[:len(prompt_list)]
-
-    total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
-    if num_shards > 1:
-        per_shard = math.ceil(total_prompts / num_shards)
-        start_i = shard_id * per_shard
-        end_i = min(start_i + per_shard, total_prompts)
-        idx_range = range(start_i, end_i)
-    else:
-        idx_range = range(total_prompts)
-
-    all_entropy_lidar = {int(t): [] for t in timesteps}
-    all_entropy_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-    all_dominant_id_lidar = {int(t): [] for t in timesteps}
-    all_dominant_w_lidar = {int(t): [] for t in timesteps}
-    all_dominant_id_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-    all_dominant_w_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-    prompt_collapsed_rows = []
-    vae_decoder = None
-
-    for idx in tqdm(idx_range, desc=f"Test 2 [Shard {shard_id}]"):
-        prompt_str = f"Prompt #{idx:03d}"
-        if prompt_list and idx < len(prompt_list):
-            p_item = prompt_list[idx]
-            prompt_str = p_item.get("prompt", str(p_item)) if isinstance(p_item, dict) else str(p_item)
-        elif lookahead_folders and idx < len(lookahead_folders):
-            try:
-                res_f = os.path.join(lookahead_folders[idx], "results.json")
-                if os.path.exists(res_f):
-                    with open(res_f, "r", encoding="utf-8") as f_res:
-                        prompt_str = json.load(f_res).get("prompt", os.path.basename(lookahead_folders[idx]))
-            except Exception:
-                prompt_str = os.path.basename(lookahead_folders[idx])
-
-        if lookahead_folders and idx < len(lookahead_folders):
-            p_folder = lookahead_folders[idx]
-            try:
-                latents_path = os.path.join(p_folder, "samples", "latent.pt")
-                results_path = os.path.join(p_folder, "results.json")
-                lookahead_latents = torch.load(latents_path, map_location=device).unsqueeze(0)[:, :num_particles]
-                with open(results_path, "r") as f:
-                    r_raw = json.load(f)["ImageReward"]["result"][:num_particles]
-                rewards_raw = torch.tensor(r_raw, device=device).unsqueeze(0).float()
-            except Exception:
-                lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
-                rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
-        else:
-            lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
-            rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
-
-        # 1. LiDAR Gốc: Điểm thưởng thô tại 1 mẫu duy nhất r(x)
-        rewards_lidar = rewards_raw
-
-        # 2. Phương pháp của Bạn: Kỳ vọng điểm thưởng khi thêm nhiễu Gaussian xi ~ N(0, sigma^2 I)
-        M_exp = num_mc_samples
-        rewards_ours_dict = {}
-        for s_val in active_sigmas:
-            noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
-            rewards_ours_dict[s_val] = rewards_raw + noise_evals.mean(dim=0, keepdim=True)
-
-        # 3. Chuẩn bị Prompt Embeddings nếu có Pipeline (cho UNet Denoising thật)
-        prompt_embeds = None
-        if pipe is not None:
-            text_inputs = pipe.tokenizer(
-                prompt_str, padding="max_length", max_length=pipe.tokenizer.model_max_length,
-                truncation=True, return_tensors="pt"
-            )
-            text_embeddings = pipe.text_encoder(text_inputs.input_ids.to(device))[0]
-            uncond_inputs = pipe.tokenizer(
-                [""], padding="max_length", max_length=pipe.tokenizer.model_max_length, return_tensors="pt"
-            )
-            uncond_embeddings = pipe.text_encoder(uncond_inputs.input_ids.to(device))[0]
-            prompt_embeds = torch.cat([uncond_embeddings, text_embeddings])
-
-        current_latent = torch.randn(1, 4, 64, 64, device=device, dtype=pipe.unet.dtype if pipe else torch.float32)
-
-        for step_idx, t in enumerate(timesteps):
-            t_int = int(t.item())
-            alpha_prod_t = scheduler.alphas_cumprod[t_int].to(device)
-
-            lat_expand = current_latent.unsqueeze(1).float()
-            raw_diff_sq = - (lat_expand - (alpha_prod_t ** 0.5) * lookahead_latents.float()) ** 2
-            potential_raw = (raw_diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
-
-            # LiDAR gốc: dùng reward thô r_i (Best-of-1 Trap) trên x_t thật
-            w_r_lidar = F.softmax(5000.0 * rewards_lidar + potential_raw, dim=1)
-            h_lidar = - (w_r_lidar * (w_r_lidar + 1e-12).log2()).sum(dim=1).item()
-            all_entropy_lidar[t_int].append(h_lidar)
-
-            dom_id_l = int(w_r_lidar.argmax(dim=1).item())
-            dom_w_l = float(w_r_lidar[0, dom_id_l].item())
-            all_dominant_id_lidar[t_int].append(dom_id_l)
-            all_dominant_w_lidar[t_int].append(dom_w_l)
-
-            # RS-LiDAR cho từng sigma
-            for s_val in active_sigmas:
-                w_r_ours = F.softmax(5000.0 * rewards_ours_dict[s_val] + potential_raw, dim=1)
-                h_ours = - (w_r_ours * (w_r_ours + 1e-12).log2()).sum(dim=1).item()
-                all_entropy_ours[s_val][t_int].append(h_ours)
-                dom_id_o = int(w_r_ours.argmax(dim=1).item())
-                dom_w_o = float(w_r_ours[0, dom_id_o].item())
-                all_dominant_id_ours[s_val][t_int].append(dom_id_o)
-                all_dominant_w_ours[s_val][t_int].append(dom_w_o)
-
-            # 4. BƯỚC KHỬ NHIỄU (DENOISING STEP): Cập nhật thực tế x_t -> x_{t-1}
-            if pipe is not None:
-                latent_input = torch.cat([current_latent] * 2)
-                latent_input = scheduler.scale_model_input(latent_input, t)
-                with torch.no_grad():
-                    noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=prompt_embeds).sample
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + 7.5 * (noise_pred_text - noise_pred_uncond)
-
-                # Dẫn đường LiDAR trên gradient nhiễu (Closed-form FKD steering for t > 200)
-                if t_int > 200:
-                    w_base = F.softmax(potential_raw, dim=1)
-                    delta_w = (w_r_lidar - w_base)[..., None, None, None]
-                    guide = (delta_w * lookahead_latents.float()).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
-                    noise_pred = noise_pred - (1 - alpha_prod_t) ** 0.5 * guide.to(noise_pred.dtype) * 10.0
-
-                current_latent = scheduler.step(noise_pred, t, current_latent).prev_sample
-            else:
-                next_t = timesteps[step_idx + 1] if step_idx + 1 < len(timesteps) else 0
-                next_alpha = scheduler.alphas_cumprod[int(next_t)].to(device) if next_t > 0 else torch.tensor(1.0, device=device)
-                best_lat = lookahead_latents[:, dom_id_l:dom_id_l+1].squeeze(1)
-                eps = torch.randn_like(current_latent)
-                current_latent = (next_alpha ** 0.5) * best_lat + ((1 - next_alpha) ** 0.5) * eps
-
-        # Trích xuất và lưu ảnh sụp đổ của Prompt hiện tại
-        primary_sig = sigma if sigma in active_sigmas else active_sigmas[0]
-        final_dom_l = dom_id_l
-        final_w_l = dom_w_l
-        final_r_l = float(rewards_lidar[0, final_dom_l].item())
-        final_h_l = float(all_entropy_lidar[int(timesteps[-1].item())][-1])
-
-        final_dom_o = dom_id_o
-        final_w_o = dom_w_o
-        final_r_o = float(rewards_ours_dict[primary_sig][0, final_dom_o].item())
-        final_h_o = float(all_entropy_ours[primary_sig][int(timesteps[-1].item())][-1])
-
-        collapsed_dir = os.path.join(output_dir, "collapsed_images")
-        os.makedirs(collapsed_dir, exist_ok=True)
-        saved_l_img_name = "N/A"
-        saved_o_img_name = "N/A"
-
-        if lookahead_folders and idx < len(lookahead_folders):
-            p_f = lookahead_folders[idx]
-            import shutil
-            # 1. Tìm hoặc lưu ảnh hạt mà LiDAR sụp đổ về
-            cands_l = [
-                os.path.join(p_f, "samples", f"{final_dom_l:05d}.png"),
-                os.path.join(p_f, "best_of_n_samples", f"{final_dom_l:05d}.png"),
-                os.path.join(p_f, "best_of_n_samples", "00000.png") if final_dom_l == 0 else None,
-            ]
-            src_l = next((p for p in cands_l if p and os.path.exists(p)), None)
-            dest_l = os.path.join(collapsed_dir, f"prompt_{idx:03d}_lidar_collapse_particle_{final_dom_l:02d}.png")
-            if src_l:
-                shutil.copy2(src_l, dest_l)
-                saved_l_img_name = os.path.basename(dest_l)
-            else:
-                try:
-                    if vae_decoder is None:
-                        vae_decoder = pipe.vae if pipe is not None else AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
-                    with torch.no_grad():
-                        lat_chunk = (lookahead_latents[:, final_dom_l].float() / vae_decoder.config.scaling_factor)
-                        img_t = vae_decoder.decode(lat_chunk).sample
-                        img_t = (img_t / 2 + 0.5).clamp(0, 1)
-                        from torchvision import transforms
-                        transforms.ToPILImage()(img_t[0].cpu()).save(dest_l)
-                        saved_l_img_name = os.path.basename(dest_l)
-                except Exception:
-                    pass
-
-            # 2. Tìm hoặc lưu ảnh hạt top của RS-LiDAR
-            cands_o = [
-                os.path.join(p_f, "samples", f"{final_dom_o:05d}.png"),
-                os.path.join(p_f, "best_of_n_samples", f"{final_dom_o:05d}.png"),
-                os.path.join(p_f, "best_of_n_samples", "00000.png") if final_dom_o == 0 else None,
-            ]
-            src_o = next((p for p in cands_o if p and os.path.exists(p)), None)
-            dest_o = os.path.join(collapsed_dir, f"prompt_{idx:03d}_rslidar_top_particle_{final_dom_o:02d}.png")
-            if src_o:
-                shutil.copy2(src_o, dest_o)
-                saved_o_img_name = os.path.basename(dest_o)
-            else:
-                try:
-                    if vae_decoder is None:
-                        vae_decoder = pipe.vae if pipe is not None else AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
-                    with torch.no_grad():
-                        lat_chunk_o = (lookahead_latents[:, final_dom_o].float() / vae_decoder.config.scaling_factor)
-                        img_t_o = vae_decoder.decode(lat_chunk_o).sample
-                        img_t_o = (img_t_o / 2 + 0.5).clamp(0, 1)
-                        from torchvision import transforms
-                        transforms.ToPILImage()(img_t_o[0].cpu()).save(dest_o)
-                        saved_o_img_name = os.path.basename(dest_o)
-                except Exception:
-                    pass
-
-        prompt_collapsed_rows.append({
-            "Prompt_ID": idx,
-            "Prompt_Text": prompt_str,
-            "LiDAR_Collapsed_Particle": f"Hạt #{final_dom_l:02d}",
-            "LiDAR_Weight": f"{final_w_l * 100:.2f}%",
-            "LiDAR_Entropy_bits": f"{final_h_l:.4f}",
-            "LiDAR_N_eff": f"{2 ** final_h_l:.2f}",
-            "LiDAR_ImageReward": f"{final_r_l:.4f}",
-            "LiDAR_Image": saved_l_img_name,
-            "RSLiDAR_Top_Particle": f"Hạt #{final_dom_o:02d}",
-            "RSLiDAR_Top_Weight": f"{final_w_o * 100:.2f}%",
-            "RSLiDAR_Entropy_bits": f"{final_h_o:.4f}",
-            "RSLiDAR_N_eff": f"{2 ** final_h_o:.2f}",
-            "RSLiDAR_Top_ImageReward": f"{final_r_o:.4f}",
-            "RSLiDAR_Image": saved_o_img_name,
-        })
-
-    t_list = [int(t) for t in timesteps]
-    mean_entropy_lidar = [float(np.mean(all_entropy_lidar[t])) if all_entropy_lidar[t] else 0.0 for t in t_list]
-    entropy_ours_by_sigma = {
-        s_val: [float(np.mean(all_entropy_ours[s_val][t])) if all_entropy_ours[s_val][t] else 0.0 for t in t_list]
-        for s_val in active_sigmas
-    }
-    primary_sigma = sigma if sigma in entropy_ours_by_sigma else active_sigmas[0]
-    mean_entropy_ours = entropy_ours_by_sigma[primary_sigma]
-
-    sample_dominant_id_lidar = [int(all_dominant_id_lidar[t][0]) if all_dominant_id_lidar[t] else 0 for t in t_list]
-    sample_dominant_w_lidar = [float(all_dominant_w_lidar[t][0]) if all_dominant_w_lidar[t] else 1.0 for t in t_list]
-    mean_dominant_w_lidar = [float(np.mean(all_dominant_w_lidar[t])) if all_dominant_w_lidar[t] else 1.0 for t in t_list]
-
-    sample_dominant_id_ours = [int(all_dominant_id_ours[primary_sigma][t][0]) if all_dominant_id_ours[primary_sigma][t] else 0 for t in t_list]
-    sample_dominant_w_ours = [float(all_dominant_w_ours[primary_sigma][t][0]) if all_dominant_w_ours[primary_sigma][t] else 1.0/num_particles for t in t_list]
-    mean_dominant_w_ours = [float(np.mean(all_dominant_w_ours[primary_sigma][t])) if all_dominant_w_ours[primary_sigma][t] else 1.0/num_particles for t in t_list]
-
-    # Xuất file CSV chi tiết sụp đổ entropy từng bước (Step-by-Step Particle Collapse)
-    step_rows = []
-    for step_i, t_val in enumerate(t_list):
-        e_l = mean_entropy_lidar[step_i]
-        d_id_l = sample_dominant_id_lidar[step_i]
-        d_w_l_mean = mean_dominant_w_lidar[step_i]
-        neff_l = 2 ** e_l
-
-        e_o = mean_entropy_ours[step_i]
-        d_id_o = sample_dominant_id_ours[step_i]
-        d_w_o_mean = mean_dominant_w_ours[step_i]
-        neff_o = 2 ** e_o
-
-        status = "⚠️ SỤP ĐỔ VỀ 1 HẠT (Mode Collapse)" if d_w_l_mean > 0.9 else ("⚡ BẮT ĐẦU SỤP ĐỔ" if d_w_l_mean > 0.5 else "✅ PHÂN BỐ ĐỀU")
-
-        step_rows.append({
-            "Step": step_i + 1,
-            "Timestep": t_val,
-            "LiDAR_Dominant_Particle": f"Hạt #{d_id_l:02d}",
-            "LiDAR_Dominant_Weight": f"{d_w_l_mean * 100:.2f}%",
-            "LiDAR_Entropy_bits": f"{e_l:.4f}",
-            "LiDAR_N_eff": f"{neff_l:.2f}",
-            "RSLiDAR_Dominant_Particle": f"Hạt #{d_id_o:02d}",
-            "RSLiDAR_Dominant_Weight": f"{d_w_o_mean * 100:.2f}%",
-            "RSLiDAR_Entropy_bits": f"{e_o:.4f}",
-            "RSLiDAR_N_eff": f"{neff_o:.2f}",
-            "LiDAR_Dominant_Particle_Sample": f"Hạt #{d_id_l:02d}",
-            "LiDAR_Dominant_Weight_Mean": f"{d_w_l_mean * 100:.2f}%",
-            "LiDAR_Entropy_Mean_bits": f"{e_l:.4f}",
-            "LiDAR_N_eff_Mean": f"{neff_l:.2f}",
-            "RSLiDAR_Dominant_Particle_Sample": f"Hạt #{d_id_o:02d}",
-            "RSLiDAR_Dominant_Weight_Mean": f"{d_w_o_mean * 100:.2f}%",
-            "RSLiDAR_Entropy_Mean_bits": f"{e_o:.4f}",
-            "RSLiDAR_N_eff_Mean": f"{neff_o:.2f}",
-            "Trạng Thái": status
-        })
-
-    os.makedirs(output_dir, exist_ok=True)
-    try:
-        import pandas as pd
-        df_step = pd.DataFrame(step_rows)
-        step_csv_name = f"test_2_entropy_collapse_by_step_shard_{shard_id}.csv" if num_shards > 1 else "test_2_entropy_collapse_by_step.csv"
-        step_csv_path = os.path.join(output_dir, step_csv_name)
-        df_step.to_csv(step_csv_path, index=False)
-        print(f"💾 Đã lưu chi tiết sụp đổ entropy từng bước tại: {step_csv_path}")
-
-        if prompt_collapsed_rows:
-            df_prompts = pd.DataFrame(prompt_collapsed_rows)
-            p_csv_name = f"test_2_prompt_collapsed_particles_shard_{shard_id}.csv" if num_shards > 1 else "test_2_prompt_collapsed_particles.csv"
-            p_csv_path = os.path.join(output_dir, p_csv_name)
-            df_prompts.to_csv(p_csv_path, index=False)
-            print(f"💾 Đã lưu bảng tổng hợp hạt sụp đổ theo từng prompt tại: {p_csv_path}")
-
-            p_md_name = f"test_2_prompt_collapsed_particles_shard_{shard_id}.md" if num_shards > 1 else "test_2_prompt_collapsed_particles.md"
-            p_md_path = os.path.join(output_dir, p_md_name)
-            with open(p_md_path, "w", encoding="utf-8") as f_p_md:
-                f_p_md.write(df_prompts.to_markdown(index=False))
-            print(f"📝 Đã lưu báo cáo Markdown hạt sụp đổ tại: {p_md_path}")
-    except Exception as e:
-        print(f"Lưu CSV step/prompts error: {e}")
-
-    # Tạo đồ thị chuyên biệt cho Test 2 (Entropy & Dominant Particle Weight)
-    try:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
-        # Đồ thị 1: Softmax Entropy H(w)
-        ax1.plot(t_list, mean_entropy_lidar, 'r--', marker='o', linewidth=2.5, label="LiDAR (σ=0, Collapse)")
-        for s_val, s_ent in sorted(entropy_ours_by_sigma.items()):
-            ax1.plot(t_list, s_ent, marker='s', linewidth=2, label=f"RS-LiDAR (σ={s_val})")
-        ax1.axhline(y=np.log2(num_particles), color='gray', linestyle=':', label=f"Uniform Max ({np.log2(num_particles):.2f} bits)")
-        ax1.set_xlabel("Diffusion Timestep t", fontsize=12)
-        ax1.set_ylabel("Softmax Entropy H(w) (bits)", fontsize=12)
-        ax1.set_title("Test 2A: Softmax Entropy Collapse Across Timesteps", fontsize=13, fontweight="bold")
-        ax1.grid(True, linestyle="--", alpha=0.5)
-        ax1.legend(fontsize=10)
-
-        # Đồ thị 2: Trọng số hạt thống trị w_max (%)
-        ax2.plot(t_list, [w * 100 for w in mean_dominant_w_lidar], 'r--', marker='o', linewidth=2.5, label="LiDAR Mean w_max (Best-of-1 Trap)")
-        ax2.plot(t_list, [w * 100 for w in mean_dominant_w_ours], 'g-', marker='s', linewidth=2, label=f"RS-LiDAR Mean w_max (σ={primary_sigma})")
-        ax2.axhline(y=(1.0 / num_particles) * 100, color='gray', linestyle=':', label=f"Uniform Share ({100.0/num_particles:.1f}%)")
-        ax2.set_xlabel("Diffusion Timestep t", fontsize=12)
-        ax2.set_ylabel("Dominant Particle Weight w_max (%)", fontsize=12)
-        ax2.set_title("Test 2B: Dominant Particle Weight Surge (Mode Collapse)", fontsize=13, fontweight="bold")
-        ax2.grid(True, linestyle="--", alpha=0.5)
-        ax2.legend(fontsize=10)
-
-        fig.tight_layout()
-        plot_p = os.path.join(output_dir, "test_2_entropy_and_dominant_particles.png")
-        fig.savefig(plot_p, dpi=200)
-        plt.close(fig)
-        print(f"📈 Đã lưu đồ thị chuyên biệt Test 2 tại: {plot_p}")
-    except Exception as e:
-        print(f"Vẽ đồ thị Test 2 error: {e}")
-
-    ckpt_file = os.path.join(output_dir, f"test_2_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_2_checkpoint.json")
-    with open(ckpt_file, "w", encoding="utf-8") as f:
-        json.dump({
-            "t_list": t_list,
-            "entropy_lidar": mean_entropy_lidar,
-            "entropy_ours": mean_entropy_ours,
-            "entropy_ours_by_sigma": {str(k): v for k, v in entropy_ours_by_sigma.items()},
-            "dominant_particle_id_lidar": sample_dominant_id_lidar,
-            "dominant_weight_lidar": sample_dominant_w_lidar,
-            "dominant_particle_id_ours": sample_dominant_id_ours,
-            "dominant_weight_ours": sample_dominant_w_ours,
-            "M": num_mc_samples,
-            "prompt_collapsed_rows": prompt_collapsed_rows
-        }, f)
-
-    print(f"\n📊 KẾT QUẢ BÀI TEST 2 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS:")
-    print(f" • Entropy lý thuyết khi phân phối đều {num_particles} hạt:       {np.log2(num_particles):.4f} bits")
-    print(f" • Entropy trung bình của LiDAR gốc:                  {np.mean(mean_entropy_lidar):.4f} bits (Sụp đổ Best-of-1 Trap)")
-    for s_val, s_ent in sorted(entropy_ours_by_sigma.items()):
-        print(f" • Entropy trung bình RS-LiDAR (σ={s_val:.2f}):            {np.mean(s_ent):.4f} bits (Phân bổ mượt mà đa hạt)")
-
-    print(f"\n" + "="*98)
-    print(f"🔍 BẢNG CHI TIẾT SỰ SỤP ĐỔ ENTROPY VỀ HẠT NÀO Ở TỪNG BƯỚC (Prompt 1, N={num_particles} hạt):")
-    print("="*98)
-    print(f"{'Bước':<6} {'Timestep':<10} {'LiDAR Hạt #':<14} {'LiDAR Trọng Số':<16} {'LiDAR Entropy':<16} {'RS-LiDAR Entropy':<18} {'Trạng Thái'}")
-    print("-" * 98)
-    for r in step_rows:
-        step_num = r.get("Step", 0)
-        if step_num <= 5 or step_num % 5 == 0 or step_num >= len(step_rows) - 2:
-            p_lidar = r.get("LiDAR_Dominant_Particle", r.get("LiDAR_Dominant_Particle_Sample", ""))
-            w_lidar = r.get("LiDAR_Dominant_Weight", r.get("LiDAR_Dominant_Weight_Mean", ""))
-            e_lidar = r.get("LiDAR_Entropy_bits", r.get("LiDAR_Entropy_Mean_bits", ""))
-            e_ours = r.get("RSLiDAR_Entropy_bits", r.get("RSLiDAR_Entropy_Mean_bits", ""))
-            status_str = r.get("Trạng Thái", "")
-            print(f"{step_num:<6} {r.get('Timestep', ''):<10} {p_lidar:<14} {w_lidar:<16} {e_lidar:<16} {e_ours:<18} {status_str}")
-    print("="*98)
-
-    return {
-        "t_list": t_list,
-        "entropy_lidar": mean_entropy_lidar,
-        "entropy_ours": mean_entropy_ours,
-        "entropy_ours_by_sigma": entropy_ours_by_sigma,
-        "dominant_particle_id_lidar": sample_dominant_id_lidar,
-        "dominant_weight_lidar": sample_dominant_w_lidar,
-        "dominant_particle_id_ours": sample_dominant_id_ours,
-        "dominant_weight_ours": sample_dominant_w_ours
-    }
-
-
-# ======================================================================================
-# 🔬 TEST 3: Kháng Rung lắc Vector Dẫn đường (Guidance Field Lipschitz Stability)
-# ======================================================================================
-def run_test_3_guidance_stability(
-    pipe=None,
-    num_particles=50, num_steps=50, delta_eps=0.001, sigma=0.25,
-    tune_sigma=False, sigmas_to_sweep=None,
-    lookahead_dir=None, prompt_list=None, device="cuda",
-    num_shards=1, shard_id=0, output_dir="experiments/test_results",
-    num_mc_samples=4
-):
-    active_sigmas = sigmas_to_sweep if (tune_sigma and sigmas_to_sweep) else [sigma]
-    print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 3] ĐO ĐỘ ỔN ĐỊNH LIPSCHITZ CỦA TRƯỜNG VECTOR DẪN ĐƯỜNG (sigmas={active_sigmas}, M={num_mc_samples}) (Shard {shard_id + 1}/{num_shards})")
-    print("="*80)
-
-    scheduler = DDIMScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
-    scheduler.set_timesteps(num_steps, device=device)
-    timesteps = scheduler.timesteps
-    t_list = [int(t.item()) for t in timesteps]
-
-    lookahead_folders = []
-    if lookahead_dir and os.path.exists(lookahead_dir):
-        lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
-        if prompt_list and len(prompt_list) > 0:
-            lookahead_folders = lookahead_folders[:len(prompt_list)]
-
-    total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
-    if num_shards > 1:
-        per_shard = math.ceil(total_prompts / num_shards)
-        start_i = shard_id * per_shard
-        end_i = min(start_i + per_shard, total_prompts)
-        idx_range = range(start_i, end_i)
-    else:
-        idx_range = range(total_prompts)
-
-    all_cossim_lidar = {int(t): [] for t in timesteps}
-    all_cossim_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-    prompt_stability_rows = []
-
-    for idx in tqdm(idx_range, desc=f"Test 3 [Shard {shard_id}]"):
-        prompt_str = f"Prompt #{idx:03d}"
-        if prompt_list and idx < len(prompt_list):
-            p_item = prompt_list[idx]
-            prompt_str = p_item.get("prompt", str(p_item)) if isinstance(p_item, dict) else str(p_item)
-        elif lookahead_folders and idx < len(lookahead_folders):
-            try:
-                res_f = os.path.join(lookahead_folders[idx], "results.json")
-                if os.path.exists(res_f):
-                    with open(res_f, "r", encoding="utf-8") as f_res:
-                        prompt_str = json.load(f_res).get("prompt", os.path.basename(lookahead_folders[idx]))
-            except Exception:
-                prompt_str = os.path.basename(lookahead_folders[idx])
-
-        # 1. Nạp Lookahead Latents và ImageReward từ Phase 1
-        if lookahead_folders and idx < len(lookahead_folders):
-            p_folder = lookahead_folders[idx]
-            try:
-                latents_path = os.path.join(p_folder, "samples", "latent.pt")
-                results_path = os.path.join(p_folder, "results.json")
-                lookahead_latents = torch.load(latents_path, map_location=device).unsqueeze(0)[:, :num_particles]
-                with open(results_path, "r") as f:
-                    r_raw = json.load(f)["ImageReward"]["result"][:num_particles]
-                rewards_raw = torch.tensor(r_raw, device=device).unsqueeze(0).float()
-            except Exception:
-                lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
-                rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
-        else:
-            lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
-            rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
-
-        # 2. Chuẩn bị Rewards (Vanilla vs RS-LiDAR)
-        rewards_lidar = rewards_raw
-        M_exp = num_mc_samples
-        rewards_ours_dict = {}
-        for s_val in active_sigmas:
-            noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
-            rewards_ours_dict[s_val] = rewards_raw + noise_evals.mean(dim=0, keepdim=True)
-
-        # 3. Chuẩn bị Prompt Embeddings nếu có Pipeline (cho UNet Denoising thật)
-        prompt_embeds = None
-        if pipe is not None:
-            text_inputs = pipe.tokenizer(
-                prompt_str, padding="max_length", max_length=pipe.tokenizer.model_max_length,
-                truncation=True, return_tensors="pt"
-            )
-            text_embeddings = pipe.text_encoder(text_inputs.input_ids.to(device))[0]
-            uncond_inputs = pipe.tokenizer(
-                [""], padding="max_length", max_length=pipe.tokenizer.model_max_length, return_tensors="pt"
-            )
-            uncond_embeddings = pipe.text_encoder(uncond_inputs.input_ids.to(device))[0]
-            prompt_embeds = torch.cat([uncond_embeddings, text_embeddings])
-
-        current_latent = torch.randn(1, 4, 64, 64, device=device, dtype=pipe.unet.dtype if pipe else torch.float32)
-
-        prompt_cos_lidar_steps = []
-        prompt_cos_ours_steps = {s_val: [] for s_val in active_sigmas}
-
-        # 4. Phase 2 Trajectory Loop: Đánh giá độ ổn định Lipschitz dọc theo quỹ đạo khử nhiễu thực tế
-        for step_idx, t in enumerate(timesteps):
-            t_int = int(t.item())
-            alpha_prod_t = scheduler.alphas_cumprod[t_int].to(device)
-
-            # Hàm tính vector dẫn đường g(x, r) chuẩn mực (Closed-form FKD steering gradient)
-            def compute_g(x_state, r_vec):
-                lat_exp = x_state.unsqueeze(1).float()
-                diff_sq = - (lat_exp - (alpha_prod_t ** 0.5) * lookahead_latents.float()) ** 2
-                pot = (diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
-                w = F.softmax(pot, dim=1)
-                w_r = F.softmax(5000.0 * r_vec + pot, dim=1)
-                delta_w = (w_r - w)[..., None, None, None]
-                g = (delta_w * lookahead_latents.float()).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
-                return g, pot, w_r
-
-            # Vector dẫn đường gốc tại trạng thái thực x_t
-            g_lidar, pot_raw, w_r_lidar = compute_g(current_latent, rewards_lidar)
-
-            # Thêm nhiễu vi mô delta vào trạng thái x_t
-            delta = delta_eps * torch.randn_like(current_latent)
-            g_lidar_pert, _, _ = compute_g(current_latent + delta, rewards_lidar)
-
-            sim_l = F.cosine_similarity(g_lidar.reshape(1, -1), g_lidar_pert.reshape(1, -1), eps=1e-8).item()
-            if not np.isnan(sim_l):
-                all_cossim_lidar[t_int].append(sim_l)
-                prompt_cos_lidar_steps.append(sim_l)
-
-            # RS-LiDAR cho từng sigma
-            for s_val in active_sigmas:
-                g_o, _, _ = compute_g(current_latent, rewards_ours_dict[s_val])
-                g_o_pert, _, _ = compute_g(current_latent + delta, rewards_ours_dict[s_val])
-                sim_o = F.cosine_similarity(g_o.reshape(1, -1), g_o_pert.reshape(1, -1), eps=1e-8).item()
-                if not np.isnan(sim_o):
-                    all_cossim_ours[s_val][t_int].append(sim_o)
-                    prompt_cos_ours_steps[s_val].append(sim_o)
-
-            # 5. Denoising Step: Cập nhật x_t -> x_{t-1} dọc theo quỹ đạo
-            if pipe is not None:
-                latent_input = torch.cat([current_latent] * 2)
-                latent_input = scheduler.scale_model_input(latent_input, t)
-                with torch.no_grad():
-                    noise_pred = pipe.unet(latent_input, t, encoder_hidden_states=prompt_embeds).sample
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + 7.5 * (noise_pred_text - noise_pred_uncond)
-
-                # Dẫn đường LiDAR trên gradient nhiễu (Closed-form FKD steering for t > 200)
-                if t_int > 200:
-                    w_base = F.softmax(pot_raw, dim=1)
-                    delta_w = (w_r_lidar - w_base)[..., None, None, None]
-                    guide = (delta_w * lookahead_latents.float()).sum(dim=1) * ((alpha_prod_t ** 0.5) / (1 - alpha_prod_t))
-                    noise_pred = noise_pred - (1 - alpha_prod_t) ** 0.5 * guide.to(noise_pred.dtype) * 10.0
-
-                current_latent = scheduler.step(noise_pred, t, current_latent).prev_sample
-            else:
-                dom_id_l = int(w_r_lidar.argmax(dim=1).item())
-                next_t = timesteps[step_idx + 1] if step_idx + 1 < len(timesteps) else 0
-                next_alpha = scheduler.alphas_cumprod[int(next_t)].to(device) if next_t > 0 else torch.tensor(1.0, device=device)
-                best_lat = lookahead_latents[:, dom_id_l:dom_id_l+1].squeeze(1)
-                eps = torch.randn_like(current_latent)
-                current_latent = (next_alpha ** 0.5) * best_lat + ((1 - next_alpha) ** 0.5) * eps
-
-        # Thống kê per-prompt
-        primary_sig = sigma if sigma in active_sigmas else active_sigmas[0]
-        p_l_mean = float(np.mean(prompt_cos_lidar_steps)) if prompt_cos_lidar_steps else 0.0
-        p_o_mean = float(np.mean(prompt_cos_ours_steps[primary_sig])) if prompt_cos_ours_steps[primary_sig] else 0.0
-        p_row = {
-            "Prompt_Index": idx + 1,
-            "Prompt_Text": prompt_str,
-            "LiDAR_Mean_CosSim": f"{p_l_mean:.4f}",
-            f"RSLiDAR_Mean_CosSim (σ={primary_sig})": f"{p_o_mean:.4f}",
-            "Stability_Gain": f"+{(p_o_mean - p_l_mean)*100:.2f}%" if p_o_mean >= p_l_mean else f"{(p_o_mean - p_l_mean)*100:.2f}%"
-        }
-        for s_val in active_sigmas:
-            s_mean = float(np.mean(prompt_cos_ours_steps[s_val])) if prompt_cos_ours_steps[s_val] else 0.0
-            p_row[f"CosSim_sigma_{s_val:.2f}"] = f"{s_mean:.4f}"
-        prompt_stability_rows.append(p_row)
-
-    # 6. Tổng hợp kết quả theo từng bước (Step-by-Step)
-    mean_cossim_lidar = [float(np.mean(all_cossim_lidar[t])) if all_cossim_lidar[t] else 0.0 for t in t_list]
-    cossim_ours_by_sigma = {
-        s_val: [float(np.mean(all_cossim_ours[s_val][t])) if all_cossim_ours[s_val][t] else 0.0 for t in t_list]
-        for s_val in active_sigmas
-    }
-    primary_sigma = sigma if sigma in cossim_ours_by_sigma else active_sigmas[0]
-    mean_cossim_ours = cossim_ours_by_sigma[primary_sigma]
-
-    step_rows_3 = []
-    for step_i, t_val in enumerate(t_list):
-        c_l = mean_cossim_lidar[step_i]
-        c_o = mean_cossim_ours[step_i]
-        status = "⚠️ VECTOR BỊ BẺ HƯỚNG" if c_l < 0.9 else "✅ KHÁ ỔN ĐỊNH"
-        s_data = {
-            "Step": step_i + 1,
-            "Timestep": t_val,
-            "LiDAR_CosSim_Mean": f"{c_l:.4f}",
-            f"RSLiDAR_CosSim_Mean (σ={primary_sigma})": f"{c_o:.4f}",
-            "Stability_Gain": f"+{(c_o - c_l) * 100:.2f}%" if c_o >= c_l else f"{(c_o - c_l) * 100:.2f}%",
-            "Trạng Thái": status
-        }
-        for s_val in active_sigmas:
-            s_data[f"CosSim_sigma_{s_val:.2f}"] = f"{cossim_ours_by_sigma[s_val][step_i]:.4f}"
-        step_rows_3.append(s_data)
-
-    # 7. Xuất file CSV & Markdown chi tiết cho Kaggle Save Version
-    os.makedirs(output_dir, exist_ok=True)
-    try:
-        import pandas as pd
-        df_step_3 = pd.DataFrame(step_rows_3)
-        step_csv_name = f"test_3_cossim_stability_by_step_shard_{shard_id}.csv" if num_shards > 1 else "test_3_cossim_stability_by_step.csv"
-        step_csv_path = os.path.join(output_dir, step_csv_name)
-        df_step_3.to_csv(step_csv_path, index=False)
-        print(f"📊 Đã lưu bảng ổn định vector theo bước tại: {step_csv_path}")
-
-        if prompt_stability_rows:
-            df_p_3 = pd.DataFrame(prompt_stability_rows)
-            p_csv_name = f"test_3_prompt_stability_summary_shard_{shard_id}.csv" if num_shards > 1 else "test_3_prompt_stability_summary.csv"
-            p_csv_path = os.path.join(output_dir, p_csv_name)
-            df_p_3.to_csv(p_csv_path, index=False)
-            print(f"📊 Đã lưu bảng tổng hợp Test 3 theo prompt tại: {p_csv_path}")
-    except Exception as e:
-        print(f"Lưu CSV Test 3 error: {e}")
-
-    # 8. Đồ thị chuyên biệt cho Test 3
-    try:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(t_list, mean_cossim_lidar, 'r--', marker='o', linewidth=2.5, label="LiDAR (σ=0, Unstable)")
-        sig_colors = ["#2A9D8F", "#4575B4", "#E76F51", "#7209B7", "#D4A373"]
-        for s_i, (s_val, s_cos) in enumerate(sorted(cossim_ours_by_sigma.items())):
-            c = sig_colors[s_i % len(sig_colors)]
-            ax.plot(t_list, s_cos, color=c, marker='s', linewidth=2, label=f"RS-LiDAR (σ={s_val:.2f})")
-        ax.axhline(y=1.0, color='gray', linestyle=':', label="Absolute Invariance (CosSim=1.0)")
-        ax.set_xlabel("Diffusion Timestep t", fontsize=12)
-        ax.set_ylabel(r"Cosine Stability $\text{CosSim}(\mathbf{g}_t, \mathbf{g}_{t+\delta})$", fontsize=12)
-        ax.set_title(f"Test 3: Guidance Vector Field Lipschitz Stability (δ={delta_eps})", fontsize=13, fontweight="bold")
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.legend(fontsize=10)
-        fig.tight_layout()
-        plot_p = os.path.join(output_dir, "test_3_guidance_stability_curves.png")
-        fig.savefig(plot_p, dpi=200)
-        plt.close(fig)
-        print(f"📈 Đã lưu đồ thị chuyên biệt Test 3 tại: {plot_p}")
-    except Exception as e:
-        print(f"Vẽ đồ thị Test 3 error: {e}")
-
-    # 9. Lưu Checkpoint JSON
-    ckpt_file = os.path.join(output_dir, f"test_3_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_3_checkpoint.json")
-    with open(ckpt_file, "w", encoding="utf-8") as f:
-        json.dump({
-            "timesteps": t_list,
-            "cossim_lidar": mean_cossim_lidar,
-            "cossim_ours": mean_cossim_ours,
-            "cossim_ours_by_sigma": {str(k): v for k, v in cossim_ours_by_sigma.items()}
-        }, f)
-
-    print(f"\n📊 KẾT QUẢ BÀI TEST 3 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS (Tại delta={delta_eps}):")
-    print(f" • Độ ổn định Cosine trung bình của LiDAR gốc:        {np.mean(mean_cossim_lidar):.4f} (Vector bị bẻ hướng)")
-    for s_val, s_cos in sorted(cossim_ours_by_sigma.items()):
-        print(f" • Độ ổn định Cosine RS-LiDAR (σ={s_val:.2f}):             {np.mean(s_cos):.4f} (Kháng nhiễu tuyệt đối)")
-
-    return {
-        "timesteps": t_list,
-        "cossim_lidar": mean_cossim_lidar,
-        "cossim_ours": mean_cossim_ours,
-        "cossim_ours_by_sigma": cossim_ours_by_sigma
-    }
-
-
-
-# ======================================================================================
-# 🔬 TEST 4: Khảo sát Suy thoái Hạt Hữu hiệu & Bóc trần "Lãng phí Tính toán"
-#            (Effective Sample Size - ESS & Particle Starvation Analysis)
-# ======================================================================================
-def run_test_4_effective_sample_size(
-    num_particles=50, num_steps=50, sigma=0.25,
-    tune_sigma=False, sigmas_to_sweep=None,
-    lookahead_dir=None, prompt_list=None, device="cuda",
-    num_shards=1, shard_id=0, output_dir="experiments/test_results"
-):
-    active_sigmas = sigmas_to_sweep if (tune_sigma and sigmas_to_sweep) else [sigma]
-    print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 4] ĐO SUY THOÁI HẠT HỮU HIỆU (ESS & PARTICLE STARVATION) (sigmas={active_sigmas}) (Shard {shard_id + 1}/{num_shards})")
-    print("="*80)
-
-    scheduler = DDIMScheduler.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="scheduler")
-    scheduler.set_timesteps(num_steps, device=device)
-    timesteps = scheduler.timesteps
-
-    lookahead_folders = []
-    if lookahead_dir and os.path.exists(lookahead_dir):
-        lookahead_folders = sorted(glob.glob(os.path.join(lookahead_dir, "[0-9]*")))
-        if prompt_list and len(prompt_list) > 0:
-            lookahead_folders = lookahead_folders[:len(prompt_list)]
-
-    total_prompts = len(lookahead_folders) if lookahead_folders else (len(prompt_list) if prompt_list else 10)
-    if num_shards > 1:
-        per_shard = math.ceil(total_prompts / num_shards)
-        start_i = shard_id * per_shard
-        end_i = min(start_i + per_shard, total_prompts)
-        idx_range = range(start_i, end_i)
-    else:
-        idx_range = range(total_prompts)
-
-    all_ess_lidar = {int(t): [] for t in timesteps}
-    all_ess_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-    all_wmax_lidar = {int(t): [] for t in timesteps}
-    all_wmax_id_lidar = {int(t): [] for t in timesteps}
-    all_wmax_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-    all_active_lidar = {int(t): [] for t in timesteps}
-    all_active_ours = {sig: {int(t): [] for t in timesteps} for sig in active_sigmas}
-
-    for idx in tqdm(idx_range, desc=f"Test 4 [Shard {shard_id}]"):
-        if lookahead_folders and idx < len(lookahead_folders):
-            p_folder = lookahead_folders[idx]
-            try:
-                latents_path = os.path.join(p_folder, "samples", "latent.pt")
-                results_path = os.path.join(p_folder, "results.json")
-                lookahead_latents = torch.load(latents_path, map_location=device).unsqueeze(0)[:, :num_particles]
-                with open(results_path, "r") as f:
-                    r_raw = json.load(f)["ImageReward"]["result"][:num_particles]
-                rewards_raw = torch.tensor(r_raw, device=device).unsqueeze(0).float()
-            except Exception:
-                lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
-                rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
-        else:
-            lookahead_latents = torch.randn(1, num_particles, 4, 64, 64, device=device)
-            rewards_raw = torch.randn(1, num_particles, device=device) * 0.8
-
-        rewards_lidar = rewards_raw
-        M_exp = 4
-        rewards_ours_dict = {}
-        for s_val in active_sigmas:
-            noise_evals = torch.randn(M_exp, num_particles, device=device) * s_val
-            rewards_ours_dict[s_val] = rewards_raw + noise_evals.mean(dim=0, keepdim=True)
-
-        current_latent = torch.randn(1, 1, 4, 64, 64, device=device)
-
-        for t in timesteps:
-            t_int = int(t.item())
-            alpha_prod_t = scheduler.alphas_cumprod[t_int].to(device)
-
-            raw_diff_sq = - (current_latent.float() - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
-            potential_raw = (raw_diff_sq / (2 * (1 - alpha_prod_t))).sum(dim=(2, 3, 4))
-
-            # LiDAR gốc (w_i^r)
-            w_r_lidar = F.softmax(5000.0 * rewards_lidar + potential_raw, dim=1)
-            # ESS = 1 / sum(w_i^2)
-            ess_l = (1.0 / (w_r_lidar ** 2).sum(dim=1)).item()
-            wmax_l = w_r_lidar.max(dim=1).values.item()
-            wmax_id_l = int(w_r_lidar.argmax(dim=1).item())
-            n_act_l = (w_r_lidar > (1.0 / num_particles)).sum(dim=1).item()
-
-            all_ess_lidar[t_int].append(ess_l)
-            all_wmax_lidar[t_int].append(wmax_l)
-            all_wmax_id_lidar[t_int].append(wmax_id_l)
-            all_active_lidar[t_int].append(n_act_l)
-
-            # RS-LiDAR cho từng sigma
-            for s_val in active_sigmas:
-                w_r_ours = F.softmax(5000.0 * rewards_ours_dict[s_val] + potential_raw, dim=1)
-                ess_o = (1.0 / (w_r_ours ** 2).sum(dim=1)).item()
-                wmax_o = w_r_ours.max(dim=1).values.item()
-                n_act_o = (w_r_ours > (1.0 / num_particles)).sum(dim=1).item()
-
-                all_ess_ours[s_val][t_int].append(ess_o)
-                all_wmax_ours[s_val][t_int].append(wmax_o)
-                all_active_ours[s_val][t_int].append(n_act_o)
-
-    t_list = [int(t) for t in timesteps]
-    mean_ess_lidar = [float(np.mean(all_ess_lidar[t])) if all_ess_lidar[t] else 1.0 for t in t_list]
-    mean_wmax_lidar = [float(np.mean(all_wmax_lidar[t])) if all_wmax_lidar[t] else 1.0 for t in t_list]
-    mean_active_lidar = [float(np.mean(all_active_lidar[t])) if all_active_lidar[t] else 1.0 for t in t_list]
-
-    ess_ours_by_sigma = {
-        s_val: [float(np.mean(all_ess_ours[s_val][t])) if all_ess_ours[s_val][t] else 1.0 for t in t_list]
-        for s_val in active_sigmas
-    }
-    wmax_ours_by_sigma = {
-        s_val: [float(np.mean(all_wmax_ours[s_val][t])) if all_wmax_ours[s_val][t] else 1.0 for t in t_list]
-        for s_val in active_sigmas
-    }
-    active_ours_by_sigma = {
-        s_val: [float(np.mean(all_active_ours[s_val][t])) if all_active_ours[s_val][t] else 1.0 for t in t_list]
-        for s_val in active_sigmas
-    }
-
-    primary_sigma = sigma if sigma in ess_ours_by_sigma else active_sigmas[0]
-    mean_ess_ours = ess_ours_by_sigma[primary_sigma]
-    mean_wmax_ours = wmax_ours_by_sigma[primary_sigma]
-    mean_active_ours = active_ours_by_sigma[primary_sigma]
-
-    sample_wmax_id_lidar = [int(all_wmax_id_lidar[t][0]) if all_wmax_id_lidar[t] else 0 for t in t_list]
-    sample_wmax_val_lidar = [float(all_wmax_lidar[t][0]) if all_wmax_lidar[t] else 1.0 for t in t_list]
-
-    ckpt_file = os.path.join(output_dir, f"test_4_checkpoint_shard_{shard_id}.json" if num_shards > 1 else "test_4_checkpoint.json")
-    with open(ckpt_file, "w", encoding="utf-8") as f:
-        json.dump({
-            "t_list": t_list,
-            "ess_lidar": mean_ess_lidar,
-            "ess_ours": mean_ess_ours,
-            "ess_ours_by_sigma": {str(k): v for k, v in ess_ours_by_sigma.items()},
-            "wmax_lidar": mean_wmax_lidar,
-            "wmax_id_lidar": sample_wmax_id_lidar,
-            "wmax_ours": mean_wmax_ours,
-            "active_lidar": mean_active_lidar,
-            "active_ours": mean_active_ours
-        }, f)
-
-    print(f"\n📊 KẾT QUẢ BÀI TEST 4 [Shard {shard_id}] TRÊN {len(idx_range)} PROMPTS (N={num_particles} hạt):")
-    print(f" • ESS tối đa lý thuyết (Phân phối đều):              {num_particles:.2f} hạt")
-    print(f" • ESS trung bình của LiDAR gốc:                       {np.mean(mean_ess_lidar):.2f} hạt ({np.mean(mean_ess_lidar)/num_particles*100:.1f}% số hạt)")
-    print(f" • Trọng số hạt lớn nhất w_max (LiDAR gốc):            {np.mean(mean_wmax_lidar)*100:.2f}% (Bẫy Best-of-1)")
-    print(f" • Số hạt tích cực trung bình (w_i > 1/N) LiDAR:       {np.mean(mean_active_lidar):.1f} / {num_particles} hạt")
-    for s_val, s_ess in sorted(ess_ours_by_sigma.items()):
-        print(f" • ESS trung bình RS-LiDAR (σ={s_val:.2f}):                 {np.mean(s_ess):.2f} hạt ({np.mean(s_ess)/num_particles*100:.1f}% số hạt)")
-        print(f"   -> w_max (RS-LiDAR σ={s_val:.2f}):                 {np.mean(wmax_ours_by_sigma[s_val])*100:.2f}% | Active particles: {np.mean(active_ours_by_sigma[s_val]):.1f}/{num_particles}")
-
-    print(f"\n🔍 CHI TIẾT ẢNH/HẠT CHIẾM TRỌNG SỐ LỚN NHẤT w_max TẠI CÁC TIMESTEP (LiDAR Gốc mẫu Prompt 1):")
-    sample_steps = [t_list[0], t_list[len(t_list)//4], t_list[len(t_list)//2], t_list[3*len(t_list)//4], t_list[-1]]
-    for t_s in sample_steps:
-        idx_t = t_list.index(t_s)
-        p_id = sample_wmax_id_lidar[idx_t]
-        p_w = sample_wmax_val_lidar[idx_t]
-        print(f"   -> Bước t={t_s:3d}: Hạt #{p_id:02d} (Chiếm {p_w*100:.2f}% trọng số)")
-
-    return {
-        "t_list": t_list,
-        "ess_lidar": mean_ess_lidar,
-        "ess_ours": mean_ess_ours,
-        "ess_ours_by_sigma": ess_ours_by_sigma,
-        "wmax_lidar": mean_wmax_lidar,
-        "wmax_id_lidar": sample_wmax_id_lidar,
-        "wmax_ours": mean_wmax_ours,
-        "active_lidar": mean_active_lidar,
-        "active_ours": mean_active_ours
-    }
-
-
-# ======================================================================================
-# 🔬 TEST 5: Khảo sát Giới hạn Bộ giải Nhanh & Đường cong Thoái hóa Bước
-#            (Step-Budget Solver Scaling & Theorem 1 Truncation Bound)
-# ======================================================================================
-@torch.inference_mode()
-def run_test_5_step_budget_scaling(
-    pipe, vae, ir_model, prompt_list, sigma=0.05,
-    step_budgets=None, num_particles=10, device="cuda",
-    num_shards=1, shard_id=0, output_dir="experiments/test_results",
-    overwrite=False
-):
-    if step_budgets is None:
-        step_budgets = [2, 3, 5, 8, 15]
-
-    total_prompts = len(prompt_list)
-    if num_shards > 1:
-        prompts_per_shard = math.ceil(total_prompts / num_shards)
-        start_p = shard_id * prompts_per_shard
-        end_p = min(start_p + prompts_per_shard, total_prompts)
-        prompt_slice = prompt_list[start_p:end_p]
-        offset = start_p
-        checkpoint_file = os.path.join(output_dir, f"test_5_checkpoint_shard_{shard_id}.json")
-    else:
-        prompt_slice = prompt_list
-        offset = 0
-        checkpoint_file = os.path.join(output_dir, "test_5_checkpoint.json")
-
-    print("\n" + "="*80)
-    print(f"🔬 [BÀI TEST 5] KHẢO SÁT BƯỚC BỘ GIẢI S IN {step_budgets} VS 50 BƯỚC DDIM CHUẨN")
-    print(f"   • Số hạt: {num_particles} | Sigma: {sigma} | Device: {device} | Shard: {shard_id + 1}/{num_shards}")
-    print("="*80)
-
+def plot_and_save_all(res1=None, output_dir=None, sigma=0.25):
+    if output_dir is None:
+        output_dir = "/kaggle/working/test1_results" if os.path.exists("/kaggle") else "experiments/test1_results"
     os.makedirs(output_dir, exist_ok=True)
 
-    dpm_scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-    ddim_scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
-    results_by_step = {
-        S: {
-            "error_norms": [],
-            "delta_lidar": [],
-            "delta_ours": [],
-            "tau_lidar": [],
-            "tau_ours": []
-        } for S in step_budgets
-    }
-
-    start_local_idx = 0
-    if not overwrite and os.path.exists(checkpoint_file) and os.path.getsize(checkpoint_file) > 0:
-        try:
-            with open(checkpoint_file, "r", encoding="utf-8") as f:
-                ckpt = json.load(f)
-                start_local_idx = ckpt.get("processed_prompts", 0)
-                saved_results = ckpt.get("results_by_step", {})
-                for S_str, S_data in saved_results.items():
-                    S_int = int(S_str)
-                    if S_int in results_by_step:
-                        results_by_step[S_int] = S_data
-                print(f"🔄 Shard {shard_id}: Đã khôi phục Test 5 từ Checkpoint! Tiếp tục từ prompt thứ {start_local_idx + 1}/{len(prompt_slice)}...")
-        except Exception as e:
-            print(f"⚠️ Không đọc được checkpoint Test 5: {e}")
-
-    M_exp = 4
-    for p_local_idx in tqdm(range(start_local_idx, len(prompt_slice)), desc=f"Test 5 [Shard {shard_id}]"):
-        global_p_idx = offset + p_local_idx
-        prompt = prompt_slice[p_local_idx]
-        seed = 100 + global_p_idx
-
-        # 1. Sinh hạt mốc chuẩn 50 bước DDIM (Ground Truth x_0)
-        pipe.scheduler = ddim_scheduler
-        latents_50 = generate_latents(pipe, prompt, num_particles=num_particles, num_inference_steps=50, seed=seed, device=device)
-        img_tensor_50 = decode_latents_to_tensor(latents_50, vae, device)
-        imgs_50 = pipe.image_processor.postprocess(img_tensor_50.clamp(-1.0, 1.0), output_type="pil")
-        r_50_lidar = np.array(ir_model.score_batched([prompt] * num_particles, imgs_50))
-
-        # Smoothed reward cho ground truth 50 bước (cộng nhiễu trực tiếp lên tensor ảnh [-1.0, 1.0])
-        r_50_smooth = []
-        for _ in range(M_exp):
-            noisy_imgs_50 = get_noisy_pil_images(img_tensor_50, sigma, pipe)
-            r_50_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_imgs_50))
-            del noisy_imgs_50
-        r_50_ours = np.mean(r_50_smooth, axis=0)
-        del img_tensor_50, imgs_50
-
-        # 2. Quét từng mốc bước DPM-Solver S in [2, 3, 5, 8, 15]
-        pipe.scheduler = dpm_scheduler
-        for S in step_budgets:
-            latents_S = generate_latents(pipe, prompt, num_particles=num_particles, num_inference_steps=S, seed=seed, device=device)
-            img_tensor_S = decode_latents_to_tensor(latents_S, vae, device)
-            imgs_S = pipe.image_processor.postprocess(img_tensor_S.clamp(-1.0, 1.0), output_type="pil")
-
-            # Đo sai số hình học không gian latent ||e_S||_2
-            err_norm = (latents_S.float() - latents_50.float()).pow(2).sum(dim=(1, 2, 3)).sqrt().mean().item()
-            results_by_step[S]["error_norms"].append(err_norm)
-
-            # Điểm thưởng thô (LiDAR)
-            r_S_lidar = np.array(ir_model.score_batched([prompt] * num_particles, imgs_S))
-            d_l = np.abs(r_S_lidar - r_50_lidar).tolist()
-            tau_l, _ = scipy.stats.kendalltau(r_S_lidar, r_50_lidar)
-            results_by_step[S]["delta_lidar"].extend(d_l)
-            if not np.isnan(tau_l): results_by_step[S]["tau_lidar"].append(tau_l)
-
-            # Điểm thưởng làm mịn (RS-LiDAR) trên tensor ảnh [-1.0, 1.0]
-            r_S_smooth = []
-            for _ in range(M_exp):
-                noisy_imgs_S = get_noisy_pil_images(img_tensor_S, sigma, pipe)
-                r_S_smooth.append(ir_model.score_batched([prompt] * num_particles, noisy_imgs_S))
-                del noisy_imgs_S
-            r_S_ours = np.mean(r_S_smooth, axis=0)
-
-            d_o = np.abs(r_S_ours - r_50_ours).tolist()
-            tau_o, _ = scipy.stats.kendalltau(r_S_ours, r_50_ours)
-            results_by_step[S]["delta_ours"].extend(d_o)
-            if not np.isnan(tau_o): results_by_step[S]["tau_ours"].append(tau_o)
-            del img_tensor_S, imgs_S, latents_S
-
-        del latents_50
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        # Lưu checkpoint định kỳ
-        with open(checkpoint_file, "w", encoding="utf-8") as f:
-            json.dump({
-                "processed_prompts": p_local_idx + 1,
-                "step_budgets": step_budgets,
-                "results_by_step": {str(k): v for k, v in results_by_step.items()}
-            }, f)
-
-    summary_by_step = {}
-    for S in step_budgets:
-        d_l = float(np.mean(results_by_step[S]["delta_lidar"])) if results_by_step[S]["delta_lidar"] else 0.0
-        d_o = float(np.mean(results_by_step[S]["delta_ours"])) if results_by_step[S]["delta_ours"] else 0.0
-        t_l = float(np.mean(results_by_step[S]["tau_lidar"])) if results_by_step[S]["tau_lidar"] else 0.0
-        t_o = float(np.mean(results_by_step[S]["tau_ours"])) if results_by_step[S]["tau_ours"] else 0.0
-        e_norm = float(np.mean(results_by_step[S]["error_norms"])) if results_by_step[S]["error_norms"] else 0.0
-        summary_by_step[S] = {
-            "error_norm": e_norm,
-            "delta_lidar": d_l,
-            "delta_ours": d_o,
-            "tau_lidar": t_l,
-            "tau_ours": t_o,
-            "tau_gain": max(0.0, (t_o - t_l) / max(1e-6, abs(t_l)) * 100) if t_l != 0 else 0.0
-        }
-
-    print(f"\n📊 KẾT QUẢ BÀI TEST 5 [Shard {shard_id}] ĐƯỜNG CONG THOÁI HÓA BƯỚC BỘ GIẢI S:")
-    print(f" {'Step S':<8} | {'||e||_2':<10} | {'LiDAR |Δr|':<12} | {'Ours |Δr|':<12} | {'LiDAR τ':<10} | {'Ours τ':<10} | {'Tau Gain':<10}")
-    print("-" * 80)
-    for S in step_budgets:
-        s_res = summary_by_step[S]
-        print(f" {S:<8} | {s_res['error_norm']:<10.2f} | {s_res['delta_lidar']:<12.4f} | {s_res['delta_ours']:<12.4f} | {s_res['tau_lidar']:<10.4f} | {s_res['tau_ours']:<10.4f} | +{s_res['tau_gain']:<9.1f}%")
-
-    return {
-        "step_budgets": step_budgets,
-        "summary_by_step": summary_by_step,
-        "results_by_step": results_by_step
-    }
-
-
-# ======================================================================================
-# 📊 XUẤT BIỂU ĐỒ & BÁO CÁO KHOA HỌC (TỰ ĐỘNG MERGE MULTI-SHARDS)
-# ======================================================================================
-def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, output_dir="experiments/test_results", sigma=0.05):
-    os.makedirs(output_dir, exist_ok=True)
-
-    # 1. Tự động quét và gom kết quả Test 1 từ tất cả shard checkpoints
+    # 1. Tự động quét và gom kết quả Test 1 từ tất cả shard checkpoints nếu chưa có
     if res1 is None or len(res1.get("delta_r_lidar", [])) == 0:
         shard_ckpts = sorted(glob.glob(os.path.join(output_dir, "test_1_checkpoint*.json")))
         if shard_ckpts:
@@ -1804,6 +819,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             merged_kendall_as_lidar, merged_kendall_as_ours = [], []
             merged_delta_pick_lidar, merged_delta_pick_ours = [], []
             merged_kendall_pick_lidar, merged_kendall_pick_ours = [], []
+            merged_sigma_sweep = {}
 
             for ckpt_p in shard_ckpts:
                 try:
@@ -1830,6 +846,23 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                         merged_delta_pick_ours.extend(c_data.get("delta_pick_ours", []))
                         merged_kendall_pick_lidar.extend(c_data.get("kendall_pick_lidar", []))
                         merged_kendall_pick_ours.extend(c_data.get("kendall_pick_ours", []))
+
+                        s_data = c_data.get("sigma_sweep_data", {})
+                        for s_k, s_sub in s_data.items():
+                            try:
+                                s_k_f = float(s_k)
+                            except ValueError:
+                                continue
+                            if s_k_f not in merged_sigma_sweep:
+                                merged_sigma_sweep[s_k_f] = {
+                                    "delta_ir": [], "kendall_ir": [],
+                                    "delta_clip": [], "kendall_clip": [],
+                                    "delta_hps": [], "kendall_hps": [],
+                                    "delta_as": [], "kendall_as": [],
+                                    "delta_pick": [], "kendall_pick": []
+                                }
+                            for m_key in ["delta_ir", "kendall_ir", "delta_clip", "kendall_clip", "delta_hps", "kendall_hps", "delta_as", "kendall_as", "delta_pick", "kendall_pick"]:
+                                merged_sigma_sweep[s_k_f][m_key].extend(s_sub.get(m_key, []))
                 except Exception:
                     pass
 
@@ -1849,6 +882,22 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 as_m = calc_merged_stats(merged_delta_as_lidar, merged_delta_as_ours, merged_kendall_as_lidar, merged_kendall_as_ours)
                 pick_m = calc_merged_stats(merged_delta_pick_lidar, merged_delta_pick_ours, merged_kendall_pick_lidar, merged_kendall_pick_ours)
 
+                ablation_summary = {}
+                for s_val, s_data in sorted(merged_sigma_sweep.items()):
+                    s_ir = calc_merged_stats(merged_delta_lidar, s_data["delta_ir"], merged_kendall_lidar, s_data["kendall_ir"])
+                    s_clip = calc_merged_stats(merged_delta_clip_lidar, s_data["delta_clip"], merged_kendall_clip_lidar, s_data["kendall_clip"])
+                    s_hps = calc_merged_stats(merged_delta_hps_lidar, s_data["delta_hps"], merged_kendall_hps_lidar, s_data["kendall_hps"])
+                    s_as = calc_merged_stats(merged_delta_as_lidar, s_data["delta_as"], merged_kendall_as_lidar, s_data["kendall_as"])
+                    s_pick = calc_merged_stats(merged_delta_pick_lidar, s_data["delta_pick"], merged_kendall_pick_lidar, s_data["kendall_pick"])
+                    ablation_summary[s_val] = {
+                        "ImageReward": s_ir,
+                        "CLIP-Score": s_clip,
+                        "HPS-v2.1": s_hps,
+                        "Aesthetic": s_as,
+                        "PickScore": s_pick,
+                        "lipschitz_bound": s_ir["lipschitz_bound"]
+                    }
+
                 res1 = {
                     "error_norms": merged_error_norms,
                     "delta_r_lidar": merged_delta_lidar,
@@ -1862,299 +911,35 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                         "HPS-v2.1": hps_m,
                         "Aesthetic": as_m,
                         "PickScore": pick_m
+                    },
+                    "sigma_ablation": ablation_summary,
+                    "baseline_lidar": {
+                        "ImageReward": {"delta": float(np.mean(merged_delta_lidar)) if merged_delta_lidar else 0.0, "tau": float(np.mean(merged_kendall_lidar)) if merged_kendall_lidar else 0.0},
+                        "CLIP-Score": {"delta": float(np.mean(merged_delta_clip_lidar)) if merged_delta_clip_lidar else 0.0, "tau": float(np.mean(merged_kendall_clip_lidar)) if merged_kendall_clip_lidar else 0.0},
+                        "HPS-v2.1": {"delta": float(np.mean(merged_delta_hps_lidar)) if merged_delta_hps_lidar else 0.0, "tau": float(np.mean(merged_kendall_hps_lidar)) if merged_kendall_hps_lidar else 0.0},
+                        "Aesthetic": {"delta": float(np.mean(merged_delta_as_lidar)) if merged_delta_as_lidar else 0.0, "tau": float(np.mean(merged_kendall_as_lidar)) if merged_kendall_as_lidar else 0.0},
+                        "PickScore": {"delta": float(np.mean(merged_delta_pick_lidar)) if merged_delta_pick_lidar else 0.0, "tau": float(np.mean(merged_kendall_pick_lidar)) if merged_kendall_pick_lidar else 0.0}
                     }
                 }
 
-    # 2. Tự động quét và gom kết quả Test 2 từ tất cả shard checkpoints
-    if res2 is None:
-        shard_ckpts_2 = sorted(glob.glob(os.path.join(output_dir, "test_2_checkpoint*.json")))
-        if shard_ckpts_2:
-            t_list = None
-            ent_lidar_shards = []
-            ent_ours_shards = []
-            ent_by_sig_shards = {}
-            dom_id_lidar_shards = []
-            dom_w_lidar_shards = []
-            dom_id_ours_shards = []
-            dom_w_ours_shards = []
-            for cp in shard_ckpts_2:
-                try:
-                    with open(cp, "r", encoding="utf-8") as f:
-                        d = json.load(f)
-                        t_list = d.get("t_list", [])
-                        ent_lidar_shards.append(d.get("entropy_lidar", []))
-                        ent_ours_shards.append(d.get("entropy_ours", []))
-                        if "dominant_particle_id_lidar" in d:
-                            dom_id_lidar_shards.append(d["dominant_particle_id_lidar"])
-                        if "dominant_weight_lidar" in d:
-                            dom_w_lidar_shards.append(d["dominant_weight_lidar"])
-                        if "dominant_particle_id_ours" in d:
-                            dom_id_ours_shards.append(d["dominant_particle_id_ours"])
-                        if "dominant_weight_ours" in d:
-                            dom_w_ours_shards.append(d["dominant_weight_ours"])
-                        for s_k, s_arr in d.get("entropy_ours_by_sigma", {}).items():
-                            if s_k not in ent_by_sig_shards:
-                                ent_by_sig_shards[s_k] = []
-                            ent_by_sig_shards[s_k].append(s_arr)
-                except Exception:
-                    pass
-            if t_list and ent_lidar_shards:
-                merged_by_sig = {
-                    float(k): np.mean(v_shards, axis=0).tolist()
-                    for k, v_shards in ent_by_sig_shards.items() if v_shards
-                }
-                res2 = {
-                    "t_list": t_list,
-                    "entropy_lidar": np.mean(ent_lidar_shards, axis=0).tolist(),
-                    "entropy_ours": np.mean(ent_ours_shards, axis=0).tolist(),
-                    "entropy_ours_by_sigma": merged_by_sig,
-                    "dominant_particle_id_lidar": dom_id_lidar_shards[0] if dom_id_lidar_shards else [],
-                    "dominant_weight_lidar": dom_w_lidar_shards[0] if dom_w_lidar_shards else [],
-                    "dominant_particle_id_ours": dom_id_ours_shards[0] if dom_id_ours_shards else [],
-                    "dominant_weight_ours": dom_w_ours_shards[0] if dom_w_ours_shards else []
-                }
-
-    # 3. Tự động quét và gom kết quả Test 3 từ tất cả shard checkpoints
-    if res3 is None:
-        shard_ckpts_3 = sorted(glob.glob(os.path.join(output_dir, "test_3_checkpoint*.json")))
-        if shard_ckpts_3:
-            timesteps = None
-            cos_lidar_shards = []
-            cos_ours_shards = []
-            cos_by_sig_shards = {}
-            for cp in shard_ckpts_3:
-                try:
-                    with open(cp, "r", encoding="utf-8") as f:
-                        d = json.load(f)
-                        timesteps = d.get("timesteps", [])
-                        cos_lidar_shards.append(d.get("cossim_lidar", []))
-                        cos_ours_shards.append(d.get("cossim_ours", []))
-                        for s_k, s_arr in d.get("cossim_ours_by_sigma", {}).items():
-                            if s_k not in cos_by_sig_shards:
-                                cos_by_sig_shards[s_k] = []
-                            cos_by_sig_shards[s_k].append(s_arr)
-                except Exception:
-                    pass
-            if timesteps and cos_lidar_shards:
-                merged_by_sig_3 = {
-                    float(k): np.mean(v_shards, axis=0).tolist()
-                    for k, v_shards in cos_by_sig_shards.items() if v_shards
-                }
-                res3 = {
-                    "timesteps": timesteps,
-                    "cossim_lidar": np.mean(cos_lidar_shards, axis=0).tolist(),
-                    "cossim_ours": np.mean(cos_ours_shards, axis=0).tolist(),
-                    "cossim_ours_by_sigma": merged_by_sig_3
-                }
-
-    # 4. Tự động quét và gom kết quả Test 4 từ tất cả shard checkpoints
-    if res4 is None:
-        shard_ckpts_4 = sorted(glob.glob(os.path.join(output_dir, "test_4_checkpoint*.json")))
-        if shard_ckpts_4:
-            t_list_4 = None
-            ess_lidar_shards = []
-            ess_ours_shards = []
-            ess_by_sig_shards = {}
-            wmax_lidar_shards = []
-            wmax_id_lidar_shards = []
-            wmax_ours_shards = []
-            active_lidar_shards = []
-            active_ours_shards = []
-            for cp in shard_ckpts_4:
-                try:
-                    with open(cp, "r", encoding="utf-8") as f:
-                        d = json.load(f)
-                        t_list_4 = d.get("t_list", [])
-                        ess_lidar_shards.append(d.get("ess_lidar", []))
-                        ess_ours_shards.append(d.get("ess_ours", []))
-                        wmax_lidar_shards.append(d.get("wmax_lidar", []))
-                        if "wmax_id_lidar" in d:
-                            wmax_id_lidar_shards.append(d["wmax_id_lidar"])
-                        wmax_ours_shards.append(d.get("wmax_ours", []))
-                        active_lidar_shards.append(d.get("active_lidar", []))
-                        active_ours_shards.append(d.get("active_ours", []))
-                        for s_k, s_arr in d.get("ess_ours_by_sigma", {}).items():
-                            if s_k not in ess_by_sig_shards: ess_by_sig_shards[s_k] = []
-                            ess_by_sig_shards[s_k].append(s_arr)
-                except Exception:
-                    pass
-            if t_list_4 and ess_lidar_shards:
-                merged_ess_by_sig = {
-                    float(k): np.mean(v, axis=0).tolist()
-                    for k, v in ess_by_sig_shards.items() if v
-                }
-                res4 = {
-                    "t_list": t_list_4,
-                    "ess_lidar": np.mean(ess_lidar_shards, axis=0).tolist(),
-                    "ess_ours": np.mean(ess_ours_shards, axis=0).tolist(),
-                    "ess_ours_by_sigma": merged_ess_by_sig,
-                    "wmax_lidar": np.mean(wmax_lidar_shards, axis=0).tolist() if wmax_lidar_shards else [],
-                    "wmax_id_lidar": wmax_id_lidar_shards[0] if wmax_id_lidar_shards else [],
-                    "wmax_ours": np.mean(wmax_ours_shards, axis=0).tolist() if wmax_ours_shards else [],
-                    "active_lidar": np.mean(active_lidar_shards, axis=0).tolist() if active_lidar_shards else [],
-                    "active_ours": np.mean(active_ours_shards, axis=0).tolist() if active_ours_shards else []
-                }
-
-    # 5. Tự động quét và gom kết quả Test 5 từ tất cả shard checkpoints
-    if res5 is None:
-        shard_ckpts_5 = sorted(glob.glob(os.path.join(output_dir, "test_5_checkpoint*.json")))
-        if shard_ckpts_5:
-            step_budgets_5 = [2, 3, 5, 8, 15]
-            merged_results_by_step = {S: {"error_norms": [], "delta_lidar": [], "delta_ours": [], "tau_lidar": [], "tau_ours": []} for S in step_budgets_5}
-            for cp in shard_ckpts_5:
-                try:
-                    with open(cp, "r", encoding="utf-8") as f:
-                        d = json.load(f)
-                        saved_by_step = d.get("results_by_step", {})
-                        for S_str, S_data in saved_by_step.items():
-                            S_int = int(S_str)
-                            if S_int in merged_results_by_step:
-                                for k_met in ["error_norms", "delta_lidar", "delta_ours", "tau_lidar", "tau_ours"]:
-                                    merged_results_by_step[S_int][k_met].extend(S_data.get(k_met, []))
-                except Exception:
-                    pass
-            if any(len(merged_results_by_step[S]["tau_lidar"]) > 0 for S in step_budgets_5):
-                summary_by_step_merged = {}
-                for S in step_budgets_5:
-                    d_l = float(np.mean(merged_results_by_step[S]["delta_lidar"])) if merged_results_by_step[S]["delta_lidar"] else 0.0
-                    d_o = float(np.mean(merged_results_by_step[S]["delta_ours"])) if merged_results_by_step[S]["delta_ours"] else 0.0
-                    t_l = float(np.mean(merged_results_by_step[S]["tau_lidar"])) if merged_results_by_step[S]["tau_lidar"] else 0.0
-                    t_o = float(np.mean(merged_results_by_step[S]["tau_ours"])) if merged_results_by_step[S]["tau_ours"] else 0.0
-                    e_norm = float(np.mean(merged_results_by_step[S]["error_norms"])) if merged_results_by_step[S]["error_norms"] else 0.0
-                    summary_by_step_merged[S] = {
-                        "error_norm": e_norm,
-                        "delta_lidar": d_l,
-                        "delta_ours": d_o,
-                        "tau_lidar": t_l,
-                        "tau_ours": t_o,
-                        "tau_gain": max(0.0, (t_o - t_l) / max(1e-6, abs(t_l)) * 100) if t_l != 0 else 0.0
-                    }
-                res5 = {
-                    "step_budgets": step_budgets_5,
-                    "summary_by_step": summary_by_step_merged,
-                    "results_by_step": merged_results_by_step
-                }
-
-    has_5_tests = (res4 is not None or res5 is not None)
-    if has_5_tests:
-        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-        axes_flat = axes.flatten()
-    else:
-        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-        axes_flat = axes
-
-    # Test 1 Plot
+    # 2. Xuất biểu đồ phân tán sai số Latent Error vs Reward Error (Theorem 1)
     if res1 is not None and "error_norms" in res1 and len(res1["error_norms"]) > 0:
-        num_pts = min(len(res1["error_norms"]), 100)
-        axes_flat[0].scatter(res1["error_norms"][:num_pts], res1["delta_r_lidar"][:num_pts], color="#E63946", alpha=0.6, label="LiDAR (sigma=0)")
-        axes_flat[0].scatter(res1["error_norms"][:num_pts], res1["delta_r_ours"][:num_pts], color="#2A9D8F", alpha=0.6, label="Ours (Smoothed Surrogate)")
-        axes_flat[0].set_xlabel(r"Solver Latent Error $\|\mathbf{e}_i\|_2$", fontsize=11)
-        axes_flat[0].set_ylabel(r"Reward Error $|\Delta r|$", fontsize=11)
-        axes_flat[0].set_title("Test 1: Solver Error Resilience (Theorem 1)", fontsize=12, fontweight="bold")
-        axes_flat[0].grid(True, linestyle="--", alpha=0.5)
-        axes_flat[0].legend(fontsize=10)
-    else:
-        axes_flat[0].set_title("Test 1: Not Executed", fontsize=12)
+        fig_sc, ax_sc = plt.subplots(figsize=(8, 6))
+        num_pts = min(len(res1["error_norms"]), 200)
+        ax_sc.scatter(res1["error_norms"][:num_pts], res1["delta_r_lidar"][:num_pts], color="#E63946", alpha=0.6, label="LiDAR (sigma=0)")
+        ax_sc.scatter(res1["error_norms"][:num_pts], res1["delta_r_ours"][:num_pts], color="#2A9D8F", alpha=0.6, label=f"RS-LiDAR (sigma={sigma})")
+        ax_sc.set_xlabel(r"Solver Latent Discretization Error $\|\mathbf{e}_i\|_2$", fontsize=11, fontweight="bold")
+        ax_sc.set_ylabel(r"ImageReward Error $|\Delta r|$", fontsize=11, fontweight="bold")
+        ax_sc.set_title("Test 1: Solver Error Resilience (Theorem 1 Lipschitz Bound)", fontsize=12, fontweight="bold")
+        ax_sc.grid(True, linestyle="--", alpha=0.5)
+        ax_sc.legend(fontsize=10)
+        fig_sc.tight_layout()
+        sc_path = os.path.join(output_dir, "figure_test1_solver_resilience.png")
+        fig_sc.savefig(sc_path, dpi=300)
+        plt.close(fig_sc)
+        print(f"📈 ĐÃ XUẤT ĐỒ THỊ SAI SỐ BỘ GIẢI: {sc_path}")
 
-    # Test 2 Plot
-    if res2 is not None and "t_list" in res2:
-        axes_flat[1].plot(res2["t_list"], res2["entropy_lidar"], 'r--', marker='o', linewidth=2, label="LiDAR (σ=0, Collapse)")
-        ent_by_sig = res2.get("entropy_ours_by_sigma", {})
-        if ent_by_sig and len(ent_by_sig) > 1:
-            sig_colors = ["#2A9D8F", "#4575B4", "#E76F51", "#7209B7", "#D4A373"]
-            for s_i, (s_val_k, s_ent) in enumerate(sorted(ent_by_sig.items(), key=lambda x: float(x[0]))):
-                c = sig_colors[s_i % len(sig_colors)]
-                axes_flat[1].plot(res2["t_list"], s_ent, color=c, linewidth=2, label=f"Ours (σ={float(s_val_k):.2f})")
-        else:
-            axes_flat[1].plot(res2["t_list"], res2["entropy_ours"], 'g-s', linewidth=2, label=f"Ours (σ={sigma:.2f})")
-        axes_flat[1].axhline(y=np.log2(50), color="blue", linestyle=":", label="Uniform (5.64 bits)")
-        axes_flat[1].set_xlabel("Diffusion Timestep $t$", fontsize=11)
-        axes_flat[1].set_ylabel("Entropy $H(w^r)$ (bits)", fontsize=11)
-        axes_flat[1].set_title("Test 2: Softmax Mode Collapse Prevention", fontsize=12, fontweight="bold")
-        axes_flat[1].grid(True, linestyle="--", alpha=0.5)
-        axes_flat[1].legend(fontsize=9)
-    else:
-        axes_flat[1].set_title("Test 2: Not Executed", fontsize=12)
-
-    # Test 3 Plot
-    if res3 is not None and "timesteps" in res3:
-        axes_flat[2].plot(res3["timesteps"], res3["cossim_lidar"], 'r--', marker='o', linewidth=2, label="LiDAR (σ=0, Unstable)")
-        cos_by_sig = res3.get("cossim_ours_by_sigma", {})
-        if cos_by_sig and len(cos_by_sig) > 1:
-            sig_colors = ["#2A9D8F", "#4575B4", "#E76F51", "#7209B7", "#D4A373"]
-            for s_i, (s_val_k, s_cos) in enumerate(sorted(cos_by_sig.items(), key=lambda x: float(x[0]))):
-                c = sig_colors[s_i % len(sig_colors)]
-                axes_flat[2].plot(res3["timesteps"], s_cos, color=c, linewidth=2, marker='s', label=f"Ours (σ={float(s_val_k):.2f})")
-        else:
-            axes_flat[2].plot(res3["timesteps"], res3["cossim_ours"], 'g-s', linewidth=2, label=f"Ours (σ={sigma:.2f})")
-        axes_flat[2].set_xlabel("Diffusion Timestep $t$", fontsize=11)
-        axes_flat[2].set_ylabel(r"Cosine Stability $\text{CosSim}(\mathbf{g}_t, \mathbf{g}_{t+\delta})$", fontsize=11)
-        axes_flat[2].set_title("Test 3: Guidance Field Stability", fontsize=12, fontweight="bold")
-        axes_flat[2].grid(True, linestyle="--", alpha=0.5)
-        axes_flat[2].legend(fontsize=9)
-    else:
-        axes_flat[2].set_title("Test 3: Not Executed", fontsize=12)
-
-    # Test 4 Plot (Effective Sample Size ESS)
-    if has_5_tests:
-        if res4 is not None and "t_list" in res4:
-            axes_flat[3].plot(res4["t_list"], res4["ess_lidar"], 'r--', marker='o', linewidth=2, label="LiDAR (σ=0, Starvation)")
-            ess_by_sig = res4.get("ess_ours_by_sigma", {})
-            if ess_by_sig and len(ess_by_sig) > 1:
-                sig_colors = ["#2A9D8F", "#4575B4", "#E76F51", "#7209B7", "#D4A373"]
-                for s_i, (s_val_k, s_ess) in enumerate(sorted(ess_by_sig.items(), key=lambda x: float(x[0]))):
-                    c = sig_colors[s_i % len(sig_colors)]
-                    axes_flat[3].plot(res4["t_list"], s_ess, color=c, linewidth=2, label=f"Ours (σ={float(s_val_k):.2f})")
-            else:
-                axes_flat[3].plot(res4["t_list"], res4["ess_ours"], 'g-s', linewidth=2, label=f"Ours (σ={sigma:.2f})")
-            axes_flat[3].axhline(y=50, color="blue", linestyle=":", label="Max Particle Capacity (N=50)")
-            axes_flat[3].set_xlabel("Diffusion Timestep $t$", fontsize=11)
-            axes_flat[3].set_ylabel(r"Effective Sample Size $\text{ESS}_t$", fontsize=11)
-            axes_flat[3].set_title("Test 4: Effective Sample Size (ESS / N=50)", fontsize=12, fontweight="bold")
-            axes_flat[3].grid(True, linestyle="--", alpha=0.5)
-            axes_flat[3].legend(fontsize=9)
-        else:
-            axes_flat[3].set_title("Test 4: Not Executed", fontsize=12)
-
-        # Test 5 Plot (Step-Budget Scaling)
-        if res5 is not None and "step_budgets" in res5:
-            s_steps = res5["step_budgets"]
-            sum_by_s = res5.get("summary_by_step", {})
-            tau_l = [sum_by_s.get(S, {}).get("tau_lidar", 0.0) for S in s_steps]
-            tau_o = [sum_by_s.get(S, {}).get("tau_ours", 0.0) for S in s_steps]
-
-            axes_flat[4].plot(s_steps, tau_l, 'r--', marker='o', linewidth=2.2, label="LiDAR (σ=0, Collapses at S<5)")
-            axes_flat[4].plot(s_steps, tau_o, 'g-s', linewidth=2.2, label="Ours (r_σ, Graceful Degradation)")
-            axes_flat[4].set_xlabel(r"DPM-Solver Lookahead Steps $S$", fontsize=11)
-            axes_flat[4].set_ylabel(r"Kendall's Ranking Correlation $\tau$", fontsize=11)
-            axes_flat[4].set_title("Test 5: Step-Budget Solver Scaling", fontsize=12, fontweight="bold")
-            axes_flat[4].grid(True, linestyle="--", alpha=0.5)
-            axes_flat[4].legend(fontsize=9)
-        else:
-            axes_flat[4].set_title("Test 5: Not Executed", fontsize=12)
-
-        # 6th panel: summary notes
-        axes_flat[5].axis("off")
-        axes_flat[5].text(0.05, 0.5,
-            "🔬 Scientific Takeaways:\n"
-            "• Test 1: Bounded Reward Error ||Δr|| <= L_σ ||e_i||_2\n"
-            "• Test 2: Shannon Entropy H(w) maintained (No One-Hot)\n"
-            "• Test 3: Guidance Cosine Stability >= 0.98\n"
-            "• Test 4: Active Particles ESS >= 25 (No 98% Compute Waste)\n"
-            "• Test 5: Enables 2x Faster Lookahead (S=3 matches S=5)",
-            fontsize=11, verticalalignment="center",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="#F8F9FA", edgecolor="#2A9D8F", linewidth=1.5)
-        )
-
-    plt.tight_layout()
-    chart_path = os.path.join(output_dir, "golden_5_tests_comparison.png" if has_5_tests else "golden_3_tests_comparison.png")
-    plt.savefig(chart_path, dpi=300)
-    print(f"\n📈 ĐÃ XUẤT BIỂU ĐỒ KHOA HỌC THÀNH CÔNG: {chart_path}")
-    if has_5_tests:
-        chart_path_3 = os.path.join(output_dir, "golden_3_tests_comparison.png")
-        plt.savefig(chart_path_3, dpi=300)
-
-    # Xuất JSON summary
+    # 3. Xuất JSON summary
     summary_path = os.path.join(output_dir, "summary_results.json")
     summary = {}
     if res1 is not None:
@@ -2166,52 +951,17 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             "mean_delta_r_ours": float(np.mean(res1.get("delta_r_ours", [0]))),
             "metrics": res1.get("metrics", {})
         }
-    if res2 is not None:
-        summary["test_2_entropy"] = {
-            "entropy_lidar_mean": float(np.mean(res2.get("entropy_lidar", [0]))),
-            "entropy_ours_mean": float(np.mean(res2.get("entropy_ours", [0]))),
-            "entropy_ours_by_sigma": {str(k): float(np.mean(v)) for k, v in res2.get("entropy_ours_by_sigma", {}).items()}
-        }
-    if res3 is not None:
-        summary["test_3_cosine_stability"] = {
-            "cossim_lidar_mean": float(np.mean(res3.get("cossim_lidar", [0]))),
-            "cossim_ours_mean": float(np.mean(res3.get("cossim_ours", [0]))),
-            "cossim_ours_by_sigma": {str(k): float(np.mean(v)) for k, v in res3.get("cossim_ours_by_sigma", {}).items()}
-        }
-    if res4 is not None:
-        summary["test_4_effective_sample_size"] = {
-            "ess_lidar_mean": float(np.mean(res4.get("ess_lidar", [1.0]))),
-            "ess_ours_mean": float(np.mean(res4.get("ess_ours", [1.0]))),
-            "wmax_lidar_mean": float(np.mean(res4.get("wmax_lidar", [1.0]))),
-            "wmax_ours_mean": float(np.mean(res4.get("wmax_ours", [1.0]))),
-            "active_lidar_mean": float(np.mean(res4.get("active_lidar", [1.0]))),
-            "active_ours_mean": float(np.mean(res4.get("active_ours", [1.0])))
-        }
-    if res5 is not None:
-        summary["test_5_step_budget_scaling"] = res5.get("summary_by_step", {})
 
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=4)
     print(f"📄 ĐÃ LƯU BẢNG SỐ LIỆU TỔNG HỢP JSON: {summary_path}")
 
-    # ==============================================================================
-    # 📑 XUẤT BẢNG KHOA HỌC ĐA CHỈ SỐ RA CSV & MARKDOWN (PUBLICATION FORMAT)
-    # ==============================================================================
+    # 4. Xuất Bảng Khoa học so sánh ra CSV & Markdown
     table_rows = []
-
-    # 1. Test 1 Multi-Reward Rows
     t1 = summary.get("test_1_solver_error", {})
     metrics_dict = t1.get("metrics", {})
-    if not metrics_dict:
-        metrics_dict = {
-            "ImageReward": {
-                "delta_lidar": t1.get("mean_delta_r_lidar", 0.0),
-                "delta_ours": t1.get("mean_delta_r_ours", 0.0),
-                "tau_lidar": t1.get("tau_lidar", 0.0),
-                "tau_ours": t1.get("tau_ours", 0.0),
-                "lipschitz_bound": t1.get("lipschitz_bound", 0.0)
-            }
-        }
+    if not metrics_dict and res1:
+        metrics_dict = res1.get("metrics", {})
 
     for m_name, m_data in metrics_dict.items():
         d_lidar = m_data.get("delta_lidar", 0.0)
@@ -2220,7 +970,6 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
         t_ours = m_data.get("tau_ours", 0.0)
         l_bound = m_data.get("lipschitz_bound", 0.0)
 
-        # Bỏ qua chỉ số nếu không có dữ liệu thực tế (tránh in dòng 0.0000)
         if d_lidar == 0.0 and d_ours == 0.0 and t_lidar == 0.0:
             continue
 
@@ -2228,7 +977,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
         tau_gain = max(0.0, (t_ours - t_lidar) / max(1e-6, abs(t_lidar)) * 100) if t_lidar != 0 else 0.0
 
         table_rows.append({
-            "Nhóm Thí Nghiệm": "Test 1: Sai Số Bộ Giải (|Δr| & Tau)",
+            "Nhóm Thí Nghiệm": "Test 1: Sai Số Bộ Giải (|Δr| & Kendall τ)",
             "Mô Hình / Tiêu Chí": m_name,
             "LiDAR Gốc (σ=0)": f"|Δr|={d_lidar:.4f} | τ={t_lidar:.4f}",
             "Phương Pháp Của Bạn (r_σ)": f"|Δr|={d_ours:.4f} | τ={t_ours:.4f}",
@@ -2237,79 +986,10 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             "Ý Nghĩa Khoa Học": f"Kháng sai số DPM-5 & bảo toàn thứ bậc trên {m_name}"
         })
 
-    # 2. Test 2 Row (Softmax Entropy)
-    t2 = summary.get("test_2_entropy", {})
-    if t2:
-        e_lidar = t2.get("entropy_lidar_mean", 0.0)
-        e_ours = t2.get("entropy_ours_mean", 0.0)
-        n_eff_lidar = 2 ** e_lidar
-        n_eff_ours = 2 ** e_ours
-        table_rows.append({
-            "Nhóm Thí Nghiệm": "Test 2: Entropy Phân Phối Trọng Số",
-            "Mô Hình / Tiêu Chí": "Softmax Entropy H(w^r) (50 hạt)",
-            "LiDAR Gốc (σ=0)": f"{e_lidar:.4f} bits (N_eff={n_eff_lidar:.1f})",
-            "Phương Pháp Của Bạn (r_σ)": f"{e_ours:.4f} bits (N_eff={n_eff_ours:.1f})",
-            "Mức Độ Cải Thiện": f"Tăng Entropy +{e_ours - e_lidar:.4f} bits",
-            "Chặn Lipschitz L_σ": "N/A",
-            "Ý Nghĩa Khoa Học": "Chống sụp đổ One-Hot (Best-of-1 Trap), kích hoạt đa hạt"
-        })
-
-    # 3. Test 3 Row (Guidance Field Cosine Stability)
-    t3 = summary.get("test_3_cosine_stability", {})
-    if t3:
-        c_lidar = t3.get("cossim_lidar_mean", 0.0)
-        c_ours = t3.get("cossim_ours_mean", 0.0)
-        table_rows.append({
-            "Nhóm Thí Nghiệm": "Test 3: Độ Ổn Định Vector Dẫn Đường",
-            "Mô Hình / Tiêu Chí": "CosSim(g_t, g_{t+δ}) (δ=1e-3)",
-            "LiDAR Gốc (σ=0)": f"{c_lidar:.4f}",
-            "Phương Pháp Của Bạn (r_σ)": f"{c_ours:.4f}",
-            "Mức Độ Cải Thiện": f"Tăng độ ổn định +{(c_ours - c_lidar)*100:.2f}%",
-            "Chặn Lipschitz L_σ": "Lipschitz Smooth",
-            "Ý Nghĩa Khoa Học": "Triệt tiêu rung giật gradient vi mô, dẫn đường mượt mà"
-        })
-
-    # 4. Test 4 Row (Effective Sample Size ESS)
-    t4 = summary.get("test_4_effective_sample_size", {})
-    if t4:
-        ess_l = t4.get("ess_lidar_mean", 1.0)
-        ess_o = t4.get("ess_ours_mean", 1.0)
-        wmax_l = t4.get("wmax_lidar_mean", 1.0)
-        wmax_o = t4.get("wmax_ours_mean", 1.0)
-        table_rows.append({
-            "Nhóm Thí Nghiệm": "Test 4: Số Lượng Hạt Hữu Hiệu (ESS / N=50)",
-            "Mô Hình / Tiêu Chí": "Effective Sample Size ESS_t & w_max",
-            "LiDAR Gốc (σ=0)": f"ESS={ess_l:.2f} ({(ess_l/50)*100:.1f}%) | w_max={wmax_l*100:.1f}%",
-            "Phương Pháp Của Bạn (r_σ)": f"ESS={ess_o:.2f} ({(ess_o/50)*100:.1f}%) | w_max={wmax_o*100:.1f}%",
-            "Mức Độ Cải Thiện": f"Tăng hạt hữu hiệu +{(ess_o - ess_l):.2f} hạt (+{((ess_o-ess_l)/max(0.1, ess_l))*100:.0f}%)",
-            "Chặn Lipschitz L_σ": "SMC Non-Degenerate",
-            "Ý Nghĩa Khoa Học": "Bóc trần sự lãng phí 98% tính toán ở LiDAR (Best-of-1), RS kích hoạt đa hạt"
-        })
-
-    # 5. Test 5 Row (Step-Budget Solver Scaling)
-    t5 = summary.get("test_5_step_budget_scaling", {})
-    if t5:
-        s3 = t5.get(3, t5.get("3", {}))
-        s5 = t5.get(5, t5.get("5", {}))
-        tau_l3 = s3.get("tau_lidar", 0.0)
-        tau_o3 = s3.get("tau_ours", 0.0)
-        tau_l5 = s5.get("tau_lidar", 0.0)
-        tau_o5 = s5.get("tau_ours", 0.0)
-        table_rows.append({
-            "Nhóm Thí Nghiệm": "Test 5: Thoái Hóa Bước Bộ Giải Lookahead",
-            "Mô Hình / Tiêu Chí": "Kendall τ vs Bước DPM-Solver S ∈ {2,3,5,8,15}",
-            "LiDAR Gốc (σ=0)": f"τ(S=3)={tau_l3:.4f} | τ(S=5)={tau_l5:.4f}",
-            "Phương Pháp Của Bạn (r_σ)": f"τ(S=3)={tau_o3:.4f} | τ(S=5)={tau_o5:.4f}",
-            "Mức Độ Cải Thiện": f"RS tại S=3 ({tau_o3:.4f}) >= LiDAR tại S=5 ({tau_l5:.4f})",
-            "Chặn Lipschitz L_σ": "Theorem 1 Bound",
-            "Ý Nghĩa Khoa Học": "Chứng minh chặn sai số Theorem 1: Cho phép bộ giải chạy siêu tốc S=3 mà không sụp đổ"
-        })
-
     if table_rows:
         try:
             import pandas as pd
             df_table = pd.DataFrame(table_rows)
-
             csv_file = os.path.join(output_dir, "weaknesses_comparison_table.csv")
             md_file = os.path.join(output_dir, "weaknesses_comparison_table.md")
             df_table.to_csv(csv_file, index=False)
@@ -2317,7 +997,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 f.write(df_table.to_markdown(index=False))
 
             print("\n" + "="*110)
-            print("📊 BẢNG TỔNG HỢP KHOA HỌC ĐA MÔ HÌNH REWARD (MULTI-REWARD SCIENTIFIC BENCHMARK)")
+            print("📊 BẢNG TỔNG HỢP KHOA HỌC TEST 1 (MULTI-REWARD BENCHMARK)")
             print("="*110)
             print(df_table.to_string(index=False))
             print("="*110)
@@ -2327,36 +1007,32 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
         except Exception as e:
             print(f"⚠️ Lỗi xuất bảng Pandas: {e}")
 
-    # ==============================================================================
-    # 🔬 4. XUẤT BẢNG KHẢO SÁT BÁN KÍNH LÀM MỊN SIGMA (SIGMA ABLATION STUDY)
-    # ==============================================================================
+    # 5. Xuất Bảng Khảo sát bán kính làm mịn Sigma Ablation & Biểu đồ Ablation Curves
     sigma_abl = res1.get("sigma_ablation", {}) if res1 else {}
     base_lidar = res1.get("baseline_lidar", {}) if res1 else {}
 
-    ent_by_sig = res2.get("entropy_ours_by_sigma", {}) if res2 else {}
-    cos_by_sig = res3.get("cossim_ours_by_sigma", {}) if res3 else {}
-    has_sigma_sweep = (
-        (bool(sigma_abl) and len(sigma_abl) > 1) or
-        (bool(ent_by_sig) and len(ent_by_sig) > 1) or
-        (bool(cos_by_sig) and len(cos_by_sig) > 1)
-    )
-
-    if has_sigma_sweep:
-        all_sigmas = sorted(list(
-            set(sigma_abl.keys()) |
-            {float(k) for k in ent_by_sig.keys()} |
-            {float(k) for k in cos_by_sig.keys()}
-        ))
-        has_ir = bool(sigma_abl and "ImageReward" in base_lidar)
-        has_clip = any(s_dict.get("CLIP-Score", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
-        has_hps = any(s_dict.get("HPS-v2.1", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
-        has_as = any(s_dict.get("Aesthetic", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
-        has_pick = any(s_dict.get("PickScore", {}).get("delta_ours", 0.0) > 0 for s_dict in sigma_abl.values())
-        has_ent = bool(ent_by_sig)
-        has_cos = bool(cos_by_sig)
+    if sigma_abl and len(sigma_abl) > 1:
+        # Chuyển đổi keys sang float an toàn
+        sorted_sigmas = sorted([float(k) for k in sigma_abl.keys()])
+        has_ir = bool("ImageReward" in base_lidar or any("ImageReward" in str(s) for s in sigma_abl.values()))
+        has_clip = any(
+            (sigma_abl.get(s, sigma_abl.get(str(s), {})).get("CLIP-Score", {}).get("delta_ours", 0.0) > 0)
+            for s in sorted_sigmas
+        )
+        has_hps = any(
+            (sigma_abl.get(s, sigma_abl.get(str(s), {})).get("HPS-v2.1", {}).get("delta_ours", 0.0) > 0)
+            for s in sorted_sigmas
+        )
+        has_as = any(
+            (sigma_abl.get(s, sigma_abl.get(str(s), {})).get("Aesthetic", {}).get("delta_ours", 0.0) > 0)
+            for s in sorted_sigmas
+        )
+        has_pick = any(
+            (sigma_abl.get(s, sigma_abl.get(str(s), {})).get("PickScore", {}).get("delta_ours", 0.0) > 0)
+            for s in sorted_sigmas
+        )
 
         abl_rows = []
-        # Dòng mốc: LiDAR Gốc (sigma = 0.0)
         r0 = {"Sigma (σ)": "0.00 (LiDAR Gốc)"}
         if has_ir:
             r0["ImageReward |Δr| ↓"] = f"{base_lidar.get('ImageReward', {}).get('delta', 0.0):.4f}"
@@ -2373,18 +1049,12 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
         if has_pick:
             r0["PickScore |Δr| ↓"] = f"{base_lidar.get('PickScore', {}).get('delta', 0.0):.4f}"
             r0["Kendall τ (Pick) ↑"] = f"{base_lidar.get('PickScore', {}).get('tau', 0.0):.4f}"
-        if has_ent:
-            e_lidar_m = float(np.mean(res2.get("entropy_lidar", [0.0])))
-            r0["Test 2 Entropy ↑"] = f"{e_lidar_m:.2f} bits"
-        if has_cos:
-            c_lidar_m = float(np.mean(res3.get("cossim_lidar", [0.0])))
-            r0["Test 3 CosSim ↑"] = f"{c_lidar_m:.4f}"
         r0["Chặn Lipschitz L_σ"] = "Không bị chặn (∞)"
-        r0["Đánh Giá Khoa Học"] = "Không làm mịn, chịu hoàn toàn sai số gai nhọn & sụp đổ One-Hot"
+        r0["Đánh Giá Khoa Học"] = "Không làm mịn, chịu hoàn toàn sai số gai nhọn & sụp đổ thứ bậc"
         abl_rows.append(r0)
 
-        for s_val in all_sigmas:
-            s_dict = sigma_abl.get(s_val, {})
+        for s_val in sorted_sigmas:
+            s_dict = sigma_abl.get(s_val, sigma_abl.get(str(s_val), sigma_abl.get(f"{s_val:.2f}", {})))
             ir_info = s_dict.get("ImageReward", {})
             l_bound = s_dict.get("lipschitz_bound", 5000.0 / (max(1e-4, s_val) * (2 * math.pi)**0.5))
 
@@ -2419,22 +1089,6 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 pick_info = s_dict.get("PickScore", {})
                 row["PickScore |Δr| ↓"] = f"{pick_info.get('delta_ours', 0.0):.4f}"
                 row["Kendall τ (Pick) ↑"] = f"{pick_info.get('tau_ours', 0.0):.4f}"
-            if has_ent:
-                matched_ent = None
-                for ek, ev in ent_by_sig.items():
-                    if abs(float(ek) - s_val) < 1e-4:
-                        matched_ent = ev
-                        break
-                if matched_ent is not None:
-                    row["Test 2 Entropy ↑"] = f"{float(np.mean(matched_ent)):.2f} bits"
-            if has_cos:
-                matched_cos = None
-                for ck, cv in cos_by_sig.items():
-                    if abs(float(ck) - s_val) < 1e-4:
-                        matched_cos = cv
-                        break
-                if matched_cos is not None:
-                    row["Test 3 CosSim ↑"] = f"{float(np.mean(matched_cos)):.4f}"
             row["Chặn Lipschitz L_σ"] = f"<= {l_bound:.2f}"
             row["Đánh Giá Khoa Học"] = comment
             abl_rows.append(row)
@@ -2458,7 +1112,7 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
             print(f" • Markdown: {abl_md}")
 
             # Đồ thị Ablation Curve đa mô hình Reward chuẩn khoa học
-            sig_vals = [0.0] + sorted(sigma_abl.keys())
+            sig_vals = [0.0] + sorted_sigmas
             metrics_to_plot = [("ImageReward", "IR", "#E63946", "#2A9D8F")]
             if has_clip:
                 metrics_to_plot.append(("CLIP-Score", "CLIP", "#E63946", "#1D3557"))
@@ -2479,28 +1133,58 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 if m_key == "ImageReward":
                     err_0 = float(abl_rows[0]["ImageReward |Δr| ↓"])
                     tau_0 = float(abl_rows[0]["Kendall τ (IR) ↑"])
-                    err_pts = [err_0] + [float(sigma_abl[s]["ImageReward"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
-                    tau_pts = [tau_0] + [float(sigma_abl[s]["ImageReward"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                    err_pts = [err_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("ImageReward", {}).get("delta_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
+                    tau_pts = [tau_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("ImageReward", {}).get("tau_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
                 elif m_key == "CLIP-Score":
                     err_0 = float(abl_rows[0].get("CLIP-Score |Δr| ↓", 0.0))
                     tau_0 = float(abl_rows[0].get("Kendall τ (CLIP) ↑", 0.0))
-                    err_pts = [err_0] + [float(sigma_abl[s]["CLIP-Score"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
-                    tau_pts = [tau_0] + [float(sigma_abl[s]["CLIP-Score"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                    err_pts = [err_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("CLIP-Score", {}).get("delta_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
+                    tau_pts = [tau_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("CLIP-Score", {}).get("tau_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
                 elif m_key == "HPS-v2.1":
                     err_0 = float(abl_rows[0].get("HPS v2.1 |Δr| ↓", 0.0))
                     tau_0 = float(abl_rows[0].get("Kendall τ (HPS) ↑", 0.0))
-                    err_pts = [err_0] + [float(sigma_abl[s]["HPS-v2.1"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
-                    tau_pts = [tau_0] + [float(sigma_abl[s]["HPS-v2.1"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                    err_pts = [err_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("HPS-v2.1", {}).get("delta_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
+                    tau_pts = [tau_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("HPS-v2.1", {}).get("tau_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
                 elif m_key == "Aesthetic":
                     err_0 = float(abl_rows[0].get("Aesthetic |Δr| ↓", 0.0))
                     tau_0 = float(abl_rows[0].get("Kendall τ (AS) ↑", 0.0))
-                    err_pts = [err_0] + [float(sigma_abl[s]["Aesthetic"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
-                    tau_pts = [tau_0] + [float(sigma_abl[s]["Aesthetic"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
-                else: # PickScore
+                    err_pts = [err_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("Aesthetic", {}).get("delta_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
+                    tau_pts = [tau_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("Aesthetic", {}).get("tau_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
+                else:
                     err_0 = float(abl_rows[0].get("PickScore |Δr| ↓", 0.0))
                     tau_0 = float(abl_rows[0].get("Kendall τ (Pick) ↑", 0.0))
-                    err_pts = [err_0] + [float(sigma_abl[s]["PickScore"]["delta_ours"]) for s in sorted(sigma_abl.keys())]
-                    tau_pts = [tau_0] + [float(sigma_abl[s]["PickScore"]["tau_ours"]) for s in sorted(sigma_abl.keys())]
+                    err_pts = [err_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("PickScore", {}).get("delta_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
+                    tau_pts = [tau_0] + [
+                        float(sigma_abl.get(s, sigma_abl.get(str(s), {})).get("PickScore", {}).get("tau_ours", 0.0))
+                        for s in sorted_sigmas
+                    ]
 
                 ax1.set_xlabel(r"Bán kính làm mịn $\sigma$", fontsize=11, fontweight="bold")
                 ax1.set_ylabel(rf"Sai số {m_short} $|\Delta r|$ ↓", color=col_err, fontsize=11)
@@ -2508,13 +1192,13 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
                 ax1.tick_params(axis='y', labelcolor=col_err)
                 ax1.grid(True, linestyle="--", alpha=0.5)
 
-                ax2.set_ylabel(rf"Thứ hạng Kendall $\tau$ ({m_short}) ↑", color=col_tau, fontsize=11)
-                ax2.plot(sig_vals, tau_pts, color=col_tau, marker='s', linewidth=2.2, linestyle="--", label=rf"Kendall $\tau$")
+                ax2.set_ylabel(rf"Thứ hạng Kendall $	au$ ({m_short}) ↑", color=col_tau, fontsize=11)
+                ax2.plot(sig_vals, tau_pts, color=col_tau, marker='s', linewidth=2.2, linestyle="--", label=rf"Kendall $	au$")
                 ax2.tick_params(axis='y', labelcolor=col_tau)
 
                 ax1.set_title(f"Ablation: {m_key}", fontsize=12, fontweight="bold")
 
-            fig_abl.suptitle(r"Ablation Study: Tác động của $\sigma$ Đa Mô Hình Reward (5-Benchmark Suite)", fontsize=13, fontweight="bold", y=1.02)
+            fig_abl.suptitle(r"Ablation Study: Tác động của $\sigma$ Đa Mô Hình Reward", fontsize=13, fontweight="bold", y=1.02)
             fig_abl.tight_layout()
             abl_plot_path = os.path.join(output_dir, "sigma_ablation_curves.png")
             fig_abl.savefig(abl_plot_path, dpi=300, bbox_inches="tight")
@@ -2523,32 +1207,27 @@ def plot_and_save_all(res1=None, res2=None, res3=None, res4=None, res5=None, out
         except Exception as e:
             print(f"⚠️ Lỗi xuất bảng khảo sát ablation sigma: {e}")
 
-
 def get_args():
-    default_lookahead = "Lookahead_samples/100_50_5"
-    for candidate in ["/kaggle/working/RS-LiDAR/Lookahead_samples/100_50_5", "Lookahead_samples/100_50_5"]:
-        if os.path.exists(candidate):
-            default_lookahead = candidate
-            break
-
-    parser = argparse.ArgumentParser(description="Empirical proof of LiDAR weaknesses & RS-LiDAR benefits")
-    parser.add_argument("--test", type=str, default="1,2,3", help="Tests to run: '1,2,3' (Golden 3 Tests), 'all' (All 5 Tests), or specific e.g. '1', '2', '3'")
-    parser.add_argument("--num_prompts", type=int, default=50, help="Number of prompts to evaluate in Test 1 (-1 for all 553 GenEval prompts)")
-    parser.add_argument("--num_particles", type=int, default=20, help="Number of particles per prompt")
-    parser.add_argument("--sigma", type=float, default=0.05, help="Randomized Smoothing standard deviation")
-    parser.add_argument("--tune_sigma", action="store_true", default=False, help="Whether to perform sigma parameter sweep ablation")
+    parser = argparse.ArgumentParser(description="Empirical proof of LiDAR weaknesses & RS-LiDAR benefits (Test 1: Solver Robustness & Kendall Tau Ranking)")
+    parser.add_argument("--test", type=str, default="1", help="Tests to run: '1' (default) or 'merge'")
+    parser.add_argument("--num_prompts", type=int, default=553, help="Number of prompts to evaluate in Test 1 (-1 or 553 for all 553 GenEval prompts)")
+    parser.add_argument("--num_particles", type=int, default=5, help="Number of particles per prompt (default: 5)")
+    parser.add_argument("--sigma", type=float, default=0.25, help="Randomized Smoothing standard deviation (default: 0.25)")
+    parser.add_argument("--tune_sigma", action="store_true", default=True, help="Whether to perform sigma parameter sweep ablation (default: True)")
+    parser.add_argument("--no_tune_sigma", action="store_false", dest="tune_sigma", help="Disable sigma sweep")
     parser.add_argument("--sigmas", type=str, default="0.05,0.10,0.15,0.25,0.50,1.00", help="Comma-separated sigma values for ablation study")
-    parser.add_argument("--lookahead_dir", type=str, default=default_lookahead, help="Path to pre-generated Lookahead samples")
-    parser.add_argument("--output_dir", type=str, default="experiments/test_results", help="Output directory for charts and JSON")
+    parser.add_argument("--output_dir", type=str, default="/kaggle/working/test1_results" if os.path.exists("/kaggle") else "experiments/test1_results", help="Output directory for charts and JSON")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID (0 or 1)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl", help="Prompt dataset path")
-    parser.add_argument("--use_hps", action="store_true", default=False, help="Whether to evaluate HPS v2.1")
-    parser.add_argument("--use_aesthetic", action="store_true", default=False, help="Whether to evaluate Aesthetic Score (LAION MLP)")
-    parser.add_argument("--use_pickscore", action="store_true", default=False, help="Whether to evaluate PickScore (yuvalkirstain/PickScore_v1)")
-    parser.add_argument("--all_rewards", action="store_true", default=False, help="Enable all 5 reward models: ImageReward, CLIP, HPS v2.1, Aesthetic, PickScore")
-    parser.add_argument("--num_mc_samples", "--M", type=int, default=4, help="Number of Monte Carlo samples M for Randomized Smoothing expectation")
+    parser.add_argument("--use_hps", action="store_true", default=True, help="Whether to evaluate HPS v2.1 (default: True)")
+    parser.add_argument("--no_hps", action="store_false", dest="use_hps", help="Disable HPS v2.1")
+    parser.add_argument("--use_aesthetic", action="store_true", default=True, help="Whether to evaluate Aesthetic Score (default: True)")
+    parser.add_argument("--no_aesthetic", action="store_false", dest="use_aesthetic", help="Disable Aesthetic Score")
+    parser.add_argument("--use_pickscore", action="store_true", default=False, help="Whether to evaluate PickScore (default: False)")
+    parser.add_argument("--all_rewards", action="store_true", default=False, help="Enable all reward models including PickScore")
+    parser.add_argument("--num_mc_samples", "--M", type=int, default=4, help="Number of Monte Carlo samples M for Randomized Smoothing expectation (default: 4)")
     parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing checkpoints and re-run tests from prompt 1")
     return parser.parse_args()
 
@@ -2580,17 +1259,15 @@ if __name__ == "__main__":
         args.use_aesthetic = True
         args.use_pickscore = True
 
-    test_prompts = load_geneval_prompts(args.prompt_path, max_prompts=args.num_prompts)
-    print(f"📝 Đã nạp {len(test_prompts)} prompts để chạy thực nghiệm.")
-
-    res1, res2, res3, res4, res5 = None, None, None, None, None
     sigmas_list = [float(x.strip()) for x in args.sigmas.split(",") if x.strip()] if args.sigmas else [0.05, 0.10, 0.15, 0.25, 0.50, 1.00]
     requested_tests = [t.strip().lower() for t in args.test.split(",") if t.strip()]
-    run_all = ("all" in requested_tests)
 
-    # Khởi tạo mô hình Pipeline & ImageReward khi chạy Test 1, Test 2, Test 3 hoặc Test 5
-    pipe, vae, ir_model = None, None, None
-    if run_all or "1" in requested_tests or "2" in requested_tests or "3" in requested_tests or "5" in requested_tests:
+    res1 = None
+
+    if "merge" not in requested_tests and ("1" in requested_tests or "all" in requested_tests):
+        test_prompts = load_geneval_prompts(args.prompt_path, max_prompts=args.num_prompts)
+        print(f"📝 Đã nạp {len(test_prompts)} prompts để chạy thực nghiệm Test 1.")
+
         print("\n🚀 Khởi tạo Pipeline & Scheduler cho thực nghiệm...")
         pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16).to(device)
         vae = pipe.vae
@@ -2602,7 +1279,6 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
 
-    if run_all or "1" in requested_tests or "5" in requested_tests:
         print("\n🚀 Nạp ImageReward Model...")
         try:
             ir_model = rm_load("ImageReward-v1.0", device=device)
@@ -2614,12 +1290,12 @@ if __name__ == "__main__":
 
         from PIL import Image
         dummy_img = Image.new("RGB", (64, 64), color="blue")
-        print("\n🔍 ĐANG KIỂM TRA TÍNH KHẢ DỤNG CỦA CÁC MÔ HÌNH REWARD (5-BENCHMARK SUITE)...")
+        print("\n🔍 ĐANG KIỂM TRA TÍNH KHẢ DỤNG CỦA CÁC MÔ HÌNH REWARD (4-BENCHMARK SUITE)...")
         try:
             _ = ir_model.score_batched(["a blue image"], [dummy_img])
-            print(" ✅ [1/5 ImageReward] Hoạt động hoàn hảo.")
+            print(" ✅ [1/4 ImageReward] Hoạt động hoàn hảo.")
         except Exception as e:
-            print(f" ⚠️ [1/5 ImageReward] Lỗi: {e}")
+            print(f" ⚠️ [1/4 ImageReward] Lỗi: {e}")
 
         clip_ok = False
         if do_clip_score is not None:
@@ -2627,12 +1303,12 @@ if __name__ == "__main__":
                 res_c = do_clip_score(images=[dummy_img], prompts=["a blue image"])
                 if res_c is not None and len(res_c) > 0 and float(res_c[0]) != 0.0:
                     clip_ok = True
-                    print(" ✅ [2/5 CLIP-Score] Hoạt động hoàn hảo.")
+                    print(" ✅ [2/4 CLIP-Score] Hoạt động hoàn hảo.")
             except Exception as e:
-                print(f" ⚠️ [2/5 CLIP-Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
+                print(f" ⚠️ [2/4 CLIP-Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
         if not clip_ok:
             do_clip_score = None
-            print(" ℹ️ [2/5 CLIP-Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+            print(" ℹ️ [2/4 CLIP-Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
         hps_ok = False
         if args.use_hps and do_human_preference_score is not None:
@@ -2640,15 +1316,15 @@ if __name__ == "__main__":
                 res_h = do_human_preference_score(images=[dummy_img], prompts=["a blue image"])
                 if res_h is not None and len(res_h) > 0 and float(res_h[0]) != 0.0:
                     hps_ok = True
-                    print(" ✅ [3/5 HPS v2.1] Hoạt động hoàn hảo.")
+                    print(" ✅ [3/4 HPS v2.1] Hoạt động hoàn hảo.")
             except Exception as e:
-                print(f" ⚠️ [3/5 HPS v2.1] Không khả dụng ({e}). Tạm thời bỏ qua.")
+                print(f" ⚠️ [3/4 HPS v2.1] Không khả dụng ({e}). Tạm thời bỏ qua.")
         if not hps_ok:
             do_human_preference_score = None
             if not args.use_hps:
-                print(" ⏸️ [3/5 HPS v2.1] Tạm tắt để tăng tốc (bật bằng --use_hps hoặc --all_rewards).")
+                print(" ⏸️ [3/4 HPS v2.1] Đã tắt bằng cờ lệnh.")
             else:
-                print(" ℹ️ [3/5 HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+                print(" ℹ️ [3/4 HPS v2.1] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
         as_ok = False
         if args.use_aesthetic and do_AS is not None:
@@ -2656,91 +1332,39 @@ if __name__ == "__main__":
                 res_a = do_AS(images=[dummy_img], prompts=["a blue image"])
                 if res_a is not None and len(res_a) > 0 and float(res_a[0]) != 0.0:
                     as_ok = True
-                    print(" ✅ [4/5 Aesthetic Score] Hoạt động hoàn hảo.")
+                    print(" ✅ [4/4 Aesthetic Score] Hoạt động hoàn hảo.")
             except Exception as e:
-                print(f" ⚠️ [4/5 Aesthetic Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
+                print(f" ⚠️ [4/4 Aesthetic Score] Không khả dụng ({e}). Tạm thời bỏ qua.")
         if not as_ok:
             do_AS = None
             if not args.use_aesthetic:
-                print(" ⏸️ [4/5 Aesthetic Score] Tạm tắt (bật bằng --use_aesthetic hoặc --all_rewards).")
+                print(" ⏸️ [4/4 Aesthetic Score] Đã tắt bằng cờ lệnh.")
             else:
-                print(" ℹ️ [4/5 Aesthetic Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+                print(" ℹ️ [4/4 Aesthetic Score] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
 
-        pick_ok = False
         if args.use_pickscore:
             if load_pickscore_model(device=device):
                 try:
                     res_p = do_pickscore(images=[dummy_img], prompts=["a blue image"], device=device)
                     if res_p is not None and len(res_p) > 0 and float(res_p[0]) != 0.0:
-                        pick_ok = True
-                        print(" ✅ [5/5 PickScore] Hoạt động hoàn hảo.")
+                        print(" ✅ [PickScore] Hoạt động hoàn hảo.")
                 except Exception as e:
-                    print(f" ⚠️ [5/5 PickScore] Lỗi test ({e}). Tạm thời bỏ qua.")
-        if not pick_ok:
-            do_pickscore = None
-            if not args.use_pickscore:
-                print(" ⏸️ [5/5 PickScore] Tạm tắt (bật bằng --use_pickscore hoặc --all_rewards).")
+                    print(f" ⚠️ [PickScore] Lỗi test ({e}). Tạm thời bỏ qua.")
+                    do_pickscore = None
             else:
-                print(" ℹ️ [5/5 PickScore] Đã tắt an toàn để tránh tạo dòng 0.0000 trong bảng.")
+                do_pickscore = None
+        else:
+            do_pickscore = None
 
-    if run_all or "1" in requested_tests:
         res1 = run_test_1_solver_robustness(
             pipe, vae, ir_model, test_prompts,
             sigma=args.sigma, tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
             num_particles=args.num_particles,
+            num_mc_samples=args.num_mc_samples,
             device=device, output_dir=args.output_dir,
             num_shards=args.num_shards, shard_id=args.shard_id,
             overwrite=args.overwrite
         )
 
-    if run_all or "2" in requested_tests:
-        res2 = run_test_2_softmax_entropy(
-            pipe=pipe,
-            num_particles=args.num_particles, sigma=args.sigma,
-            tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
-            lookahead_dir=args.lookahead_dir,
-            prompt_list=test_prompts, device=device,
-            num_shards=args.num_shards, shard_id=args.shard_id,
-            output_dir=args.output_dir,
-            num_mc_samples=args.num_mc_samples
-        )
-
-    if run_all or "3" in requested_tests:
-        res3 = run_test_3_guidance_stability(
-            pipe=pipe,
-            num_particles=args.num_particles,
-            num_steps=50,
-            delta_eps=0.001,
-            sigma=args.sigma,
-            tune_sigma=args.tune_sigma,
-            sigmas_to_sweep=sigmas_list,
-            lookahead_dir=args.lookahead_dir,
-            prompt_list=test_prompts,
-            device=device,
-            num_shards=args.num_shards,
-            shard_id=args.shard_id,
-            output_dir=args.output_dir,
-            num_mc_samples=args.num_mc_samples
-        )
-
-    if run_all or "4" in requested_tests:
-        res4 = run_test_4_effective_sample_size(
-            num_particles=50, sigma=args.sigma,
-            tune_sigma=args.tune_sigma, sigmas_to_sweep=sigmas_list,
-            lookahead_dir=args.lookahead_dir, prompt_list=test_prompts, device=device,
-            num_shards=args.num_shards, shard_id=args.shard_id,
-            output_dir=args.output_dir
-        )
-
-    if run_all or "5" in requested_tests:
-        res5 = run_test_5_step_budget_scaling(
-            pipe, vae, ir_model, test_prompts,
-            sigma=args.sigma, step_budgets=[2, 3, 5, 8, 15],
-            num_particles=min(10, args.num_particles),
-            device=device, output_dir=args.output_dir,
-            num_shards=args.num_shards, shard_id=args.shard_id,
-            overwrite=args.overwrite
-        )
-
-    plot_and_save_all(res1, res2, res3, res4, res5, output_dir=args.output_dir, sigma=args.sigma)
+    plot_and_save_all(res1, output_dir=args.output_dir, sigma=args.sigma)
     print("\n🎉 HOÀN TẤT THỰC NGHIỆM! Toàn bộ kết quả đã được lưu tại:", args.output_dir)
