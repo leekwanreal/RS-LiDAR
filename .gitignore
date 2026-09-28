@@ -41,6 +41,8 @@ results/
 txt/
 pdf/
 geneval_official_repo/
+figures/
+extracted_test1/
 
 # Notebook build & temporary helper scripts
 notebook_build_scripts/

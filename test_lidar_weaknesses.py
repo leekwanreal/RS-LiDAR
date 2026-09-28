@@ -193,6 +193,15 @@ def fast_batch_clip_and_aesthetic(images, prompt, device="cuda"):
         try:
             dev = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
             weight_path = "sac+logos+ava1-l14-linearMSE.pth"
+            if not os.path.exists(weight_path):
+                try:
+                    import urllib.request
+                    urllib.request.urlretrieve(
+                        "https://github.com/christophschuhmann/improved-aesthetic-predictor/raw/main/sac%2Blogos%2Bava1-l14-linearMSE.pth",
+                        weight_path
+                    )
+                except Exception:
+                    pass
             if os.path.exists(weight_path):
                 state_dict = torch.load(weight_path, map_location='cpu')
                 as_obj = AestheticScore(download_root=os.path.expanduser("~/.cache/clip"), device=dev)
