@@ -367,7 +367,7 @@ def main(args):
         with torch.inference_mode():
             if reused_latent_file is not None:
                 if prompt_idx == start_idx or prompt_idx % 50 == 0:
-                    print(f"⚡ [Prompt {prompt_idx:05d}] Tái sử dụng latents có sẵn: {reused_latent_file}")
+                    print(f"⚡ [Prompt {real_idx:05d}] Tái sử dụng latents có sẵn: {reused_latent_file}")
                 if cached_reused_latents is not None:
                     loaded_latents = cached_reused_latents
                 else:
