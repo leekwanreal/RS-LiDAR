@@ -82,15 +82,35 @@ from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
 from fks_utils import do_eval
 from lookahead_datasets import gen_lookahead_samples
 
+def parse_prompt_indices(indices_arg):
+    if not indices_arg:
+        return None
+    if isinstance(indices_arg, (list, tuple)):
+        return list(indices_arg)
+    indices_str = str(indices_arg).strip()
+    if indices_str.lower() in ["stratified_100", "100_representative"]:
+        for repr_path in ["prompt_files/geneval_100_representative.json", "Diffusion-LiDAR-Sampling/prompt_files/geneval_100_representative.json"]:
+            if os.path.exists(repr_path):
+                with open(repr_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        return [0, 5, 11, 16, 21, 26, 32, 37, 42, 47, 53, 58, 63, 68, 74, 79, 80, 86, 92, 99, 105, 111, 117, 123, 130, 136, 142, 148, 154, 161, 167, 173, 178, 179, 184, 190, 195, 200, 205, 211, 216, 221, 226, 232, 237, 242, 247, 253, 258, 259, 265, 271, 277, 282, 288, 294, 300, 306, 312, 318, 323, 329, 335, 341, 347, 352, 353, 359, 365, 372, 378, 384, 390, 396, 403, 409, 415, 421, 428, 434, 440, 446, 452, 453, 459, 465, 472, 478, 484, 490, 496, 503, 509, 515, 521, 527, 533, 540, 546, 552]
+    if os.path.exists(indices_str):
+        with open(indices_str, "r", encoding="utf-8") as f:
+            return json.load(f)
+    if "-" in indices_str and "," not in indices_str:
+        parts = indices_str.split("-")
+        return list(range(int(parts[0]), int(parts[1]) + 1))
+    return [int(x.strip()) for x in indices_str.split(",") if x.strip().isdigit()]
+
 # load prompt data
-def load_geneval_metadata(prompt_path, max_prompts=None):
+def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
     if prompt_path.endswith(".json"):
-        with open(prompt_path, "r") as f:
+        with open(prompt_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     else:
         assert prompt_path.endswith(".jsonl")
-        with open(prompt_path, "r") as f:
-            data = [json.loads(line) for line in f]
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            data = [json.loads(line) for line in f if line.strip()]
     assert isinstance(data, list)
     prompt_key = "prompt"
     if prompt_key not in data[0]:
@@ -98,7 +118,12 @@ def load_geneval_metadata(prompt_path, max_prompts=None):
 
         for item in data:
             item["prompt"] = item["text"]
-    if max_prompts is not None:
+    for idx, item in enumerate(data):
+        if "original_idx" not in item:
+            item["original_idx"] = idx
+    if prompt_indices is not None and len(prompt_indices) > 0:
+        data = [data[i] for i in prompt_indices if i < len(data)]
+    elif max_prompts is not None:
         data = data[:max_prompts]
     return data
 
@@ -132,7 +157,8 @@ def main(args):
         assert args.num_particles > 1
 
     # load prompt data # configure pipeline
-    prompt_data = load_geneval_metadata(args.prompt_path, max_prompts=args.max_prompt)
+    parsed_indices = parse_prompt_indices(getattr(args, "prompt_indices", None))
+    prompt_data = load_geneval_metadata(args.prompt_path, max_prompts=args.max_prompt, prompt_indices=parsed_indices)
 
 
     if "mhdang/dpo" in args.model_name and "xl" not in args.model_name:
@@ -225,9 +251,10 @@ def main(args):
 
     for prompt_idx in tqdm(range(start_idx, end_idx), desc=f"Shard-{args.shard_id}"):
         item = prompt_data[prompt_idx]
+        real_idx = item.get("original_idx", prompt_idx)
         prompt = [item["prompt"]] * args.num_particles
 
-        prompt_path = os.path.join(output_dir, f"{prompt_idx:0>5}")
+        prompt_path = os.path.join(output_dir, f"{real_idx:0>5}")
         os.makedirs(prompt_path, exist_ok=True)
 
         results_file = os.path.join(prompt_path, "results.json")
@@ -244,7 +271,7 @@ def main(args):
                 n_samples += 1
                 continue
             except Exception as e:
-                print(f"Error loading cached result for prompt {prompt_idx}: {e}")
+                print(f"Error loading cached result for prompt {real_idx}: {e}")
 
         # dump metadata
         with open(os.path.join(prompt_path, "metadata.jsonl"), "w") as f:
@@ -274,7 +301,7 @@ def main(args):
         start_time = datetime.now()
         images = pipe(
             prompt,
-            prompt_idx=prompt_idx,
+            prompt_idx=real_idx,
             num_inference_steps=args.num_inference_steps,
             eta=args.eta,
             fkd_args=fkd_args,
@@ -303,7 +330,7 @@ def main(args):
 
         results["time_taken"] = time_taken.total_seconds()
         results["prompt"] = prompt
-        results["prompt_index"] = prompt_idx
+        results["prompt_index"] = real_idx
 
         n_samples += 1
         average_time += time_taken.total_seconds()
@@ -408,6 +435,7 @@ def get_args():
     parser.add_argument("--potential_type", type=str, default="diff")
 
     parser.add_argument("--max_prompt", type=int, default=1000)
+    parser.add_argument("--prompt_indices", type=str, default=None, help="Optional subset of prompt indices (e.g. 'stratified_100', '0-99', '0,5,10', or path to JSON)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards to split prompts")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID to run on (e.g. 0 or 1)")

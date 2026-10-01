@@ -81,15 +81,35 @@ sys.path.append("fkd_diffusers")
 
 from fks_utils import do_eval
 
+def parse_prompt_indices(indices_arg):
+    if not indices_arg:
+        return None
+    if isinstance(indices_arg, (list, tuple)):
+        return list(indices_arg)
+    indices_str = str(indices_arg).strip()
+    if indices_str.lower() in ["stratified_100", "100_representative"]:
+        for repr_path in ["prompt_files/geneval_100_representative.json", "Diffusion-LiDAR-Sampling/prompt_files/geneval_100_representative.json"]:
+            if os.path.exists(repr_path):
+                with open(repr_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        return [0, 5, 11, 16, 21, 26, 32, 37, 42, 47, 53, 58, 63, 68, 74, 79, 80, 86, 92, 99, 105, 111, 117, 123, 130, 136, 142, 148, 154, 161, 167, 173, 178, 179, 184, 190, 195, 200, 205, 211, 216, 221, 226, 232, 237, 242, 247, 253, 258, 259, 265, 271, 277, 282, 288, 294, 300, 306, 312, 318, 323, 329, 335, 341, 347, 352, 353, 359, 365, 372, 378, 384, 390, 396, 403, 409, 415, 421, 428, 434, 440, 446, 452, 453, 459, 465, 472, 478, 484, 490, 496, 503, 509, 515, 521, 527, 533, 540, 546, 552]
+    if os.path.exists(indices_str):
+        with open(indices_str, "r", encoding="utf-8") as f:
+            return json.load(f)
+    if "-" in indices_str and "," not in indices_str:
+        parts = indices_str.split("-")
+        return list(range(int(parts[0]), int(parts[1]) + 1))
+    return [int(x.strip()) for x in indices_str.split(",") if x.strip().isdigit()]
+
 # load prompt data
-def load_geneval_metadata(prompt_path, max_prompts=None):
+def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
     if prompt_path.endswith(".json"):
-        with open(prompt_path, "r") as f:
+        with open(prompt_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     else:
         assert prompt_path.endswith(".jsonl")
-        with open(prompt_path, "r") as f:
-            data = [json.loads(line) for line in f]
+        with open(prompt_path, "r", encoding="utf-8") as f:
+            data = [json.loads(line) for line in f if line.strip()]
     assert isinstance(data, list)
     prompt_key = "prompt"
     if prompt_key not in data[0]:
@@ -97,7 +117,12 @@ def load_geneval_metadata(prompt_path, max_prompts=None):
 
         for item in data:
             item["prompt"] = item["text"]
-    if max_prompts is not None:
+    for idx, item in enumerate(data):
+        if "original_idx" not in item:
+            item["original_idx"] = idx
+    if prompt_indices is not None and len(prompt_indices) > 0:
+        data = [data[i] for i in prompt_indices if i < len(data)]
+    elif max_prompts is not None:
         data = data[:max_prompts]
     return data
 
@@ -124,7 +149,8 @@ def main(args):
     torch.cuda.manual_seed_all(args.seed)
 
     # load prompt data
-    prompt_data = load_geneval_metadata(args.prompt_path, max_prompts=args.max_prompt)
+    parsed_indices = parse_prompt_indices(getattr(args, "prompt_indices", None))
+    prompt_data = load_geneval_metadata(args.prompt_path, max_prompts=args.max_prompt, prompt_indices=parsed_indices)
 
     if "runwayml/stable-diffusion-v1-5" in args.model_name: ## SDv1.5-DPM
         pipe = StableDiffusionPipeline.from_pretrained(args.model_name, torch_dtype=torch.float16)
@@ -268,9 +294,10 @@ def main(args):
 
     for prompt_idx in tqdm(range(start_idx, end_idx), desc=f"Shard-{args.shard_id}"):
         item = prompt_data[prompt_idx]
+        real_idx = item.get("original_idx", prompt_idx)
         prompt = [item["prompt"]] * args.num_particles
 
-        prompt_path = os.path.join(output_dir, f"{prompt_idx:0>5}")
+        prompt_path = os.path.join(output_dir, f"{real_idx:0>5}")
         os.makedirs(prompt_path, exist_ok=True)
 
         results_file = os.path.join(prompt_path, "results.json")
@@ -282,7 +309,7 @@ def main(args):
                 check_t = lat_check[0] if isinstance(lat_check, (list, tuple)) else lat_check
                 if hasattr(check_t, "shape") and check_t.shape[-1] != expected_latent_dim:
                     lat_valid = False
-                    print(f"⚠️ [Prompt {prompt_idx:05d}] latent.pt có kích thước {check_t.shape[-1]}x{check_t.shape[-1]} != {expected_latent_dim}x{expected_latent_dim} ({args.model_name}). Bỏ qua cache hỏng và tạo lại!")
+                    print(f"⚠️ [Prompt {real_idx:05d}] latent.pt có kích thước {check_t.shape[-1]}x{check_t.shape[-1]} != {expected_latent_dim}x{expected_latent_dim} ({args.model_name}). Bỏ qua cache hỏng và tạo lại!")
 
                 if lat_valid:
                     with open(results_file, "r") as f:
@@ -294,10 +321,10 @@ def main(args):
                             metrics_arr[metric]["min"] += res_cached[metric]["min"]
                             metrics_arr[metric]["std"] += res_cached[metric]["std"]
                     n_samples += 1
-                    print(f"⏩ [Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{prompt_idx:05d}: Đã có sẵn kết quả hợp lệ, tự động bỏ qua (Resume)!")
+                    print(f"⏩ [Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{real_idx:05d}: Đã có sẵn kết quả hợp lệ, tự động bỏ qua (Resume)!")
                     continue
             except Exception as e:
-                print(f"Error loading cached result for prompt {prompt_idx}: {e}")
+                print(f"Error loading cached result for prompt {real_idx}: {e}")
 
         # dump metadata
         with open(os.path.join(prompt_path, "metadata.jsonl"), "w") as f:
@@ -308,20 +335,20 @@ def main(args):
         cached_reused_latents = None
         if getattr(args, "reuse_latents_from", None):
             candidates = [
-                os.path.join(args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                os.path.join("Lookahead_samples", args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
-                os.path.join(args.output_dir, args.reuse_latents_from, f"{prompt_idx:0>5}", "samples", "latent.pt"),
+                os.path.join(args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
+                os.path.join("Lookahead_samples", args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
+                os.path.join(args.output_dir, args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
             ]
             if not is_xl:
                 candidates.append(
-                    os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{prompt_idx:0>5}", "samples", "latent.pt")
+                    os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{real_idx:0>5}", "samples", "latent.pt")
                 )
                 if args.num_particles <= 50:
                     candidates.append(
-                        os.path.join("Lookahead_samples", "100_50_5", f"{prompt_idx:0>5}", "samples", "latent.pt")
+                        os.path.join("Lookahead_samples", "100_50_5", f"{real_idx:0>5}", "samples", "latent.pt")
                     )
                 candidates.append(
-                    os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{prompt_idx:0>5}", "samples", "latent.pt")
+                    os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{real_idx:0>5}", "samples", "latent.pt")
                 )
             for c in candidates:
                 if os.path.exists(c):
@@ -433,7 +460,7 @@ def main(args):
 
         results["time_taken"] = time_taken.total_seconds()
         results["prompt"] = prompt
-        results["prompt_index"] = prompt_idx
+        results["prompt_index"] = real_idx
         if getattr(args, "use_smoothing", False):
             results["smoothing"] = {
                 "enabled": True,
@@ -535,6 +562,7 @@ def get_args():
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_prompt", type=int, default=1000)
+    parser.add_argument("--prompt_indices", type=str, default=None, help="Optional subset of prompt indices (e.g. 'stratified_100', '0-99', '0,5,10', or path to JSON)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards to split prompts")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID to run on (e.g. 0 or 1)")
