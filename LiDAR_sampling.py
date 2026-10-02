@@ -139,9 +139,11 @@ def main(args):
             device = f"cuda:{actual_gpu_id}"
             print(f"🎯 Assigned process to GPU {actual_gpu_id} (device {actual_gpu_id + 1}/{num_devices}): {torch.cuda.get_device_name(actual_gpu_id)}")
         else:
+            actual_gpu_id = 0
             device = "cuda:0"
             torch.cuda.set_device(0)
     else:
+        actual_gpu_id = "cpu"
         device = "cpu"
 
     # seed everything
