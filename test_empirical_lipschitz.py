@@ -870,45 +870,43 @@ def aggregate_and_plot_results(all_pairs, output_dir, primary_sigma2=1.0):
         plt.close()
         print(f"📈 Đã xuất biểu đồ khảo sát dải Sigma2: {abl_plot_path}")
 
-    # Vẽ bổ sung bộ biểu đồ nâng cao (σ=0.25, Dual-Regime, Sweet-Spot Ablation)
-    if 0.25 in available_sigmas:
+    # Vẽ bổ sung bộ biểu đồ nâng cao (4 biểu đồ 3-Panel cho 0.1, 0.25, 0.5, 1.0, Dual-Regime, Sweet-Spot Ablation)
+    if any(s in available_sigmas for s in [0.1, 0.25, 0.5, 1.0]):
         try:
             plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, available_sigmas, metrics_json)
         except Exception as e:
             print(f"⚠️ Lưu ý khi vẽ biểu đồ nâng cao: {e}")
 
 
-def plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, available_sigmas, metrics_json):
+def plot_3panel_for_sigma(all_pairs, output_dir, available_models, target_sigma2, filename=None):
     """
-    Tự động xuất 3 biểu đồ Lipschitz nâng cao phục vụ bài báo và phân tích chuyên sâu:
-    1. lipschitz_comparison_3panel_sigma_0.25.png (Điểm cực tiểu độ trơn cục bộ)
-    2. lipschitz_comparison_dual_regime.png (So sánh song song σ=0.25 vs σ=1.0)
-    3. lipschitz_sigma_ablation_enhanced.png (Highlight vùng Sweet Spot [0.25, 1.0])
+    Vẽ biểu đồ 3-Panel hoàn chỉnh cho một giá trị sigma2 cụ thể:
+    - Panel A: Bar Chart so sánh L_max và ghi chú tỷ số suy giảm (Reduction Ratio).
+    - Panel B: Đường cong mật độ xác suất KDE của độ dốc (Slope Distribution) mô hình chính.
+    - Panel C: Đồ thị tán xạ từng cặp mẫu so với đường phân giác y = x (Pairwise Slope Contraction).
     """
     import scipy.stats as stats
-
-    # 1. 3-PANEL CHO SIGMA2 = 0.25
-    s2_t = 0.25
-    fig_025, axes_025 = plt.subplots(1, 3, figsize=(20, 6), dpi=300)
-    plt.subplots_adjust(wspace=0.28)
-
+    s2_t = float(target_sigma2)
     indices = np.arange(len(available_models))
     width = 0.35
 
     l_max_v_list = []
     l_max_rs_list = []
-    ratios_025 = []
+    ratios = []
     for m in available_models:
         v_s = [p["models"][m]["slope_vanilla"] for p in all_pairs if m in p["models"]]
-        rs_s = [p["models"][m]["rs_by_sigma"][str(s2_t)]["slope_rs"] for p in all_pairs if m in p["models"]]
+        rs_s = [p["models"][m]["rs_by_sigma"][str(s2_t)]["slope_rs"] for p in all_pairs if m in p["models"] and str(s2_t) in p["models"][m].get("rs_by_sigma", {})]
         lm_v = float(np.max(v_s)) if v_s else 0.0
         lm_rs = float(np.max(rs_s)) if rs_s else 0.0
         l_max_v_list.append(lm_v)
         l_max_rs_list.append(lm_rs)
-        ratios_025.append(lm_v / max(1e-9, lm_rs))
+        ratios.append(lm_v / max(1e-9, lm_rs))
+
+    fig, axes = plt.subplots(1, 3, figsize=(20, 6), dpi=300)
+    plt.subplots_adjust(wspace=0.28)
 
     # Panel A: Bar chart L_max
-    ax_a = axes_025[0]
+    ax_a = axes[0]
     ax_a.bar(indices - width/2, l_max_v_list, width, label="Vanilla LiDAR", color="#E63946", alpha=0.9, edgecolor="black")
     ax_a.bar(indices + width/2, l_max_rs_list, width, label=f"RS-LiDAR (σ={s2_t})", color="#2A9D8F", alpha=0.9, edgecolor="black")
     ax_a.set_ylabel("Empirical Lipschitz Constant $L_{\\max}$", fontsize=12, fontweight="bold")
@@ -920,14 +918,14 @@ def plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, ava
 
     for i in range(len(available_models)):
         y_pos = max(l_max_v_list[i], l_max_rs_list[i]) * 1.03
-        ax_a.annotate(f"{ratios_025[i]:.2f}x ↓", xy=(indices[i] + width/2, l_max_rs_list[i]),
+        ax_a.annotate(f"{ratios[i]:.2f}x ↓", xy=(indices[i] + width/2, l_max_rs_list[i]),
                      xytext=(indices[i], y_pos), ha="center", fontsize=11, fontweight="bold", color="#1D3557")
 
     # Panel B: Phân phối KDE
-    ax_b = axes_025[1]
+    ax_b = axes[1]
     pm = "ImageReward" if "ImageReward" in available_models else available_models[0]
     v_slopes_pm = [p["models"][pm]["slope_vanilla"] for p in all_pairs if pm in p["models"]]
-    rs_slopes_pm = [p["models"][pm]["rs_by_sigma"][str(s2_t)]["slope_rs"] for p in all_pairs if pm in p["models"]]
+    rs_slopes_pm = [p["models"][pm]["rs_by_sigma"][str(s2_t)]["slope_rs"] for p in all_pairs if pm in p["models"] and str(s2_t) in p["models"][pm].get("rs_by_sigma", {})]
 
     kde_v = stats.gaussian_kde(v_slopes_pm)
     kde_rs = stats.gaussian_kde(rs_slopes_pm)
@@ -936,7 +934,7 @@ def plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, ava
 
     ax_b.plot(x_grid, kde_v(x_grid), label="Vanilla (Heavy-tailed spikes)", color="#E63946", lw=2.5)
     ax_b.fill_between(x_grid, kde_v(x_grid), color="#E63946", alpha=0.25)
-    ax_b.plot(x_grid, kde_rs(x_grid), label=f"RS-LiDAR (σ={s2_t}, Tight peak)", color="#2A9D8F", lw=2.5)
+    ax_b.plot(x_grid, kde_rs(x_grid), label=f"RS-LiDAR (σ={s2_t})", color="#2A9D8F", lw=2.5)
     ax_b.fill_between(x_grid, kde_rs(x_grid), color="#2A9D8F", alpha=0.35)
     ax_b.set_xlabel("Secant Slope $|\\Delta R| / \\|\\Delta x\\|_2$", fontsize=12, fontweight="bold")
     ax_b.set_ylabel("Probability Density", fontsize=12, fontweight="bold")
@@ -945,7 +943,7 @@ def plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, ava
     ax_b.grid(True, linestyle="--", alpha=0.5)
 
     # Panel C: Scatter plot
-    ax_c = axes_025[2]
+    ax_c = axes[2]
     ax_c.scatter(v_slopes_pm, rs_slopes_pm, color="#2A9D8F", alpha=0.6, edgecolors="none", s=28, label=f"Pairs (σ={s2_t})")
     diag_max = max(max(v_slopes_pm), max(rs_slopes_pm)) * 1.05
     ax_c.plot([0, diag_max], [0, diag_max], linestyle="--", color="#E63946", lw=2, label="Parity ($y = x$)")
@@ -956,14 +954,29 @@ def plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, ava
     ax_c.grid(True, linestyle="--", alpha=0.5)
     ax_c.set_xlim(0, diag_max)
     ax_c.set_ylim(0, diag_max)
-    ax_c.text(0.55 * diag_max, 0.15 * diag_max, "Massive Contraction Zone\n(RS << Vanilla across all seeds)",
-              fontsize=10, fontweight="bold", color="#1D3557",
-              bbox=dict(boxstyle="round,pad=0.4", fc="#E8F8F5", ec="#2A9D8F", alpha=0.95))
 
-    p3_path = os.path.join(output_dir, "lipschitz_comparison_3panel_sigma_0.25.png")
-    plt.savefig(p3_path, bbox_inches="tight")
+    if filename is None:
+        filename = f"lipschitz_comparison_3panel_sigma_{s2_t}.png"
+    p_path = os.path.join(output_dir, filename)
+    plt.savefig(p_path, bbox_inches="tight")
     plt.close()
-    print(f"📈 Đã xuất biểu đồ 3-Panel (σ=0.25): {p3_path}")
+    print(f"📈 Đã xuất biểu đồ 3-Panel (σ={s2_t}): {p_path}")
+    return p_path
+
+
+def plot_enhanced_lipschitz_figures(all_pairs, output_dir, available_models, available_sigmas, metrics_json):
+    """
+    Tự động xuất trọn bộ biểu đồ Lipschitz phục vụ bài báo và phân tích chuyên sâu:
+    - 4 biểu đồ 3-Panel độc lập cho từng sigma ∈ {0.1, 0.25, 0.5, 1.0}
+    - 1 biểu đồ đối chiếu song song Dual-Regime (σ=0.25 vs σ=1.0)
+    - 1 biểu đồ Sweet-Spot Ablation [0.25, 1.0] (L_max và L_mean)
+    """
+    import scipy.stats as stats
+
+    # 1. VẼ 4 BIỂU ĐỒ 3-PANEL ĐỘC LẬP CHO TỪNG SIGMA: 0.1, 0.25, 0.5, 1.0
+    for s2_target in [0.1, 0.25, 0.5, 1.0]:
+        if s2_target in available_sigmas:
+            plot_3panel_for_sigma(all_pairs, output_dir, available_models, s2_target)
 
     # 2. DUAL-REGIME COMPARISON (σ=0.25 vs σ=1.0)
     if 1.0 in available_sigmas:
