@@ -212,62 +212,87 @@ def fast_batch_clip_and_aesthetic(images, prompt, device="cuda"):
 # ======================================================================================
 def load_stratified_prompts(prompt_path="prompt_files/geneval_50_stratified.jsonl", max_prompts=-1, seed=42):
     """
-    Tải danh sách prompts phân tầng. Nếu file chưa có, tự động tải hoặc dự phòng danh sách 50 prompts chuẩn.
+    Tải danh sách prompts phân tầng chuẩn GenEval (Stratified Sampling).
+    Nếu max_prompts nhỏ hơn tổng số prompts, tự động chia đều tỷ lệ cho cả 6 tasks.
+    Nếu max_prompts > 50, tự động mở rộng sang file 100 representative hoặc 553 metadata.
     """
-    all_prompts = []
+    # Tự động mở rộng nếu max_prompts yêu cầu nhiều hơn 50
+    if max_prompts > 50:
+        larger_candidates = [
+            "prompt_files/geneval_100_representative.jsonl",
+            "prompt_files/geneval_metadata.jsonl"
+        ]
+        for c in larger_candidates:
+            if os.path.exists(c):
+                prompt_path = c
+                break
+
     if not os.path.exists(prompt_path):
         cands = glob.glob(f"**/{os.path.basename(prompt_path)}", recursive=True) + glob.glob(f"/kaggle/**/{os.path.basename(prompt_path)}", recursive=True)
         if cands and os.path.exists(cands[0]):
             prompt_path = cands[0]
         else:
-            # Dự phòng fallback từ GitHub nếu cần
             try:
                 os.makedirs(os.path.dirname(prompt_path) if os.path.dirname(prompt_path) else ".", exist_ok=True)
-                url = "https://raw.githubusercontent.com/leekwanreal/RS-LiDAR/main/prompt_files/geneval_50_stratified.jsonl"
+                url = f"https://raw.githubusercontent.com/leekwanreal/RS-LiDAR/main/{prompt_path}"
                 import urllib.request
                 urllib.request.urlretrieve(url, prompt_path)
             except Exception:
                 pass
 
+    items = []
     if os.path.exists(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     item = json.loads(line)
-                    p_str = item.get("prompt", "").strip()
-                    if p_str:
-                        all_prompts.append(p_str)
+                    if item.get("prompt"):
+                        items.append(item)
 
-    # Dự phòng tối thiểu nếu không có file
-    if not all_prompts:
-        all_prompts = [
-            "a photo of a bench", "a photo of a potted plant", "a photo of a couch", "a photo of a bowl",
-            "a photo of a baseball bat", "a photo of a broccoli", "a photo of a frisbee", "a photo of an oven",
-            "a photo of a bench and a sports ball", "a photo of a hair drier and a cake", "a photo of a knife and a zebra",
-            "a photo of a couch and a horse", "a photo of a zebra and a bed", "a photo of a tennis racket and a bird",
-            "a photo of a microwave and a truck", "a photo of a chair and a bench", "a photo of a bear and a backpack",
-            "three apples on a wooden table", "two cars parked on a street", "four books stacked neatly",
-            "two dogs playing in grass", "three cups of coffee on a counter", "two cats sleeping on a rug",
-            "four chairs around a dining table", "two bicycles locked to a fence",
-            "a red sports car", "a blue ceramic vase", "a yellow umbrella in rain", "a green apple on a white plate",
-            "a purple handbag", "an orange balloon floating", "a black leather jacket", "a pink flower in bloom", "a white coffee mug",
-            "a laptop on top of a desk", "a cat under a wooden chair", "a book next to a coffee cup",
-            "a clock above a fireplace", "a shoe inside a cardboard box", "a lamp beside a sofa",
-            "a bird perched on a branch", "a ball behind a tree",
-            "a red dog and a blue cat", "a green book and a yellow pen", "a black bird and a white rabbit",
-            "a purple car and an orange truck", "a pink cup and a brown plate", "a blue couch and a red pillow",
-            "a yellow flower and a green leaf", "a white horse and a black dog"
+    if not items:
+        fallback_prompts = [
+            ("single_object", "a photo of a bench"), ("single_object", "a photo of a potted plant"),
+            ("two_object", "a photo of a knife and a zebra"), ("two_object", "a photo of a couch and a horse"),
+            ("counting", "three apples on a wooden table"), ("counting", "two cars parked on a street"),
+            ("colors", "a red sports car"), ("colors", "a blue ceramic vase"),
+            ("position", "a laptop on top of a desk"), ("position", "a cat under a wooden chair"),
+            ("color_attr", "a red dog and a blue cat"), ("color_attr", "a green book and a yellow pen")
         ]
+        items = [{"tag": t, "prompt": p} for t, p in fallback_prompts]
 
-    if max_prompts > 0 and max_prompts < len(all_prompts):
-        rng = random.Random(seed)
-        selected = rng.sample(all_prompts, max_prompts)
-        print(f"🎲 Đã chọn {max_prompts} prompts đại diện phân tầng (seed={seed}).")
-        return selected
-    elif max_prompts > 0:
-        return all_prompts[:max_prompts]
-    else:
-        return all_prompts
+    # Nếu không giới hạn hoặc lấy toàn bộ
+    if max_prompts <= 0 or max_prompts >= len(items):
+        print(f"📋 Đã nạp toàn bộ {len(items)} prompts từ {prompt_path}.")
+        return [it["prompt"] for it in items[:max_prompts]] if max_prompts > 0 else [it["prompt"] for it in items]
+
+    # Phân tầng thực sự (True Stratified Sampling qua Tag)
+    by_tag = {}
+    for it in items:
+        t = it.get("tag", "general")
+        by_tag.setdefault(t, []).append(it)
+
+    tags = sorted(list(by_tag.keys()))
+    rng = random.Random(seed)
+    rng.shuffle(tags)
+
+    base = max_prompts // len(tags)
+    rem = max_prompts % len(tags)
+
+    chosen = []
+    task_dist = {}
+    for i, t in enumerate(tags):
+        count = base + (1 if i < rem else 0)
+        bucket = by_tag[t]
+        k = min(count, len(bucket))
+        if k > 0:
+            sampled_task = rng.sample(bucket, k)
+            chosen.extend(sampled_task)
+            task_dist[t] = len(sampled_task)
+
+    # Xáo trộn ngẫu nhiên có kiểm soát để các shard GPU nhận đều các task
+    rng.shuffle(chosen)
+    print(f"🎲 Stratified Sampling {len(chosen)} prompts đại diện (seed={seed}): {task_dist}")
+    return [it["prompt"] for it in chosen]
 
 
 # ======================================================================================
