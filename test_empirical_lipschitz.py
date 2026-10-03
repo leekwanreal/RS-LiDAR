@@ -894,15 +894,17 @@ def main():
     parser.add_argument("--sigma2_list", type=str, default="0.0,0.1,0.25,0.5,1.0", help="Danh sách sigma2 quét khảo sát (phân tách dấu phẩy)")
     parser.add_argument("--num_mc_samples", "-M", type=int, default=4, help="Số mẫu Monte Carlo tính kỳ vọng")
 
-    # Lựa chọn Reward Models
-    parser.add_argument("--use_imagereward", action="store_true", default=True, help="Đánh giá ImageReward")
+    # Lựa chọn Reward Models (hỗ trợ cả cờ --use_* và các cờ alias --ImageReward, --ClipScore, --HPS, --GenEval)
+    parser.add_argument("--reward_models", type=str, default=None, help="Danh sách reward models (vd: 'ImageReward,CLIP-Score,HPS')")
+    parser.add_argument("--use_imagereward", "--ImageReward", action="store_true", default=True, help="Đánh giá ImageReward")
     parser.add_argument("--no_imagereward", action="store_false", dest="use_imagereward")
-    parser.add_argument("--use_clip", action="store_true", default=True, help="Đánh giá CLIP-Score")
+    parser.add_argument("--use_clip", "--ClipScore", action="store_true", default=True, help="Đánh giá CLIP-Score")
     parser.add_argument("--no_clip", action="store_false", dest="use_clip")
-    parser.add_argument("--use_hps", action="store_true", default=True, help="Đánh giá HPS v2.1")
+    parser.add_argument("--use_hps", "--HPS", action="store_true", default=True, help="Đánh giá HPS v2.1")
     parser.add_argument("--no_hps", action="store_false", dest="use_hps")
-    parser.add_argument("--use_aesthetic", action="store_true", default=True, help="Đánh giá Aesthetic Score")
+    parser.add_argument("--use_aesthetic", "--Aesthetic", action="store_true", default=True, help="Đánh giá Aesthetic Score")
     parser.add_argument("--no_aesthetic", action="store_false", dest="use_aesthetic")
+    parser.add_argument("--use_geneval", "--GenEval", action="store_true", default=False, help="Đánh giá GenEval consistency / detection score")
 
     # Cấu hình Multi-GPU Sharding & Output
     parser.add_argument("--num_shards", type=int, default=1, help="Tổng số worker shard")
@@ -913,6 +915,15 @@ def main():
     parser.add_argument("--merge_shards", action="store_true", help="Chế độ gộp checkpoint các shard và vẽ đồ thị")
 
     args = parser.parse_args()
+
+    # Phân tích chuỗi reward_models nếu được cung cấp
+    if args.reward_models:
+        models_lower = [m.strip().lower() for m in args.reward_models.split(",") if m.strip()]
+        args.use_imagereward = any("image" in m for m in models_lower)
+        args.use_clip = any("clip" in m for m in models_lower)
+        args.use_hps = any("hps" in m for m in models_lower)
+        args.use_aesthetic = any("aesthetic" in m or "as" == m for m in models_lower)
+        args.use_geneval = any("geneval" in m for m in models_lower)
 
     # Xử lý chế độ merge shard độc lập
     if args.merge_shards:
