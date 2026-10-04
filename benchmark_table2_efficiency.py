@@ -414,8 +414,11 @@ def benchmark_single_prompt(
     n_tar = config["num_target_images"]
     is_sdxl = "sdxl" in getattr(pipe_phase1, "_name_or_path", "").lower() or hasattr(pipe_phase1, "unet") and pipe_phase1.unet.config.sample_size == 128
 
-    # Đồng bộ hóa GPU và reset bộ nhớ
+    # Đồng bộ hóa GPU và quản lý VRAM động (Offload Phase 2 để dồn toàn lực VRAM cho Phase 1)
     torch.cuda.synchronize(device)
+    pipe_phase2.to("cpu")
+    pipe_phase1.to(device)
+    torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
 
     # --------------------------------------------------------------------------
@@ -429,24 +432,18 @@ def benchmark_single_prompt(
         prompt_batch = [prompt_str] * n_p1
 
         if is_sdxl:
-            # SDXL Phase 1 Lookahead (Chunked to prevent OOM)
-            chunk_size = 10
-            latents_list = []
-            for i in range(0, n_p1, chunk_size):
-                chunk_prompts = prompt_batch[i : i + chunk_size]
-                chunk_latents = pipe_phase1(
-                    chunk_prompts,
-                    num_inference_steps=config["lookahead_steps"],
-                    output_type="latent"
-                ).images
-                latents_list.append(chunk_latents)
-            latents = torch.cat(latents_list, dim=0)  # Tensor (N, 4, 128, 128)
+            # SDXL Phase 1 Lookahead (Full Batch restored to match original LiDAR)
+            latents = pipe_phase1(
+                prompt_batch,
+                num_inference_steps=config["lookahead_steps"],
+                output_type="latent"
+            ).images  # Tensor (N, 4, 128, 128)
 
             # VAE Decode an toàn với batch size = 1 để tránh spike VRAM trên SDXL 1024x1024
             shift_factor = getattr(pipe_phase1.vae.config, "shift_factor", 0.0)
             shift_factor = 0.0 if shift_factor is None else shift_factor
             latents_scaled = (latents / pipe_phase1.vae.config.scaling_factor) + shift_factor
-            latents_scaled = latents_scaled.to(pipe_phase1.vae.dtype)
+            latents_scaled = latents_scaled.to(pipe_phase1.vae.dtype) # ép về đúng kiểu dữ liệu của VAE để tránh lỗi
             decoded_chunks = []
             for v_i in range(0, latents_scaled.shape[0], 1):
                 chunk = latents_scaled[v_i : v_i + 1]
@@ -524,6 +521,11 @@ def benchmark_single_prompt(
     # Ghi nhận đỉnh VRAM trước Phase 2
     torch.cuda.synchronize(device)
     peak_vram_p1_gib = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+
+    # Đảo models trong VRAM (Offload Phase 1, Load Phase 2) để mô phỏng pipeline tách rời
+    pipe_phase1.to("cpu")
+    pipe_phase2.to(device)
+    torch.cuda.empty_cache()
 
     # Reset stats trước Phase 2 để đo riêng biệt Peak VRAM của Target Sampling (khớp Table 2 & Figure 10)
     torch.cuda.reset_peak_memory_stats(device)
