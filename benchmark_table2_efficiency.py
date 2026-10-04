@@ -32,7 +32,7 @@ import random
 import shutil
 import argparse
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 # Ensure UTF-8 output encoding across Windows/Linux/Colab consoles
 if hasattr(sys.stdout, "reconfigure"):
@@ -224,17 +224,21 @@ def evaluate_reward_full_batch(
     num_mc: int = 4,
     reward_batch_size: Optional[int] = None,
     device: str = "cuda:0"
-) -> List[float]:
+) -> Tuple[List[float], float, float]:
     """
     Đánh giá ImageReward toàn diện trong đúng 1 batch forward:
-    - Nếu method == 'rs-lidar': Tạo M tensor nhiễu Gaussian sigma, ghép thành (M * N, 3, H, W).
-    - Nếu method == 'lidar': Chạy trực tiếp N ảnh sạch (1 * N, 3, H, W).
-    - Chạy thẳng qua ir_model.score_batched với batch_size = None (Full Batch).
+    - BƯỚC 1 (Đổi ảnh): Tạo tensor nhiễu (nếu RS-LiDAR) và đổi sang list PIL (Đo t_convert).
+    - BƯỚC 2 (Chấm điểm thuần túy): Chạy qua ir_model.score_batched với batch_size = None (Đo t_score_pure).
     - Reshape ma trận (M, N) và lấy kỳ vọng trung bình E[R(x + eps)].
     """
     n_particles = decoded_tensor.shape[0]
 
     with torch.inference_mode():
+        # 1. Đo riêng thời gian đổi Tensor sang PIL
+        ev_conv_start = torch.cuda.Event(enable_timing=True)
+        ev_conv_end = torch.cuda.Event(enable_timing=True)
+        ev_conv_start.record()
+
         if method == "rs-lidar" and num_mc > 1 and sigma > 0:
             noisy_list = [
                 (decoded_tensor + torch.randn_like(decoded_tensor) * sigma).clamp(-1.0, 1.0)
@@ -249,8 +253,21 @@ def evaluate_reward_full_batch(
         pil_images = image_processor.postprocess(all_images_tensor, output_type="pil")
         eval_prompts = [prompt_str] * len(pil_images)
 
+        ev_conv_end.record()
+        torch.cuda.synchronize(device)
+        t_convert = ev_conv_start.elapsed_time(ev_conv_end) / 1000.0
+
+        # 2. Đo riêng thời gian CHẤM ĐIỂM THUẦN TÚY (Pure Reward Scoring Forward)
+        ev_score_start = torch.cuda.Event(enable_timing=True)
+        ev_score_end = torch.cuda.Event(enable_timing=True)
+        ev_score_start.record()
+
         # GỌI ĐÚNG 1 BATCH DUY NHẤT: reward_batch_size = None
         raw_scores = ir_model.score_batched(eval_prompts, pil_images, batch_size=reward_batch_size)
+
+        ev_score_end.record()
+        torch.cuda.synchronize(device)
+        t_score_pure = ev_score_start.elapsed_time(ev_score_end) / 1000.0
 
         if num_mc > 1:
             scores_by_m = np.array(raw_scores).reshape(num_mc, n_particles)
@@ -258,7 +275,7 @@ def evaluate_reward_full_batch(
         else:
             final_scores = [float(s) for s in raw_scores]
 
-    return final_scores
+    return final_scores, t_score_pure, t_convert
 
 
 # ==============================================================================
@@ -448,13 +465,9 @@ def benchmark_single_prompt(
     t_lookahead = ev_look_start.elapsed_time(ev_look_end) / 1000.0
 
     # --------------------------------------------------------------------------
-    # GIAI ĐOẠN 2: Phase 1 Reward Annotation (Full-Batch 1 Forward)
+    # GIAI ĐOẠN 2: Phase 1 Reward Annotation (Chấm Điểm Thuần Túy - Khớp Table 9)
     # --------------------------------------------------------------------------
-    ev_rew_start = torch.cuda.Event(enable_timing=True)
-    ev_rew_end = torch.cuda.Event(enable_timing=True)
-
-    ev_rew_start.record()
-    smoothed_scores = evaluate_reward_full_batch(
+    smoothed_scores, t_reward, t_convert = evaluate_reward_full_batch(
         decoded_tensor=decoded_tensor,
         prompt_str=prompt_str,
         ir_model=ir_model,
@@ -465,9 +478,6 @@ def benchmark_single_prompt(
         reward_batch_size=reward_batch_size,
         device=device
     )
-    ev_rew_end.record()
-    torch.cuda.synchronize(device)
-    t_reward = ev_rew_start.elapsed_time(ev_rew_end) / 1000.0
 
     # Đóng gói dữ liệu Lookahead vào In-Memory Dataset cho Phase 2
     lookahead_ds = InMemoryLookaheadDataset()
@@ -531,7 +541,7 @@ def benchmark_single_prompt(
     t_target = ev_tar_start.elapsed_time(ev_tar_end) / 1000.0
     vram_phase2_gib = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
 
-    # Tổng kết số liệu của prompt
+    # Tổng kết số liệu của prompt (T_total tính theo chuẩn Table 9: Lookahead + Reward Scoring + Target)
     t_total = t_lookahead + t_reward + t_target
     peak_vram_gib = max(peak_vram_p1_gib, vram_phase2_gib)
 
@@ -539,7 +549,9 @@ def benchmark_single_prompt(
         "prompt_idx": real_idx,
         "prompt": prompt_str,
         "t_lookahead": t_lookahead,
-        "t_reward": t_reward,
+        "t_reward": t_reward,              # Chấm điểm thuần túy
+        "t_convert": t_convert,            # Đổi Tensor -> PIL
+        "t_reward_total": t_reward + t_convert,
         "t_target": t_target,
         "t_total": t_total,
         "vram_phase2_gib": vram_phase2_gib,
@@ -664,7 +676,7 @@ def main():
 
     csv_fields = [
         "prompt_idx", "prompt", "setting", "method", "sigma", "num_mc",
-        "t_lookahead", "t_reward", "t_target", "t_total", "vram_phase2_gib", "peak_vram_gib"
+        "t_lookahead", "t_reward", "t_convert", "t_target", "t_total", "vram_phase2_gib", "peak_vram_gib"
     ]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
@@ -699,6 +711,7 @@ def main():
             "num_mc": num_mc,
             "t_lookahead": f"{res['t_lookahead']:.3f}",
             "t_reward": f"{res['t_reward']:.3f}",
+            "t_convert": f"{res['t_convert']:.3f}",
             "t_target": f"{res['t_target']:.3f}",
             "t_total": f"{res['t_total']:.3f}",
             "vram_phase2_gib": f"{res['vram_phase2_gib']:.2f}",
@@ -717,11 +730,12 @@ def main():
             except Exception as e_drive:
                 print(f"⚠️ Cảnh báo: Không thể đồng bộ CSV sang Google Drive ({e_drive})")
 
-        print(f"\n  [Prompt #{res['prompt_idx']:03d}] T_look: {res['t_lookahead']:.2f}s | T_rew: {res['t_reward']:.2f}s | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
+        print(f"\n  [Prompt #{res['prompt_idx']:03d}] T_look: {res['t_lookahead']:.2f}s | T_rew (Chấm điểm): {res['t_reward']:.2f}s (Convert PIL: {res['t_convert']:.2f}s) | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
 
     # 6. Tính Toán Thống Kê Trung Bình & Xuất Báo Cáo
     mean_t_look = float(np.mean([r["t_lookahead"] for r in results_list]))
     mean_t_rew = float(np.mean([r["t_reward"] for r in results_list]))
+    mean_t_conv = float(np.mean([r["t_convert"] for r in results_list]))
     mean_t_tar = float(np.mean([r["t_target"] for r in results_list]))
     mean_t_tot = float(np.mean([r["t_total"] for r in results_list]))
     mean_vram_p2 = float(np.mean([r["vram_phase2_gib"] for r in results_list]))
@@ -736,6 +750,8 @@ def main():
         "num_prompts": len(results_list),
         "mean_t_lookahead_sec": mean_t_look,
         "mean_t_reward_sec": mean_t_rew,
+        "mean_t_convert_sec": mean_t_conv,
+        "mean_t_reward_total_sec": mean_t_rew + mean_t_conv,
         "mean_t_target_sec": mean_t_tar,
         "mean_t_total_sec": mean_t_tot,
         "mean_vram_phase2_gib": mean_vram_p2,
@@ -762,25 +778,26 @@ def main():
     paper_t_tot = "13.41s" if "ddpm100" in args.setting else ("9.92s" if "ddim50" in args.setting else "55.60s")
     paper_vram = "8.90 GiB" if "sdv1.5" in args.setting else "33.84 GiB"
 
-    print(f"\n{'='*90}")
+    print(f"\n{'='*95}")
     print(f"📊 BẢNG TỔNG KẾT PHÂN RÃ THỜI GIAN & BỘ NHỚ (KHỚP TABLE 9 & TABLE 2 ICML 2026)")
-    print(f"{'='*90}")
+    print(f"{'='*95}")
     print(f"Setting: {args.setting} | Method: {args.method.upper()} | Prompts: {len(results_list)} | Batch: {'Full Batch' if reward_batch_size is None else reward_batch_size}")
-    print(f"{'-'*90}")
-    print(f"• T_lookahead (Sinh N hạt Lookahead):          {mean_t_look:6.2f} giây  (Bài báo DPM-5 / n=50: {paper_t_look})")
-    print(f"• T_reward    (Đánh giá ImageReward M hạt):     {mean_t_rew:6.2f} giây  (Bài báo n=50 / M=1:   {paper_t_rew})")
-    print(f"• T_target    (Khử nhiễu 4 ảnh đích Phase 2):  {mean_t_tar:6.2f} giây  (Bài báo Target:       {paper_t_tar})")
-    print(f"------------------------------------------------------------------------------------------")
-    print(f"👉 TỔNG THỜI GIAN TRUNG BÌNH (T_total / prompt):   {mean_t_tot:6.2f} giây  (Bài báo Table 9:     {paper_t_tot})")
-    print(f"👉 VRAM PHASE 2 (Target Sampling - Khớp Table 2):  {mean_vram_p2:6.2f} GiB  (Bài báo & Fig 10:     {paper_vram})")
-    print(f"👉 ĐỈNH BỘ NHỚ TOÀN BỘ (Peak Overall VRAM):        {max_peak_vram:6.2f} GiB")
-    print(f"{'='*90}")
+    print(f"{'-'*95}")
+    print(f"• T_lookahead (Sinh N hạt Lookahead):            {mean_t_look:6.2f} giây  (Bài báo DPM-5 / n=50: {paper_t_look})")
+    print(f"• T_reward    (Chấm điểm ImageReward thuần túy): {mean_t_rew:6.2f} giây  (Bài báo n=50 / M=1:   {paper_t_rew})")
+    print(f"  └─ Phụ phí đổi Tensor sang PIL (Convert):       {mean_t_conv:6.2f} giây")
+    print(f"• T_target    (Khử nhiễu 4 ảnh đích Phase 2):    {mean_t_tar:6.2f} giây  (Bài báo Target:       {paper_t_tar})")
+    print(f"--------------------------------------------------------------------------------------------")
+    print(f"👉 TỔNG THỜI GIAN THEO TABLE 9 (Look + Rew + Tar):   {mean_t_tot:6.2f} giây  (Bài báo Table 9:     {paper_t_tot})")
+    print(f"👉 VRAM PHASE 2 (Target Sampling - Khớp Table 2):    {mean_vram_p2:6.2f} GiB  (Bài báo & Fig 10:     {paper_vram})")
+    print(f"👉 ĐỈNH BỘ NHỚ TOÀN BỘ (Peak Overall VRAM):          {max_peak_vram:6.2f} GiB")
+    print(f"{'='*95}")
     print(f"📁 Dữ liệu chi tiết đã lưu tại:")
     print(f"   CSV:  {csv_path}")
     print(f"   JSON: {json_path}")
     if args.drive_backup_dir:
         print(f"   Google Drive: {args.drive_backup_dir}")
-    print(f"{'='*85}\n")
+    print(f"{'='*95}\n")
 
 
 if __name__ == "__main__":
