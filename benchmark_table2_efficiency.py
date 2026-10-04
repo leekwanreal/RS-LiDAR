@@ -22,19 +22,17 @@ Tác giả: RS-LiDAR Research Team
 Ngày cập nhật: 2026-10-04
 """
 
+# Standard Library
 import os
 import sys
 import json
 import csv
 import math
 import random
+import shutil
 import argparse
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-
-# Standard Library
-import os
-import sys
 
 # Ensure UTF-8 output encoding across Windows/Linux/Colab consoles
 if hasattr(sys.stdout, "reconfigure"):
@@ -43,14 +41,6 @@ if hasattr(sys.stdout, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
     except Exception:
         pass
-
-import json
-import csv
-import math
-import random
-import argparse
-from datetime import datetime
-from typing import List, Dict, Any, Optional
 
 import numpy as np
 import torch
@@ -490,6 +480,8 @@ def main():
                         help="Disable GPU warm-up")
     parser.add_argument("--output_dir", type=str, default="results/benchmark_efficiency",
                         help="Output directory for CSV and JSON results")
+    parser.add_argument("--drive_backup_dir", type=str, default=None,
+                        help="Optional Google Drive backup directory to auto-sync CSV and JSON results in real time")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda:0", help="CUDA device identifier")
 
@@ -619,6 +611,15 @@ def main():
             writer = csv.DictWriter(f, fieldnames=csv_fields)
             writer.writerow(row)
 
+        # Tự động sao chép sang Google Drive ngay lập tức sau mỗi prompt nếu có cấu hình
+        if args.drive_backup_dir:
+            try:
+                os.makedirs(args.drive_backup_dir, exist_ok=True)
+                drive_csv_target = os.path.join(args.drive_backup_dir, csv_filename)
+                shutil.copyfile(csv_path, drive_csv_target)
+            except Exception as e_drive:
+                print(f"⚠️ Cảnh báo: Không thể đồng bộ CSV sang Google Drive ({e_drive})")
+
         print(f"\n  [Prompt #{res['prompt_idx']:03d}] T_lookahead: {res['t_lookahead']:.2f}s | T_reward: {res['t_reward']:.2f}s | T_target: {res['t_target']:.2f}s | T_total: {res['t_total']:.2f}s | Peak VRAM: {res['peak_vram_gib']:.2f} GiB")
 
     # 6. Tính Toán Thống Kê Trung Bình & Xuất Báo Cáo
@@ -646,6 +647,15 @@ def main():
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=4, ensure_ascii=False)
 
+    # Đồng bộ JSON sang Google Drive
+    if args.drive_backup_dir:
+        try:
+            drive_json_target = os.path.join(args.drive_backup_dir, json_filename)
+            shutil.copyfile(json_path, drive_json_target)
+            print(f"☁️ Đã đồng bộ toàn bộ kết quả CSV & JSON sang Google Drive tại: {args.drive_backup_dir}")
+        except Exception as e_drive:
+            print(f"⚠️ Cảnh báo: Không thể đồng bộ JSON sang Google Drive ({e_drive})")
+
     # 7. In Bảng Tổng Kết Chuẩn Bảng 9 và Bảng 2
     print(f"\n{'='*85}")
     print(f"📊 BẢNG TỔNG KẾT PHÂN RÃ THỜI GIAN (KHỚP TABLE 9 & TABLE 2 ICML 2026)")
@@ -662,6 +672,8 @@ def main():
     print(f"📁 Dữ liệu chi tiết đã lưu tại:")
     print(f"   CSV:  {csv_path}")
     print(f"   JSON: {json_path}")
+    if args.drive_backup_dir:
+        print(f"   Google Drive: {args.drive_backup_dir}")
     print(f"{'='*85}\n")
 
 
