@@ -109,18 +109,39 @@ try:
 except ImportError:
     pass
 
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
+if os.path.join(_current_dir, "fkd_diffusers") not in sys.path:
+    sys.path.insert(0, os.path.join(_current_dir, "fkd_diffusers"))
+
 try:
-    from fkd_diffusers import FKDStableDiffusion, FKDStableDiffusionXL
-    from fkd_diffusers.image_reward_utils import rm_load
-    from fks_utils import do_eval
+    from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
+    from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
 except ImportError:
     try:
-        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-        from fkd_diffusers import FKDStableDiffusion, FKDStableDiffusionXL
-        from fkd_diffusers.image_reward_utils import rm_load
-        from fks_utils import do_eval
+        from fkd_pipeline_sdxl import FKDStableDiffusionXL
+        from fkd_pipeline_sd import FKDStableDiffusion
     except ImportError:
-        pass
+        FKDStableDiffusionXL = None
+        FKDStableDiffusion = None
+
+try:
+    from fkd_diffusers.image_reward_utils import rm_load
+except ImportError:
+    try:
+        from image_reward_utils import rm_load
+    except ImportError:
+        try:
+            import ImageReward as RM
+            rm_load = RM.load
+        except ImportError:
+            rm_load = None
+
+try:
+    from fks_utils import do_eval
+except ImportError:
+    do_eval = None
 
 
 # ==============================================================================
@@ -257,7 +278,17 @@ def setup_models(setting: str, device: str = "cuda:0"):
 
     # 1. Nạp ImageReward Model
     print("🔹 Nạp ImageReward-v1.0...")
-    ir_model = rm_load("ImageReward-v1.0", device=device)
+    load_fn = rm_load
+    if load_fn is None:
+        try:
+            from fkd_diffusers.image_reward_utils import rm_load as load_fn
+        except Exception:
+            try:
+                from image_reward_utils import rm_load as load_fn
+            except Exception:
+                import ImageReward as RM
+                load_fn = RM.load
+    ir_model = load_fn("ImageReward-v1.0", device=device)
     ir_model.eval()
 
     if setting in ["sdv1.5_ddim50", "sdv1.5_ddpm100"]:
