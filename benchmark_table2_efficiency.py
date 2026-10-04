@@ -446,6 +446,7 @@ def benchmark_single_prompt(
             shift_factor = getattr(pipe_phase1.vae.config, "shift_factor", 0.0)
             shift_factor = 0.0 if shift_factor is None else shift_factor
             latents_scaled = (latents / pipe_phase1.vae.config.scaling_factor) + shift_factor
+            latents_scaled = latents_scaled.to(pipe_phase1.vae.dtype)
             decoded_chunks = []
             for v_i in range(0, latents_scaled.shape[0], 1):
                 chunk = latents_scaled[v_i : v_i + 1]
