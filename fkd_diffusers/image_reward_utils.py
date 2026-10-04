@@ -219,9 +219,6 @@ class IRSMC(nn.Module):
         if images is None or len(images) == 0:
             return []
 
-        if batch_size is None or batch_size <= 0:
-            batch_size = len(images)
-
         # Defensive normalization: ensure prompts is a list matching images length
         if isinstance(prompts, str):
             prompts = [prompts] * len(images)
@@ -247,34 +244,48 @@ class IRSMC(nn.Module):
             return_tensors="pt",
         ).to(self.device)
 
-        # image encode in chunks to prevent CUDA OOM
+        # image encode
         images_tensor = [
             self.preprocess(image).unsqueeze(0).to(self.device) for image in images
         ]
         images_tensor = torch.cat(images_tensor, 0).to(self.device)
 
-        embed_chunks = []
-        for b_i in range(0, images_tensor.shape[0], batch_size):
-            chunk = images_tensor[b_i : b_i + batch_size]
-            embed_chunks.append(self.blip.visual_encoder(chunk))
-        image_embeds = torch.cat(embed_chunks, dim=0)
+        # Single batch direct inference (true 1-batch execution as in paper)
+        if batch_size is not None and 0 < batch_size < images_tensor.shape[0]:
+            # Only chunk if caller explicitly requests a smaller batch size (e.g. low-VRAM GPU)
+            embed_chunks = []
+            for b_i in range(0, images_tensor.shape[0], batch_size):
+                chunk = images_tensor[b_i : b_i + batch_size]
+                embed_chunks.append(self.blip.visual_encoder(chunk))
+            image_embeds = torch.cat(embed_chunks, dim=0)
 
-        # text encode cross attention with image in chunks
-        txt_feature_chunks = []
-        for b_i in range(0, image_embeds.shape[0], batch_size):
-            c_embed = image_embeds[b_i : b_i + batch_size]
-            c_ids = text_input.input_ids[b_i : b_i + batch_size]
-            c_mask = text_input.attention_mask[b_i : b_i + batch_size]
-            c_atts = torch.ones(c_embed.size()[:-1], dtype=torch.long, device=self.device)
-            text_out = self.blip.text_encoder(
-                c_ids,
-                attention_mask=c_mask,
-                encoder_hidden_states=c_embed,
-                encoder_attention_mask=c_atts,
+            txt_feature_chunks = []
+            for b_i in range(0, image_embeds.shape[0], batch_size):
+                c_embed = image_embeds[b_i : b_i + batch_size]
+                c_ids = text_input.input_ids[b_i : b_i + batch_size]
+                c_mask = text_input.attention_mask[b_i : b_i + batch_size]
+                c_atts = torch.ones(c_embed.size()[:-1], dtype=torch.long, device=self.device)
+                text_out = self.blip.text_encoder(
+                    c_ids,
+                    attention_mask=c_mask,
+                    encoder_hidden_states=c_embed,
+                    encoder_attention_mask=c_atts,
+                    return_dict=True,
+                )
+                txt_feature_chunks.append(text_out.last_hidden_state[:, 0, :].float())
+            txt_features = torch.cat(txt_feature_chunks, dim=0)
+        else:
+            # 1 single batch: direct forward through visual encoder and text cross-attention
+            image_embeds = self.blip.visual_encoder(images_tensor)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long, device=self.device)
+            text_output = self.blip.text_encoder(
+                text_input.input_ids,
+                attention_mask=text_input.attention_mask,
+                encoder_hidden_states=image_embeds,
+                encoder_attention_mask=image_atts,
                 return_dict=True,
             )
-            txt_feature_chunks.append(text_out.last_hidden_state[:, 0, :].float())
-        txt_features = torch.cat(txt_feature_chunks, dim=0)
+            txt_features = text_output.last_hidden_state[:, 0, :].float()
 
         rewards = self.mlp(txt_features)
         rewards = (rewards - self.mean) / self.std
