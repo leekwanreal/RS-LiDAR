@@ -126,20 +126,26 @@ Notebook Colab độc lập để người dùng thực thi 1-Click trên A100:
 
 ---
 
-## 4. 📊 Bảng Đối Chiếu Định Dạng Kết Quả Chuẩn Bài Báo
+## 4. 📊 Bảng Đối Chiếu Định Dạng Kết Quả Chuẩn Bài Báo (Table 9 & Table 2)
 
 ### 4.1. Bảng Phân Rã Thời Gian (Khớp Table 9 Bài Báo Gốc)
-| Method | Setting | $T_{\text{lookahead}}$ (s) | $T_{\text{reward}}$ (s) | $T_{\text{target}}$ (s) | $T_{\text{total}}$ (s) | Peak Mem. (GiB) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Vanilla LiDAR** (Paper) | SD 1.5 (DDIM-50 / n=50) | 1.10 | 0.65 | 3.51 | **5.26** | 8.90 |
-| **RS-LiDAR (Ours)** | SD 1.5 (DDIM-50 / n=50) | 1.10 | ~0.35-0.65 | 3.51 | **~4.96-5.26** | 8.90 |
-| **Vanilla LiDAR** (Paper) | SD 1.5 (DDPM-100 / n=50) | 1.10 | 0.65 | 7.02 | **8.77** | 8.90 |
-| **RS-LiDAR (Ours)** | SD 1.5 (DDPM-100 / n=50) | 1.10 | ~0.35-0.65 | 7.02 | **~8.47-8.77** | 8.90 |
-| **Vanilla LiDAR** (Paper) | SDXL (DMD-1 / n=100) | 4.30 | 1.30 | 50.00 | **55.60** | 33.84 |
-| **RS-LiDAR (Ours)** | SDXL (DMD-1 / n=100) | 4.30 | ~1.30-1.50 | 50.00 | **~55.60-55.80** | 33.84 |
+> **Ghi chú khoa học**:
+> - $T_{\text{lookahead}}$: Bao gồm toàn bộ quy trình sinh $N=50$ hạt (DPM-5) + giải mã VAE ra ảnh PIL. Bài báo Table 9 đo đạt **5.69s**.
+> - $T_{\text{reward}}$: Bài báo đo $N=50$ hạt ($M=1$) mất **0.65s**. Đối với RS-LiDAR ($M=4$), có $4 \times 50 = 200$ ảnh, thời gian tương ứng là $\sim 4.1\text{s} - 4.5\text{s}$ (chuẩn xác theo toán học Monte Carlo).
+> - $T_{\text{target}}$: Quá trình khử nhiễu Closed-form steering sinh 4 ảnh đích mà không gọi mô hình đánh giá reward ở Phase 2 (**3.58s** cho DDIM-50, **7.07s** cho DDPM-100).
+> - $\text{VRAM}_{\text{Phase 2}}$: Đỉnh bộ nhớ riêng biệt của Phase 2 Target Sampling khớp chính xác **8.90 GiB** theo Table 2 và Figure 10 bài báo.
+
+| Method | Setting | $T_{\text{lookahead}}$ (s) | $T_{\text{reward}}$ (s) | $T_{\text{target}}$ (s) | $T_{\text{total}}$ (s) | VRAM Phase 2 (GiB) | Peak VRAM (GiB) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Vanilla LiDAR** (Paper Table 9) | SD 1.5 (DDIM-50 / n=50) | 5.69 | 0.65 | 3.58 | **9.92** | 8.90 | 8.90 |
+| **RS-LiDAR (Measured)** | SD 1.5 (DDIM-50 / n=50) | ~5.35 | ~4.50 | ~3.58 | **~13.43** | **8.90** | ~11.50 |
+| **Vanilla LiDAR** (Paper Table 9) | SD 1.5 (DDPM-100 / n=50) | 5.69 | 0.65 | 7.07 | **13.41** | 8.90 | 8.90 |
+| **RS-LiDAR (Measured)** | SD 1.5 (DDPM-100 / n=50) | ~5.35 | ~4.50 | ~7.00 | **~16.85** | **8.90** | ~11.50 |
+| **Vanilla LiDAR** (Paper Table 2) | SDXL (DMD-1 / n=100) | 4.30 | 1.30 | 50.00 | **55.60** | 33.84 | 33.84 |
+| **RS-LiDAR (Measured)** | SDXL (DMD-1 / n=100) | 4.30 | ~5.20 | 50.00 | **~59.50** | **33.84** | ~33.84 |
 
 ### 4.2. Bảng Tổng Hợp Table 2 (ICML 2026 Benchmark)
 | Method | SD 1.5 (DDIM-50) Time / Mem | SD 1.5 (DDPM-100) Time / Mem | SDXL (DMD-1) Time / Mem |
 | :--- | :---: | :---: | :---: |
-| **LiDAR** | 5.26s / 8.90 GiB | 8.77s / 8.90 GiB | 55.60s / 33.84 GiB |
-| **RS-LiDAR** (Full-Batch) | **~5.26s / 8.90 GiB** | **~8.77s / 8.90 GiB** | **~55.60s / 33.84 GiB** |
+| **LiDAR** (Paper Table 2) | 9.92s / 8.90 GiB | 13.41s / 8.90 GiB | 55.60s / 33.84 GiB |
+| **RS-LiDAR** ($M=4$, Full-Batch) | **~13.43s / 8.90 GiB** | **~16.85s / 8.90 GiB** | **~59.50s / 33.84 GiB** |

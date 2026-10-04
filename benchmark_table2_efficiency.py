@@ -294,15 +294,21 @@ def setup_models(setting: str, device: str = "cuda:0"):
     if setting in ["sdv1.5_ddim50", "sdv1.5_ddpm100"]:
         model_id = "runwayml/stable-diffusion-v1-5"
 
-        # Phase 1 Pipeline: DPM-Solver 5 bước (Lookahead)
-        print(f"🔹 Khởi tạo Phase 1: {model_id} (DPM-5)...")
-        pipe_phase1 = StableDiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16).to(device)
-        pipe_phase1.scheduler = DPMSolverMultistepScheduler.from_config(pipe_phase1.scheduler.config)
-
         # Phase 2 Pipeline: FKDStableDiffusion (Target Steering)
-        print(f"🔹 Khởi tạo Phase 2: FKDStableDiffusion...")
+        print(f"🔹 Khởi tạo Model SD 1.5: {model_id}...")
         pipe_phase2 = FKDStableDiffusion.from_pretrained(model_id, torch_dtype=torch.float16).to(device)
         pipe_phase2.scheduler = DDIMScheduler.from_config(pipe_phase2.scheduler.config)
+
+        # Phase 1 Pipeline: DPM-Solver 5 bước (Chia sẻ chung trọng số UNet/VAE/TextEncoder với Phase 2 để tránh nhân đôi VRAM)
+        pipe_phase1 = StableDiffusionPipeline(
+            vae=pipe_phase2.vae,
+            text_encoder=pipe_phase2.text_encoder,
+            tokenizer=pipe_phase2.tokenizer,
+            unet=pipe_phase2.unet,
+            scheduler=DPMSolverMultistepScheduler.from_config(pipe_phase2.scheduler.config),
+            safety_checker=None,
+            feature_extractor=pipe_phase2.feature_extractor,
+        )
 
         # Cấu hình siêu tham số
         lookahead_steps = 5
@@ -428,9 +434,14 @@ def benchmark_single_prompt(
                 output_type="latent"
             ).images  # Tensor (N, 4, 64, 64)
 
-            # VAE Decode toàn bộ batch 50 hạt 512x512
+            # VAE Decode theo chunk size 10 (loại bỏ cú spike 18GB VRAM không cần thiết)
             scaled_latents = latents / pipe_phase1.vae.config.scaling_factor
-            decoded_tensor = pipe_phase1.vae.decode(scaled_latents, return_dict=False)[0]  # Shape: (N, 3, 512, 512)
+            decoded_chunks = []
+            vae_chunk = 10
+            for v_i in range(0, scaled_latents.shape[0], vae_chunk):
+                chunk = scaled_latents[v_i : v_i + vae_chunk]
+                decoded_chunks.append(pipe_phase1.vae.decode(chunk, return_dict=False)[0])
+            decoded_tensor = torch.cat(decoded_chunks, dim=0)  # Shape: (N, 3, 512, 512)
 
     ev_look_end.record()
     torch.cuda.synchronize(device)
@@ -491,6 +502,13 @@ def benchmark_single_prompt(
         potential_type="closed_form",
     )
 
+    # Ghi nhận đỉnh VRAM trước Phase 2
+    torch.cuda.synchronize(device)
+    peak_vram_p1_gib = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+
+    # Reset stats trước Phase 2 để đo riêng biệt Peak VRAM của Target Sampling (khớp Table 2 & Figure 10)
+    torch.cuda.reset_peak_memory_stats(device)
+
     ev_tar_start = torch.cuda.Event(enable_timing=True)
     ev_tar_end = torch.cuda.Event(enable_timing=True)
 
@@ -511,10 +529,11 @@ def benchmark_single_prompt(
     ev_tar_end.record()
     torch.cuda.synchronize(device)
     t_target = ev_tar_start.elapsed_time(ev_tar_end) / 1000.0
+    vram_phase2_gib = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
 
     # Tổng kết số liệu của prompt
     t_total = t_lookahead + t_reward + t_target
-    peak_vram_gib = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
+    peak_vram_gib = max(peak_vram_p1_gib, vram_phase2_gib)
 
     return {
         "prompt_idx": real_idx,
@@ -523,6 +542,7 @@ def benchmark_single_prompt(
         "t_reward": t_reward,
         "t_target": t_target,
         "t_total": t_total,
+        "vram_phase2_gib": vram_phase2_gib,
         "peak_vram_gib": peak_vram_gib,
         "scores_mean": float(np.mean(smoothed_scores)),
         "scores_max": float(np.max(smoothed_scores)),
@@ -644,7 +664,7 @@ def main():
 
     csv_fields = [
         "prompt_idx", "prompt", "setting", "method", "sigma", "num_mc",
-        "t_lookahead", "t_reward", "t_target", "t_total", "peak_vram_gib"
+        "t_lookahead", "t_reward", "t_target", "t_total", "vram_phase2_gib", "peak_vram_gib"
     ]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields)
@@ -681,6 +701,7 @@ def main():
             "t_reward": f"{res['t_reward']:.3f}",
             "t_target": f"{res['t_target']:.3f}",
             "t_total": f"{res['t_total']:.3f}",
+            "vram_phase2_gib": f"{res['vram_phase2_gib']:.2f}",
             "peak_vram_gib": f"{res['peak_vram_gib']:.2f}",
         }
         with open(csv_path, "a", newline="", encoding="utf-8") as f:
@@ -696,13 +717,14 @@ def main():
             except Exception as e_drive:
                 print(f"⚠️ Cảnh báo: Không thể đồng bộ CSV sang Google Drive ({e_drive})")
 
-        print(f"\n  [Prompt #{res['prompt_idx']:03d}] T_lookahead: {res['t_lookahead']:.2f}s | T_reward: {res['t_reward']:.2f}s | T_target: {res['t_target']:.2f}s | T_total: {res['t_total']:.2f}s | Peak VRAM: {res['peak_vram_gib']:.2f} GiB")
+        print(f"\n  [Prompt #{res['prompt_idx']:03d}] T_look: {res['t_lookahead']:.2f}s | T_rew: {res['t_reward']:.2f}s | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
 
     # 6. Tính Toán Thống Kê Trung Bình & Xuất Báo Cáo
     mean_t_look = float(np.mean([r["t_lookahead"] for r in results_list]))
     mean_t_rew = float(np.mean([r["t_reward"] for r in results_list]))
     mean_t_tar = float(np.mean([r["t_target"] for r in results_list]))
     mean_t_tot = float(np.mean([r["t_total"] for r in results_list]))
+    mean_vram_p2 = float(np.mean([r["vram_phase2_gib"] for r in results_list]))
     max_peak_vram = float(np.max([r["peak_vram_gib"] for r in results_list]))
 
     summary = {
@@ -716,6 +738,7 @@ def main():
         "mean_t_reward_sec": mean_t_rew,
         "mean_t_target_sec": mean_t_tar,
         "mean_t_total_sec": mean_t_tot,
+        "mean_vram_phase2_gib": mean_vram_p2,
         "max_peak_vram_gib": max_peak_vram,
         "detailed_results": results_list,
     }
@@ -733,18 +756,25 @@ def main():
             print(f"⚠️ Cảnh báo: Không thể đồng bộ JSON sang Google Drive ({e_drive})")
 
     # 7. In Bảng Tổng Kết Chuẩn Bảng 9 và Bảng 2
-    print(f"\n{'='*85}")
-    print(f"📊 BẢNG TỔNG KẾT PHÂN RÃ THỜI GIAN (KHỚP TABLE 9 & TABLE 2 ICML 2026)")
-    print(f"{'='*85}")
+    paper_t_look = "5.69s" if "sdv1.5" in args.setting else "4.30s"
+    paper_t_rew = "0.65s" if "sdv1.5" in args.setting else "1.30s"
+    paper_t_tar = "7.07s" if "ddpm100" in args.setting else ("3.58s" if "ddim50" in args.setting else "50.00s")
+    paper_t_tot = "13.41s" if "ddpm100" in args.setting else ("9.92s" if "ddim50" in args.setting else "55.60s")
+    paper_vram = "8.90 GiB" if "sdv1.5" in args.setting else "33.84 GiB"
+
+    print(f"\n{'='*90}")
+    print(f"📊 BẢNG TỔNG KẾT PHÂN RÃ THỜI GIAN & BỘ NHỚ (KHỚP TABLE 9 & TABLE 2 ICML 2026)")
+    print(f"{'='*90}")
     print(f"Setting: {args.setting} | Method: {args.method.upper()} | Prompts: {len(results_list)} | Batch: {'Full Batch' if reward_batch_size is None else reward_batch_size}")
-    print(f"{'-'*85}")
-    print(f"• T_lookahead (Sinh N hạt Lookahead):        {mean_t_look:6.2f} giây")
-    print(f"• T_reward    (Đánh giá ImageReward M hạt):   {mean_t_rew:6.2f} giây")
-    print(f"• T_target    (Khử nhiễu 4 ảnh mục tiêu):     {mean_t_tar:6.2f} giây  (Đã dừng, không chấm Phase 2)")
-    print(f"---------------------------------------------------------------------")
-    print(f"👉 TỔNG THỜI GIAN TRUNG BÌNH (T_total / prompt): {mean_t_tot:6.2f} giây")
-    print(f"👉 ĐỈNH BỘ NHỚ VRAM (Peak Memory Allocated):     {max_peak_vram:6.2f} GiB")
-    print(f"{'='*85}")
+    print(f"{'-'*90}")
+    print(f"• T_lookahead (Sinh N hạt Lookahead):          {mean_t_look:6.2f} giây  (Bài báo DPM-5 / n=50: {paper_t_look})")
+    print(f"• T_reward    (Đánh giá ImageReward M hạt):     {mean_t_rew:6.2f} giây  (Bài báo n=50 / M=1:   {paper_t_rew})")
+    print(f"• T_target    (Khử nhiễu 4 ảnh đích Phase 2):  {mean_t_tar:6.2f} giây  (Bài báo Target:       {paper_t_tar})")
+    print(f"------------------------------------------------------------------------------------------")
+    print(f"👉 TỔNG THỜI GIAN TRUNG BÌNH (T_total / prompt):   {mean_t_tot:6.2f} giây  (Bài báo Table 9:     {paper_t_tot})")
+    print(f"👉 VRAM PHASE 2 (Target Sampling - Khớp Table 2):  {mean_vram_p2:6.2f} GiB  (Bài báo & Fig 10:     {paper_vram})")
+    print(f"👉 ĐỈNH BỘ NHỚ TOÀN BỘ (Peak Overall VRAM):        {max_peak_vram:6.2f} GiB")
+    print(f"{'='*90}")
     print(f"📁 Dữ liệu chi tiết đã lưu tại:")
     print(f"   CSV:  {csv_path}")
     print(f"   JSON: {json_path}")
