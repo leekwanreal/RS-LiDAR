@@ -443,7 +443,9 @@ def benchmark_single_prompt(
             latents = torch.cat(latents_list, dim=0)  # Tensor (N, 4, 128, 128)
 
             # VAE Decode an toàn với batch size = 1 để tránh spike VRAM trên SDXL 1024x1024
-            latents_scaled = (latents / pipe_phase1.vae.config.scaling_factor) + getattr(pipe_phase1.vae.config, "shift_factor", 0.0)
+            shift_factor = getattr(pipe_phase1.vae.config, "shift_factor", 0.0)
+            shift_factor = 0.0 if shift_factor is None else shift_factor
+            latents_scaled = (latents / pipe_phase1.vae.config.scaling_factor) + shift_factor
             decoded_chunks = []
             for v_i in range(0, latents_scaled.shape[0], 1):
                 chunk = latents_scaled[v_i : v_i + 1]
