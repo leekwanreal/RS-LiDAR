@@ -429,12 +429,18 @@ def benchmark_single_prompt(
         prompt_batch = [prompt_str] * n_p1
 
         if is_sdxl:
-            # SDXL Phase 1 Lookahead
-            latents = pipe_phase1(
-                prompt_batch,
-                num_inference_steps=config["lookahead_steps"],
-                output_type="latent"
-            ).images  # Tensor (N, 4, 128, 128)
+            # SDXL Phase 1 Lookahead (Chunked to prevent OOM)
+            chunk_size = 10
+            latents_list = []
+            for i in range(0, n_p1, chunk_size):
+                chunk_prompts = prompt_batch[i : i + chunk_size]
+                chunk_latents = pipe_phase1(
+                    chunk_prompts,
+                    num_inference_steps=config["lookahead_steps"],
+                    output_type="latent"
+                ).images
+                latents_list.append(chunk_latents)
+            latents = torch.cat(latents_list, dim=0)  # Tensor (N, 4, 128, 128)
 
             # VAE Decode an toàn với batch size = 1 để tránh spike VRAM trên SDXL 1024x1024
             latents_scaled = (latents / pipe_phase1.vae.config.scaling_factor) + getattr(pipe_phase1.vae.config, "shift_factor", 0.0)
