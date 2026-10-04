@@ -432,10 +432,13 @@ def benchmark_single_prompt(
         prompt_batch = [prompt_str] * n_p1
 
         if is_sdxl:
-            # SDXL Phase 1 Lookahead (Full Batch restored to match original LiDAR)
+            # SDXL Phase 1 Lookahead (Full Batch)
+            # Khởi tạo guidance_scale=0.0 và timesteps=[399] hệt như file gốc để tắt CFG (tránh x2 batch size)
             latents = pipe_phase1(
                 prompt_batch,
                 num_inference_steps=config["lookahead_steps"],
+                guidance_scale=0.0,
+                timesteps=[399],
                 output_type="latent"
             ).images  # Tensor (N, 4, 128, 128)
 
