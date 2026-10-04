@@ -423,27 +423,30 @@ def main(args):
         time_taken = end_time - start_time
 
         if getattr(args, "use_smoothing", False):
-            # Randomized Smoothing: Monte Carlo expectation E[R(x + eps)] over M noisy samples
-            mc_evals = {metric: [] for metric in metrics_to_compute}
+            # Randomized Smoothing: Vectorized Monte Carlo expectation E[R(x + eps)] over M noisy samples in 1 batch
+            num_mc = args.num_mc_samples
+            n_particles = decoded_tensor.shape[0]
             with torch.inference_mode():
-                for m_idx in range(args.num_mc_samples):
-                    if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                        noisy_lat = scaled_latents + torch.randn_like(scaled_latents) * args.sigma
-                        noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
+                if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                    noisy_lat_list = [scaled_latents + torch.randn_like(scaled_latents) * args.sigma for _ in range(num_mc)]
+                    noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
+                    noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
+                else:
+                    if args.sigma > 0:
+                        noisy_t_list = [(decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
+                        noisy_t_all = torch.cat(noisy_t_list, dim=0)
                     else:
-                        if args.sigma > 0:
-                            noisy_t = (decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0)
-                        else:
-                            noisy_t = decoded_tensor.clamp(-1.0, 1.0)
-                    noisy_pil = pipe.image_processor.postprocess(noisy_t, output_type="pil")
-                    eval_prompt = [prompt[0]] * len(noisy_pil)
-                    eval_m = do_eval(prompt=eval_prompt, images=noisy_pil, metrics_to_compute=metrics_to_compute)
-                    for metric in metrics_to_compute:
-                        mc_evals[metric].append(eval_m[metric]["result"])
+                        noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
+
+                noisy_pil_all = pipe.image_processor.postprocess(noisy_t_all, output_type="pil")
+                eval_prompt_all = [prompt[0]] * len(noisy_pil_all)
+                eval_all = do_eval(prompt=eval_prompt_all, images=noisy_pil_all, metrics_to_compute=metrics_to_compute)
 
             results = {}
             for metric in metrics_to_compute:
-                smoothed_scores = np.mean(mc_evals[metric], axis=0).tolist()
+                raw_scores = eval_all[metric]["result"]
+                scores_by_m = np.array(raw_scores).reshape(num_mc, n_particles)
+                smoothed_scores = np.mean(scores_by_m, axis=0).tolist()
                 scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
                 results[metric] = {
                     "result": smoothed_scores,

@@ -215,9 +215,12 @@ class IRSMC(nn.Module):
         return rewards.detach().cpu().numpy().item()
 
     @torch.inference_mode()
-    def score_batched(self, prompts, images, batch_size=4):
+    def score_batched(self, prompts, images, batch_size=None):
         if images is None or len(images) == 0:
             return []
+
+        if batch_size is None or batch_size <= 0:
+            batch_size = len(images)
 
         # Defensive normalization: ensure prompts is a list matching images length
         if isinstance(prompts, str):
