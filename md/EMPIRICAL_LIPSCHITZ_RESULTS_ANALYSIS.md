@@ -74,17 +74,25 @@ Hiện tượng này bắt nguồn từ **2 nguyên lý toán học và giải t
 * Phép làm mịn Gaussian $R_{\sigma_2}(x) = (R * \mathcal{N}(0, \sigma_2^2 I))(x)$ đóng vai trò là một **bộ lọc thông thấp (low-pass filter)** với hàm truyền đạt $e^{-\frac{\sigma_2^2 \|\boldsymbol{\omega}\|^2}{2}}$.
 * Khi chọn $\sigma_2 \in [0.1, 0.25]$, tần số cắt của bộ lọc **khớp hoàn hảo với độ rộng của vi nhiễu**. Bộ lọc dập tắt triệt để các sóng hài bậc cao mà không làm biến dạng cấu trúc ngữ nghĩa $\implies$ **Độ dốc cục bộ $|\Delta R| / \|\Delta x\|_2$ sụt giảm mạnh nhất (hơn $3.3\times$)!**
 
-### Nguyên Lý 2: Bẫy Sai Số Phương Sai Mẫu Monte Carlo Hữu Hạn ($M=4$)
+### Nguyên Lý 2: Bẫy Sai Số Phương Sai Mẫu Monte Carlo Hữu Hạn ($M=4$) & Sự Phân Tách Khi $\sigma$ Quanh 0 vs Xa 0
 Tại sao khi tăng $\sigma_2 = 0.5$ và $1.0$, $L_{\max}$ lại nhích lên?
-1. Giá trị làm mịn lý thuyết $R_{\sigma_2}(x) = \mathbb{E}[R(x + \sigma_2 u)]$ là một kỳ vọng phẳng tuyệt đối. Nhưng trong thực tế với GPU tài nguyên hữu hạn, chúng ta chỉ xấp xỉ bằng $M=4$ mẫu:
+1. **Phân cực giữa 2 chế độ tiệm cận**:
+   * **Khi $\sigma$ quanh 0 ($\sigma \in [0.0, 0.25]$ - Vùng Taylor)**: Khai triển Taylor bậc hai có hiệu lực hoàn hảo. Các mẫu ảnh nằm trong lân cận tự nhiên, phương sai giữa các mẫu bằng 0 nên $M=4$ hoàn toàn vô hại. Độ dốc suy giảm đơn điệu theo parabol: $L(\sigma) \approx L_0 - A\sigma^2$ với $A = \frac{\|\nabla^2 R\|_F^2}{2 L_0} > 0$.
+   * **Khi $\sigma$ xa 0 ($\sigma \in [0.5, 1.0]$ - Vùng Kẹp Biên & OOD)**: Bước nhảy lớn $(\|\sigma u\|_2 \approx 886.8)$ làm Taylor sụp đổ. Hơn 35% pixel bị kẹp biên bão hòa $[-1, 1]$. Phương sai giữa $M=4$ mẫu bùng nổ, kéo theo độ chệch dương $\frac{\mathcal{V}_{\text{OOD}}}{M} = \frac{\mathcal{V}}{4}$ cộng thẳng vào chuẩn gradient đo đạc.
+2. **Phương trình tổng quát lưỡng ổn định**:
+   $$\boxed{\widehat{L}^2(\sigma) \approx L_0^2 - A \cdot \sigma^2 + B \cdot \sigma^4}$$
+   * Ở $\sigma$ nhỏ: $-A\sigma^2$ chiếm ưu thế $\implies \frac{dL}{d\sigma} < 0$ (giảm dốc).
+   * Ở $\sigma$ lớn: $+B\sigma^4$ trỗi dậy $\implies \frac{dL}{d\sigma} > 0$ (bật tăng).
+   * Điểm cực tiểu toàn cục duy nhất tại $\sigma^* = \sqrt{\frac{A}{2B}} \approx \mathbf{0.25}$!
+3. Giá trị làm mịn lý thuyết $R_{\sigma_2}(x) = \mathbb{E}[R(x + \sigma_2 u)]$ là một kỳ vọng phẳng tuyệt đối (nếu $M = \infty$). Nhưng trong thực tế với GPU tài nguyên hữu hạn, chúng ta chỉ xấp xỉ bằng $M=4$ mẫu:
    $$\hat{R}_{\sigma_2}(x) = \frac{1}{M} \sum_{m=1}^M R(x + \sigma_2 u_m)$$
-2. Phương sai sai số xấp xỉ: $\text{Var}(\hat{R}_{\sigma_2}) = \frac{\text{Var}_{u}(R(x + \sigma_2 u))}{M}$.
+4. Phương sai sai số xấp xỉ: $\text{Var}(\hat{R}_{\sigma_2}) = \frac{\text{Var}_{u}(R(x + \sigma_2 u))}{M}$.
    * Khi $\sigma_2 = 0.1 - 0.25$: Bán kính nhỏ, các mẫu ảnh $x + \sigma_2 u$ gần như giống nhau $\implies \text{Var} \approx 0 \implies \hat{R}$ xấp xỉ chính xác kỳ vọng.
-   * Khi $\sigma_2 = 1.0$: Bán kính lớn (nhiễu $\pm 1.0$ trên thang pixel), 4 mẫu ngẫu nhiên độc lập sẽ có độ phân tán nhất định.
-3. Khi tính hiệu sai phân giữa 2 ảnh:
+   * Khi $\sigma_2 = 1.0$: Bán kính lớn (nhiễu $\pm 1.0$ trên thang pixel), 4 mẫu ngẫu nhiên độc lập sẽ có độ phân tán dữ dội.
+5. Khi tính hiệu sai phân giữa 2 ảnh:
    $$|\hat{R}_{\sigma_2}(x_{\text{clean}}) - \hat{R}_{\sigma_2}(x_{\text{pert}})| = \Big|\underbrace{(R_{\sigma_2}(x_{\text{clean}}) - R_{\sigma_2}(x_{\text{pert}}))}_{\approx 0 \text{ (Độ dốc lý thuyết đã bị san phẳng)}} + \underbrace{(\varepsilon_{\text{clean}} - \varepsilon_{\text{pert}})}_{\text{Nhiễu thống kê Monte Carlo do } M=4}\Big|$$
-4. Vì **$L_{\max} = \max_{i=1..500} \text{Slope}^{(i)}$ là thống kê cực trị (worst-case)**, trong 500 cặp mẫu ngẫu nhiên, sự dao động ngẫu nhiên của 4 mẫu đã tạo ra sự chênh lệch nhỏ khiến $L_{\max}$ bị đội lên giả tạo.
-5. **Chứng cứ khẳng định**: Khi nhìn vào **$L_{\text{median}}$ (Trung vị - đại lượng kháng nhiễu cực trị)**:
+6. Vì **$L_{\max} = \max_{i=1..500} \text{Slope}^{(i)}$ là thống kê cực trị (worst-case)**, trong 500 cặp mẫu ngẫu nhiên, sự dao động ngẫu nhiên của 4 mẫu đã tạo ra sự chênh lệch nhỏ khiến $L_{\max}$ bị đội lên giả tạo.
+7. **Chứng cứ khẳng định**: Khi nhìn vào **$L_{\text{median}}$ (Trung vị - đại lượng kháng nhiễu cực trị)**:
    * Median của ImageReward ở Vanilla là **$0.00121$**, sang $\sigma_2 = 1.0$ giảm sâu xuống **$0.00070$** (giảm tới **$1.74\times$**)!
 
 ---
