@@ -254,7 +254,8 @@ def main(args):
     # set output directory
     prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
     if getattr(args, "use_smoothing", False):
-        prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}"
+        crn_suffix = "_crn" if getattr(args, "use_crn", False) else ""
+        prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}{crn_suffix}"
     if getattr(args, "run_name", None):
         output_dir = os.path.join(args.output_dir, args.run_name)
     else:
@@ -431,11 +432,21 @@ def main(args):
                 with torch.inference_mode():
                     for m_idx in range(args.num_mc_samples):
                         if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                            noisy_lat = scaled_latents + torch.randn_like(scaled_latents) * args.sigma
+                            if getattr(args, "use_crn", False):
+                                noise = torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma
+                            else:
+                                noise = torch.randn_like(scaled_latents) * args.sigma
+                            noisy_lat = scaled_latents + noise
                             noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
                         else:
                             if args.sigma > 0:
-                                noisy_t = (decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0)
+                                if getattr(args, "use_crn", False):
+                                    # Common Random Numbers (CRN): sinh đúng 1 vector nhiễu (1, 3, H, W) cho prompt này
+                                    # và broadcast cộng trực tiếp vào cả batch đã decode (N, 3, H, W)
+                                    noise = torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma
+                                else:
+                                    noise = torch.randn_like(decoded_tensor) * args.sigma
+                                noisy_t = (decoded_tensor + noise).clamp(-1.0, 1.0)
                             else:
                                 noisy_t = decoded_tensor.clamp(-1.0, 1.0)
                         noisy_pil = pipe.image_processor.postprocess(noisy_t, output_type="pil")
@@ -461,12 +472,18 @@ def main(args):
                 n_particles = decoded_tensor.shape[0]
                 with torch.inference_mode():
                     if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                        noisy_lat_list = [scaled_latents + torch.randn_like(scaled_latents) * args.sigma for _ in range(num_mc)]
+                        if getattr(args, "use_crn", False):
+                            noisy_lat_list = [scaled_latents + torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma for _ in range(num_mc)]
+                        else:
+                            noisy_lat_list = [scaled_latents + torch.randn_like(scaled_latents) * args.sigma for _ in range(num_mc)]
                         noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
                         noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
                     else:
                         if args.sigma > 0:
-                            noisy_t_list = [(decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
+                            if getattr(args, "use_crn", False):
+                                noisy_t_list = [(decoded_tensor + torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
+                            else:
+                                noisy_t_list = [(decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
                             noisy_t_all = torch.cat(noisy_t_list, dim=0)
                         else:
                             noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
@@ -506,6 +523,7 @@ def main(args):
                 "num_mc_samples": args.num_mc_samples,
                 "domain": args.smoothing_domain,
                 "mode": "loop" if use_loop else "vectorized",
+                "use_crn": getattr(args, "use_crn", False),
                 "reused_latents_from": reused_latent_file,
             }
 
@@ -616,6 +634,7 @@ def get_args():
     parser.add_argument("--loop_smoothing", type=str2bool, nargs="?", const=True, default=None, help="Explicitly enable/disable loop-based smoothing over M iterations (default: True, overrides --vectorized_smoothing if set)")
     parser.add_argument("--reuse_latents_from", type=str, default="100_50_5", help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
     parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
+    parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers (CRN): broadcast a single noise sample across all N particles within each prompt to eliminate inter-particle ranking variance")
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
     args = parser.parse_args()
 
