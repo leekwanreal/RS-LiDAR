@@ -101,22 +101,6 @@ def parse_prompt_indices(indices_arg):
         return list(range(int(parts[0]), int(parts[1]) + 1))
     return [int(x.strip()) for x in indices_str.split(",") if x.strip().isdigit()]
 
-
-def safe_postprocess(image_processor, tensor, output_type="pil", chunk_size=25):
-    """
-    Postprocess tensors to PIL with chunking to prevent CUDA OOM spikes when batch dimension is large (e.g. N=100 for SDXL).
-    """
-    if tensor is None:
-        return None
-    if len(tensor) <= chunk_size:
-        return image_processor.postprocess(tensor, output_type=output_type)
-    res = []
-    for i in range(0, len(tensor), chunk_size):
-        chunk = tensor[i : i + chunk_size]
-        res.extend(image_processor.postprocess(chunk, output_type=output_type))
-    return res
-
-
 # load prompt data
 def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
     if prompt_path.endswith(".json"):
@@ -424,14 +408,14 @@ def main(args):
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
                 decoded_tensor = torch.cat(decoded_chunks, dim=0)
                 if args.save_individual_images or not getattr(args, "use_smoothing", False):
-                    clean_images = safe_postprocess(pipe.image_processor, decoded_tensor, output_type="pil")
+                    clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
                 else:
                     clean_images = None
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
                 decoded_tensor = pipe.vae.decode(scaled_latents, return_dict=False)[0]
                 if args.save_individual_images or not getattr(args, "use_smoothing", False):
-                    clean_images = safe_postprocess(pipe.image_processor, decoded_tensor, output_type="pil")
+                    clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
                 else:
                     clean_images = None
 
@@ -440,61 +424,12 @@ def main(args):
 
         if getattr(args, "use_smoothing", False):
             # Randomized Smoothing: Monte Carlo expectation E[R(x + eps)] over M noisy samples
-            num_mc = args.num_mc_samples
-            n_particles = decoded_tensor.shape[0] if decoded_tensor is not None else latents.shape[0]
             use_loop = getattr(args, "use_smoothing_loop", True)
 
-            results = {}
-            executed = False
-
-            if not use_loop:
-                # Vectorized Monte Carlo expectation over M*N noisy samples in 1 batch
-                try:
-                    with torch.inference_mode():
-                        if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                            noisy_lat_list = [scaled_latents + torch.randn_like(scaled_latents) * args.sigma for _ in range(num_mc)]
-                            noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
-                            noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
-                        else:
-                            if args.sigma > 0:
-                                noisy_t_list = [(decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
-                                noisy_t_all = torch.cat(noisy_t_list, dim=0)
-                            else:
-                                noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
-
-                        noisy_pil_all = safe_postprocess(pipe.image_processor, noisy_t_all, output_type="pil")
-                        del noisy_t_all
-
-                        eval_prompt_all = [prompt[0]] * len(noisy_pil_all)
-                        eval_all = do_eval(prompt=eval_prompt_all, images=noisy_pil_all, metrics_to_compute=metrics_to_compute)
-                        del noisy_pil_all
-
-                    for metric in metrics_to_compute:
-                        raw_scores = eval_all[metric]["result"]
-                        scores_by_m = np.array(raw_scores).reshape(num_mc, n_particles)
-                        smoothed_scores = np.mean(scores_by_m, axis=0).tolist()
-                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                        results[metric] = {
-                            "result": smoothed_scores,
-                            "mean": scores_arr.mean().item(),
-                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                            "max": scores_arr.max().item(),
-                            "min": scores_arr.min().item(),
-                        }
-                    executed = True
-                except (torch.cuda.OutOfMemoryError, RuntimeError) as oom_e:
-                    if "out of memory" in str(oom_e).lower() or isinstance(oom_e, torch.cuda.OutOfMemoryError):
-                        print(f"⚠️ [VRAM Safeguard] Vectorized smoothing encountered CUDA OOM ({oom_e}). Clearing cache and falling back to loop-based smoothing over M={num_mc}...")
-                        torch.cuda.empty_cache()
-                        use_loop = True
-                    else:
-                        raise oom_e
-
-            if not executed:
-                # Loop-based execution (vòng lặp qua M mẫu Monte Carlo để bảo toàn VRAM, chống OOM)
+            if use_loop:
                 mc_evals = {metric: [] for metric in metrics_to_compute}
                 with torch.inference_mode():
-                    for m_idx in range(num_mc):
+                    for m_idx in range(args.num_mc_samples):
                         if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
                             noisy_lat = scaled_latents + torch.randn_like(scaled_latents) * args.sigma
                             noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
@@ -503,17 +438,13 @@ def main(args):
                                 noisy_t = (decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0)
                             else:
                                 noisy_t = decoded_tensor.clamp(-1.0, 1.0)
-
-                        noisy_pil = safe_postprocess(pipe.image_processor, noisy_t, output_type="pil")
-                        del noisy_t
-
+                        noisy_pil = pipe.image_processor.postprocess(noisy_t, output_type="pil")
                         eval_prompt = [prompt[0]] * len(noisy_pil)
                         eval_m = do_eval(prompt=eval_prompt, images=noisy_pil, metrics_to_compute=metrics_to_compute)
-                        del noisy_pil
-
                         for metric in metrics_to_compute:
                             mc_evals[metric].append(eval_m[metric]["result"])
 
+                results = {}
                 for metric in metrics_to_compute:
                     smoothed_scores = np.mean(mc_evals[metric], axis=0).tolist()
                     scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -524,8 +455,40 @@ def main(args):
                         "max": scores_arr.max().item(),
                         "min": scores_arr.min().item(),
                     }
+                images = clean_images
+            else:
+                num_mc = args.num_mc_samples
+                n_particles = decoded_tensor.shape[0]
+                with torch.inference_mode():
+                    if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                        noisy_lat_list = [scaled_latents + torch.randn_like(scaled_latents) * args.sigma for _ in range(num_mc)]
+                        noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
+                        noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
+                    else:
+                        if args.sigma > 0:
+                            noisy_t_list = [(decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
+                            noisy_t_all = torch.cat(noisy_t_list, dim=0)
+                        else:
+                            noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
 
-            images = clean_images
+                    noisy_pil_all = pipe.image_processor.postprocess(noisy_t_all, output_type="pil")
+                    eval_prompt_all = [prompt[0]] * len(noisy_pil_all)
+                    eval_all = do_eval(prompt=eval_prompt_all, images=noisy_pil_all, metrics_to_compute=metrics_to_compute)
+
+                results = {}
+                for metric in metrics_to_compute:
+                    raw_scores = eval_all[metric]["result"]
+                    scores_by_m = np.array(raw_scores).reshape(num_mc, n_particles)
+                    smoothed_scores = np.mean(scores_by_m, axis=0).tolist()
+                    scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
+                    results[metric] = {
+                        "result": smoothed_scores,
+                        "mean": scores_arr.mean().item(),
+                        "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
+                        "max": scores_arr.max().item(),
+                        "min": scores_arr.min().item(),
+                    }
+                images = clean_images
         else:
             images = clean_images
             eval_prompt = [prompt[0]] * len(images)
