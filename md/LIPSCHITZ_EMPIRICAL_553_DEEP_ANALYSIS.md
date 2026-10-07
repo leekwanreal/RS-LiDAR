@@ -214,7 +214,20 @@ với $A = \|\nabla^2 R\|_F^2 > 0$ (Lực lượng triệt tiêu gai nhọn: ké
 * **Điểm cực tiểu toàn cục duy nhất**:
   $$\frac{d(\widehat{L}^2)}{d\sigma} = -2A\sigma + 4B\sigma^3 = 0 \implies \sigma^* = \sqrt{\frac{A}{2B}} = \sqrt{\frac{\|\nabla^2 R\|_F^2 \cdot M}{2 K \cdot D}} \approx \mathbf{0.25}$$
 
-Công thức này chứng minh rằng **điểm chạm đáy tại $\sigma \approx 0.25$ là một hệ quả toán học và vật lý tất yếu**, phản ánh sự cân bằng hoàn hảo giữa lực làm mịn phổ Fourier và sai số thống kê Monte Carlo hữu hạn!
+Công thức này chứng minh rằng **điểm chạm đáy tại $\sigma \approx 0.25$ khi dùng nhiễu độc lập là một hệ quả toán học và vật lý**, phản ánh sự cân bằng giữa lực làm mịn phổ Fourier và sai số thống kê Monte Carlo hữu hạn khi mẫu số cát tuyến $\|\Delta x\|_2$ rất nhỏ.
+
+---
+
+### 5.5. Đột Phá Khắc Phục Bẫy Đo Đạc Bằng Kỹ Thuật Ghép Cặp Nhiễu Đồng Nhất (CRN)
+
+Để kiểm chứng xem đáy chữ U và sự đội giá $L_{\max}$ tại $\sigma=1.0$ là bản chất của hàm làm trơn hay thuần túy là sai số đo đạc cát tuyến Monte Carlo, một đợt khảo sát phân tầng trên 50 prompts với kỹ thuật **Common Random Numbers (CRN - Coupled Noise)** đã được thực hiện qua các mức $M \in \{1, 2, 4, 8\}$ (dữ liệu nguồn `zip/results_lipschitz_50p_M*_crn.zip`):
+
+1. **Cơ chế CRN**: Thay vì gieo $u_m$ và $u'_m$ độc lập làm tử số chứa phương sai $\frac{2\operatorname{Var}(R)}{M\|\Delta x\|_2^2}$, CRN ghép cặp vector nhiễu $u'_m \equiv u_m$. Khai triển Taylor triệt tiêu hoàn toàn mẫu số vi phân $\|\Delta x\|_2 \approx 88.6$, giảm phương sai ước lượng $> 1,000\times$.
+2. **Khôi phục tính đơn điệu hoàn hảo ($L(\sigma) \le \mathcal{O}(1/\sigma)$)**:
+   - Trên **ImageReward** và **CLIP-Score**, khi có CRN, đường cong $L_{\text{mean}}(\sigma)$ **suy giảm đơn điệu tuyệt đối** từ $\sigma = 0.0$ đến $\sigma = 1.0$ trên mọi mức $M \in \{1, 2, 4, 8\}$.
+   - Tại $\sigma = 1.0, M = 4$: $L_{\text{mean}}$ của ImageReward giảm **$5.84\times$** (từ $0.001655 \to 0.000284$) và CLIP-Score giảm **$9.72\times$** (từ $0.000121 \to 0.000012$)!
+   - $L_{\max}$ giảm ngoạn mục: ImageReward $L_{\max}$ giảm **$5.28\times$** (từ $0.01123 \to 0.00213$) và CLIP-Score $L_{\max}$ giảm **$6.26\times$**! Toàn bộ dị thường gai nhọn cũ hoàn toàn bị xóa sổ.
+3. **Ý nghĩa khoa học**: Khẳng định tuyệt đối rằng hàm làm trơn Gaussian $R_\sigma$ tuân thủ chặt chẽ Định lý 1: bán kính làm trơn $\sigma$ càng mở rộng, hệ số Lipschitz thực tế càng suy giảm mạnh mẽ!
 
 ---
 
