@@ -223,10 +223,12 @@ def load_stratified_prompts(prompt_path="prompt_files/geneval_50_stratified.json
         if max_prompts > 100 or max_prompts <= 0:
             larger_candidates = [
                 "prompt_files/geneval_metadata.jsonl",
+                "prompt_files/geneval_100_stratified.jsonl",
                 "prompt_files/geneval_100_representative.jsonl"
             ]
         else:
             larger_candidates = [
+                "prompt_files/geneval_100_stratified.jsonl",
                 "prompt_files/geneval_100_representative.jsonl",
                 "prompt_files/geneval_metadata.jsonl"
             ]
@@ -516,36 +518,33 @@ def run_empirical_lipschitz_test(
                 }
                 continue
 
-            # A. Monte Carlo M mẫu cho ẢNH SẠCH x_clean
+            # Monte Carlo M mẫu cho x_clean và x_pert
+            # Sử dụng Common Random Numbers (CRN / Coupled Noise) nếu args.use_crn = True để triệt tiêu phương sai Monte Carlo
+            use_crn = getattr(args, "use_crn", True)
             mc_clean_accum = {m: np.zeros(args.num_particles) for m in vanilla_clean_rewards if vanilla_clean_rewards[m] is not None}
             mc_clean_counts = {m: 0 for m in mc_clean_accum}
-
-            for m_iter in range(args.num_mc_samples):
-                # Tạo ảnh nhiễu Monte Carlo từ tensor x_clean
-                u_m = torch.randn_like(clean_tensors) * s2
-                noisy_clean_t = (clean_tensors + u_m).clamp(-1.0, 1.0)
-                noisy_clean_pils = pipe.image_processor.postprocess(noisy_clean_t, output_type="pil")
-
-                r_m = evaluate_reward_all_models(
-                    noisy_clean_pils, prompt, ir_model, args.use_imagereward, args.use_clip, args.use_hps, args.use_aesthetic, device=device
-                )
-                for model_k, scores in r_m.items():
-                    if scores is not None and model_k in mc_clean_accum:
-                        mc_clean_accum[model_k] += scores
-                        mc_clean_counts[model_k] += 1
-
-            rs_clean_scores = {m: (mc_clean_accum[m] / max(1, mc_clean_counts[m])).tolist() for m in mc_clean_accum}
-
-            # B. Monte Carlo M mẫu cho ẢNH BIẾN DẠNG x_pert (Yêu cầu cốt lõi của người dùng!)
             mc_pert_accum = {m: np.zeros(args.num_particles) for m in vanilla_pert_rewards if vanilla_pert_rewards[m] is not None}
             mc_pert_counts = {m: 0 for m in mc_pert_accum}
 
             for m_iter in range(args.num_mc_samples):
-                # Tạo ảnh nhiễu Monte Carlo từ tensor x_pert
-                u_prime_m = torch.randn_like(pert_tensors) * s2
+                # Tạo vector nhiễu u_m
+                u_m = torch.randn_like(clean_tensors) * s2
+
+                # 1. Ảnh sạch x_clean với nhiễu u_m
+                noisy_clean_t = (clean_tensors + u_m).clamp(-1.0, 1.0)
+                noisy_clean_pils = pipe.image_processor.postprocess(noisy_clean_t, output_type="pil")
+                r_m_clean = evaluate_reward_all_models(
+                    noisy_clean_pils, prompt, ir_model, args.use_imagereward, args.use_clip, args.use_hps, args.use_aesthetic, device=device
+                )
+                for model_k, scores in r_m_clean.items():
+                    if scores is not None and model_k in mc_clean_accum:
+                        mc_clean_accum[model_k] += scores
+                        mc_clean_counts[model_k] += 1
+
+                # 2. Ảnh biến dạng x_pert: dùng chung u_m (CRN) hoặc sinh độc lập u'_m (uncoupled)
+                u_prime_m = u_m if use_crn else (torch.randn_like(pert_tensors) * s2)
                 noisy_pert_t = (pert_tensors + u_prime_m).clamp(-1.0, 1.0)
                 noisy_pert_pils = pipe.image_processor.postprocess(noisy_pert_t, output_type="pil")
-
                 r_m_pert = evaluate_reward_all_models(
                     noisy_pert_pils, prompt, ir_model, args.use_imagereward, args.use_clip, args.use_hps, args.use_aesthetic, device=device
                 )
@@ -554,6 +553,7 @@ def run_empirical_lipschitz_test(
                         mc_pert_accum[model_k] += scores
                         mc_pert_counts[model_k] += 1
 
+            rs_clean_scores = {m: (mc_clean_accum[m] / max(1, mc_clean_counts[m])).tolist() for m in mc_clean_accum}
             rs_pert_scores = {m: (mc_pert_accum[m] / max(1, mc_pert_counts[m])).tolist() for m in mc_pert_accum}
 
             rs_rewards_by_sigma[s2] = {
@@ -1132,6 +1132,8 @@ def main():
     parser.add_argument("--sigma2", type=float, default=1.0, help="Bán kính làm mịn RS-LiDAR chính (Sweet Spot)")
     parser.add_argument("--sigma2_list", type=str, default="0.0,0.1,0.25,0.5,1.0", help="Danh sách sigma2 quét khảo sát (phân tách dấu phẩy)")
     parser.add_argument("--num_mc_samples", "-M", type=int, default=4, help="Số mẫu Monte Carlo tính kỳ vọng")
+    parser.add_argument("--use_crn", action="store_true", default=True, help="Sử dụng Common Random Numbers (Coupled Noise) giữa x_clean và x_pert để triệt tiêu phương sai Monte Carlo")
+    parser.add_argument("--no_crn", action="store_false", dest="use_crn", help="Tắt CRN, dùng nhiễu độc lập giữa x_clean và x_pert")
 
     # Lựa chọn Reward Models (hỗ trợ cả cờ --use_* và các cờ alias --ImageReward, --ClipScore, --HPS, --GenEval)
     parser.add_argument("--reward_models", type=str, default=None, help="Danh sách reward models (vd: 'ImageReward,CLIP-Score,HPS')")
