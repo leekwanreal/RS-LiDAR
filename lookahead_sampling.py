@@ -346,13 +346,14 @@ def main(args):
                 candidates.append(
                     os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{real_idx:0>5}", "samples", "latent.pt")
                 )
-                if args.num_particles <= 50:
+                if args.num_inference_steps == 5:
+                    if args.num_particles <= 50:
+                        candidates.append(
+                            os.path.join("Lookahead_samples", "100_50_5", f"{real_idx:0>5}", "samples", "latent.pt")
+                        )
                     candidates.append(
-                        os.path.join("Lookahead_samples", "100_50_5", f"{real_idx:0>5}", "samples", "latent.pt")
+                        os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{real_idx:0>5}", "samples", "latent.pt")
                     )
-                candidates.append(
-                    os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{real_idx:0>5}", "samples", "latent.pt")
-                )
             for c in candidates:
                 if os.path.exists(c):
                     try:
@@ -632,7 +633,7 @@ def get_args():
     parser.add_argument("--smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
     parser.add_argument("--vectorized_smoothing", type=str2bool, nargs="?", const=True, default=False, help="Compute smoothing over all M*N samples in a single batch (True) or loop over M MC iterations (False, default to save VRAM and avoid OOM)")
     parser.add_argument("--loop_smoothing", type=str2bool, nargs="?", const=True, default=None, help="Explicitly enable/disable loop-based smoothing over M iterations (default: True, overrides --vectorized_smoothing if set)")
-    parser.add_argument("--reuse_latents_from", type=str, default="100_50_5", help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
+    parser.add_argument("--reuse_latents_from", type=str, default=None, help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
     parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
     parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers (CRN): broadcast a single noise sample across all N particles within each prompt to eliminate inter-particle ranking variance")
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
