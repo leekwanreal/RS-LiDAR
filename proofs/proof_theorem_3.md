@@ -68,17 +68,55 @@ $\implies$ Độ dốc Lipschitz sụt giảm theo quy luật bậc hai $-\mathc
 
 ### PHẦN 3: CHỨNG MINH BỔ ĐỀ REMARK 1 (ĐỘ CHỆCH DƯƠNG MONTE CARLO HỮU HẠN)
 
-Xét ước lượng trung bình mẫu từ $M$ vector ngẫu nhiên i.i.d. $\mathbf{u}_1, \dots, \mathbf{u}_M \sim \mathcal{N}(0, \mathbf{I}_D)$:
-$$\widehat{\nabla} R_{\sigma, M}(\mathbf{x}) \triangleq \frac{1}{M} \sum_{m=1}^M \mathbf{g}_m, \quad \text{với } \mathbf{g}_m \triangleq \nabla R(\mathbf{x} + \sigma \mathbf{u}_m)$$
+Xét ước lượng trung bình mẫu của gradient từ $M$ vector ngẫu nhiên độc lập cùng phân phối (i.i.d.) $\mathbf{u}_1, \dots, \mathbf{u}_M \sim \mathcal{N}(0, \mathbf{I}_D)$:
+$$\widehat{\nabla} R_{\sigma, M}(\mathbf{x}) \triangleq \frac{1}{M} \sum_{m=1}^M \mathbf{g}_m, \quad \text{với } \mathbf{g}_m \triangleq \nabla R(\mathbf{x} + \sigma \mathbf{u}_m) \in \mathbb{R}^D$$
 
-1. Do các mẫu độc lập: $\mathbb{E}[\mathbf{g}_m] = \boldsymbol{\mu} = \nabla R_\sigma(\mathbf{x})$ và $\operatorname{Cov}(\mathbf{g}_m) = \boldsymbol{\Sigma}$ với mọi $m$.
-2. Với $i \neq j$, tính độc lập kéo theo $\mathbb{E}[(\mathbf{g}_i - \boldsymbol{\mu})^\top (\mathbf{g}_j - \boldsymbol{\mu})] = 0$.
-3. Khai triển phương sai của trung bình mẫu:
-   $$\mathbb{E}\left[ \|\widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu}\|_2^2 \right] = \frac{1}{M^2} \sum_{m=1}^M \mathbb{E}\left[ \|\mathbf{g}_m - \boldsymbol{\mu}\|_2^2 \right] = \frac{1}{M^2} \cdot M \cdot \operatorname{tr}(\boldsymbol{\Sigma}) = \frac{\mathcal{V}(\sigma, \mathbf{x})}{M}$$
-4. Mặt khác, theo hằng đẳng thức phân rã kỳ vọng:
-   $$\mathbb{E}\left[ \|\widehat{\nabla} R_{\sigma, M}(\mathbf{x})\|_2^2 \right] = \|\boldsymbol{\mu}\|_2^2 + \mathbb{E}\left[ \|\widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu}\|_2^2 \right] = \|\nabla R_\sigma(\mathbf{x})\|_2^2 + \frac{\mathcal{V}(\sigma, \mathbf{x})}{M}$$
+Kỳ vọng thực sự của gradient làm trơn là $\boldsymbol{\mu} \triangleq \mathbb{E}[\mathbf{g}_m] = \nabla R_\sigma(\mathbf{x})$.
 
-Bổ đề Remark 1 được chứng minh chính xác 100%. $\blacksquare$
+#### Bước 1: Biểu diễn vector sai số tâm hóa (Centered Error Vectors)
+Đặt vector sai số của từng mẫu đơn lẻ quanh kỳ vọng là:
+$$\mathbf{z}_m \triangleq \mathbf{g}_m - \boldsymbol{\mu} \in \mathbb{R}^D \implies \mathbb{E}[\mathbf{z}_m] = \mathbf{0}$$
+
+Ma trận hiệp phương sai của mỗi mẫu $\mathbf{g}_m$ là:
+$$\boldsymbol{\Sigma} \triangleq \operatorname{Cov}(\mathbf{g}_m) = \mathbb{E}[\mathbf{z}_m \mathbf{z}_m^\top] \in \mathbb{R}^{D \times D}$$
+
+Theo Phần 1 (Bước 2), chuẩn bình phương kỳ vọng của sai số đơn lẻ chính là độ biến thiên phương sai $\mathcal{V}(\sigma, \mathbf{x})$:
+$$\mathbb{E}[\|\mathbf{z}_m\|_2^2] = \mathbb{E}\left[ \operatorname{tr}(\mathbf{z}_m \mathbf{z}_m^\top) \right] = \operatorname{tr}(\boldsymbol{\Sigma}) = \mathcal{V}(\sigma, \mathbf{x}) \quad \forall m \in \{1, \dots, M\}$$
+
+#### Bước 2: Biểu diễn sai số của trung bình mẫu
+Sai số giữa ước lượng Monte Carlo $\widehat{\nabla} R_{\sigma, M}(\mathbf{x})$ và gradient lý thuyết $\boldsymbol{\mu}$:
+$$\widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} = \left( \frac{1}{M} \sum_{m=1}^M \mathbf{g}_m \right) - \boldsymbol{\mu} = \frac{1}{M} \sum_{m=1}^M (\mathbf{g}_m - \boldsymbol{\mu}) = \frac{1}{M} \sum_{m=1}^M \mathbf{z}_m$$
+
+#### Bước 3: Khai triển chuẩn bình phương Euclidean và triệt tiêu số hạng chéo (Cross-Terms)
+Lấy chuẩn bình phương Euclidean hai vế:
+$$\left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\|_2^2 = \left\| \frac{1}{M} \sum_{m=1}^M \mathbf{z}_m \right\|_2^2 = \frac{1}{M^2} \left\| \sum_{m=1}^M \mathbf{z}_m \right\|_2^2$$
+
+Khai triển tích vô hướng của tổng các vector:
+$$\left\| \sum_{m=1}^M \mathbf{z}_m \right\|_2^2 = \left\langle \sum_{i=1}^M \mathbf{z}_i, \sum_{j=1}^M \mathbf{z}_j \right\rangle = \sum_{i=1}^M \sum_{j=1}^M \langle \mathbf{z}_i, \mathbf{z}_j \rangle = \sum_{m=1}^M \|\mathbf{z}_m\|_2^2 + \sum_{i \ne j} \langle \mathbf{z}_i, \mathbf{z}_j \rangle$$
+
+Lấy kỳ vọng toán học $\mathbb{E}[\cdot]$ hai vế:
+$$\mathbb{E}\left[ \left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\|_2^2 \right] = \frac{1}{M^2} \left( \sum_{m=1}^M \mathbb{E}\left[ \|\mathbf{z}_m\|_2^2 \right] + \sum_{i \ne j} \mathbb{E}\left[ \langle \mathbf{z}_i, \mathbf{z}_j \rangle \right] \right)$$
+
+Do các vector nhiễu $\mathbf{u}_i$ và $\mathbf{u}_j$ được sinh độc lập i.i.d. khi $i \ne j$, hai biến ngẫu nhiên $\mathbf{z}_i$ và $\mathbf{z}_j$ độc lập thống kê:
+$$\mathbb{E}\left[ \langle \mathbf{z}_i, \mathbf{z}_j \rangle \right] = \langle \mathbb{E}[\mathbf{z}_i], \mathbb{E}[\mathbf{z}_j] \rangle = \langle \mathbf{0}, \mathbf{0} \rangle = 0 \quad (\forall i \ne j)$$
+
+Toàn bộ các số hạng tích chéo (cross-terms) **bằng 0 và triệt tiêu hoàn toàn**! Ta thu được:
+$$\boxed{\mathbb{E}\left[ \left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\|_2^2 \right] = \frac{1}{M^2} \sum_{m=1}^M \mathbb{E}\left[ \|\mathbf{z}_m\|_2^2 \right] = \frac{1}{M^2} \sum_{m=1}^M \mathcal{V}(\sigma, \mathbf{x}) = \frac{1}{M^2} \cdot M \cdot \mathcal{V}(\sigma, \mathbf{x}) = \frac{\mathcal{V}(\sigma, \mathbf{x})}{M}}$$
+
+#### Bước 4: Hằng đẳng thức phân rã Pythagoras (Bias-Variance Decomposition)
+Để tìm kỳ vọng năng lượng ước lượng $\mathbb{E}\left[ \|\widehat{\nabla} R_{\sigma, M}(\mathbf{x})\|_2^2 \right]$, ta phân tích vector:
+$$\widehat{\nabla} R_{\sigma, M}(\mathbf{x}) = \boldsymbol{\mu} + \left( \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right)$$
+
+Khai triển chuẩn bình phương:
+$$\left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) \right\|_2^2 = \|\boldsymbol{\mu}\|_2^2 + 2 \left\langle \boldsymbol{\mu}, \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\rangle + \left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\|_2^2$$
+
+Lấy kỳ vọng toán học hai vế:
+* Vì $\mathbb{E}\left[ \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right] = \boldsymbol{\mu} - \boldsymbol{\mu} = \mathbf{0}$, số hạng tích vô hướng trung gian triệt tiêu:
+  $$\mathbb{E}\left[ 2 \left\langle \boldsymbol{\mu}, \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\rangle \right] = 2 \left\langle \boldsymbol{\mu}, \mathbb{E}\left[ \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right] \right\rangle = 0$$
+* Thay kết quả Bước 3 vào:
+  $$\boxed{\mathbb{E}\left[ \left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) \right\|_2^2 \right] = \|\boldsymbol{\mu}\|_2^2 + \mathbb{E}\left[ \left\| \widehat{\nabla} R_{\sigma, M}(\mathbf{x}) - \boldsymbol{\mu} \right\|_2^2 \right] = \|\nabla R_\sigma(\mathbf{x})\|_2^2 + \frac{\mathcal{V}(\sigma, \mathbf{x})}{M}}$$
+
+Bổ đề Remark 1 được chứng minh hoàn tất với đầy đủ từng bước giải tích. $\blacksquare$
 
 ---
 
