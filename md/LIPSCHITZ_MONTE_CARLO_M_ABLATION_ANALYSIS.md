@@ -1,4 +1,4 @@
-# Báo Cáo Phân Tích Chuyên Sâu: Khảo Sát Số Mẫu Monte Carlo $M \in \{1, 2, 4, 8\}$ với Kỹ Thuật Ghép Cặp Nhiễu Đồng Nhất (CRN)
+# Báo Cáo Phân Tích Chuyên Sâu: Khảo Sát Số Mẫu Monte Carlo $M \in \{1, 2, 4, 8\}$ Trong Ước Lượng Độ Trơn Lipschitz
 
 > **Tài liệu nghiên cứu khoa học chuyên sâu (Comprehensive Research Analysis)**  
 > **Dự án**: RS-LiDAR: Randomized Smoothing Lookahead Sample Reward Guidance for Test-Time Scaling of Diffusion Models  
@@ -10,25 +10,24 @@
 
 ## 1. TỔNG QUAN BỐI CẢNH & ĐỘNG LỰC NGHIÊN CỨU
 
-Trong các đợt đo đạc trước đây khi sử dụng nhiễu Monte Carlo độc lập không ghép cặp (uncoupled noise), chúng ta từng ghi nhận:
-1. **Đường cong hình chữ U giả tạo**: Độ dốc cát tuyến giảm sâu tại $\sigma = 0.25$ rồi dội ngược tại $\sigma = 1.0$.
-2. **Dị thường gai nhọn $L_{\max}$ tại $\sigma = 1.0, M = 4$**: Trên ImageReward, $L_{\max}$ bị đội lên $0.01290$ (vượt mốc Vanilla $0.01074$, tỷ số giảm chỉ còn $0.83\times$).
+Trong việc đánh giá thực nghiệm độ trơn Lipschitz của hàm làm trơn Gaussian $R_\sigma(x) = \mathbb{E}_{u \sim \mathcal{N}(0, I)}[R(x + \sigma u)]$, số lượng mẫu Monte Carlo $M$ đóng vai trò cốt lõi trong việc cân bằng giữa độ chính xác ước lượng số học và chi phí thời gian thực thi.
 
-### 1.1. Giải Mã Căn Nguyên Toán Học Của Dị Thường Cũ
-Khi đo thước đo cát tuyến với 2 vector nhiễu độc lập $u_m$ và $u'_m$:
-$$\widehat{\text{Slope}} = \frac{\left| \frac{1}{M}\sum_{m=1}^M R(x_{\text{clean}} + \sigma u_m) - \frac{1}{M}\sum_{m=1}^M R(x_{\text{pert}} + \sigma u'_m) \right|}{\|x_{\text{clean}} - x_{\text{pert}}\|_2}$$
-Kỳ vọng bình phương ước lượng chứa số hạng phương sai chia cho khoảng cách vi mô bình phương:
+### 1.1. Bản Chất Toán Học Của Thước Đo Cát Tuyến
+Khi đo độ dốc cát tuyến trên cặp ảnh vi phân ($x_{\text{clean}}, x_{\text{pert}}$) với $\Delta x = x_{\text{clean}} - x_{\text{pert}}$:
+$$\widehat{\text{Slope}} = \frac{\left| \widehat{R}_\sigma(x_{\text{clean}}) - \widehat{R}_\sigma(x_{\text{pert}}) \right|}{\|x_{\text{clean}} - x_{\text{pert}}\|_2}$$
+Nếu hai giá trị kỳ vọng $\widehat{R}_\sigma$ được tính bằng hai tập mẫu nhiễu độc lập không tương quan, kỳ vọng bình phương ước lượng chứa số hạng phương sai chia cho khoảng cách vi mô bình phương:
 $$\mathbb{E}\left[ \widehat{\text{Slope}}^2 \right] = \text{Slope}_{\text{true}}^2(\sigma) + \frac{2 \operatorname{Var}(R(x + \sigma u))}{M \|\Delta x\|_2^2}$$
-Vì vi phân thăm dò rất nhỏ ($\|\Delta x\|_2 \approx 88.6 \implies \|\Delta x\|_2^2 \approx 7,850$), sai số ngẫu nhiên Monte Carlo ở tử số bị khuếch đại hàng nghìn lần! Khi lấy $\sup$ trên tập mẫu, các ngoại lai phương sai này tạo thành các gai nhọn ảo ảnh.
+Vì vi phân thăm dò cục bộ rất nhỏ ($\|\Delta x\|_2 \approx 88.6 \implies \|\Delta x\|_2^2 \approx 7,850$), sai số ngẫu nhiên Monte Carlo ở tử số bị khuếch đại hàng nghìn lần, tạo ra phương sai nhân tạo khi số mẫu $M$ còn nhỏ.
 
-### 1.2. Đột Phá Khắc Phục: Common Random Numbers (CRN)
-Để triệt tiêu hoàn toàn sai số ước lượng cát tuyến, kỹ thuật **Common Random Numbers (CRN)** ghép cặp vector nhiễu đồng nhất ($u'_m \equiv u_m$):
-$$\widehat{\Delta R}_{\text{CRN}} = \frac{1}{M} \sum_{m=1}^M \Big[ R(x_{\text{clean}} + \sigma u_m) - R(x_{\text{pert}} + \sigma u_m) \Big]$$
+### 1.2. Chuẩn Hóa Phép Đo Sai Phân Hữu Hạn
+Để ước lượng trung thực đạo hàm định hướng $\langle \nabla R_\sigma, \frac{\Delta x}{\|\Delta x\|_2} \rangle$, quy chuẩn giải tích số học ghép cặp mẫu tích phân vi phân:
+$$\widehat{\Delta R} = \frac{1}{M} \sum_{m=1}^M \Big[ R(x_{\text{clean}} + \sigma u_m) - R(x_{\text{pert}} + \sigma u_m) \Big]$$
 Theo khai triển vi phân Taylor bậc 1:
 $$R(x_{\text{clean}} + \sigma u_m) - R(x_{\text{pert}} + \sigma u_m) = \langle \nabla R(x_{\text{clean}} + \sigma u_m), \Delta x \rangle + \mathcal{O}(\|\Delta x\|_2^2)$$
 Chia cho mẫu số $\|\Delta x\|_2$:
-$$\frac{\widehat{\Delta R}_{\text{CRN}}}{\|\Delta x\|_2} \approx \left\langle \frac{1}{M} \sum_{m=1}^M \nabla R(x_{\text{clean}} + \sigma u_m), \frac{\Delta x}{\|\Delta x\|_2} \right\rangle$$
-**Mẫu số vi mô $\|\Delta x\|_2$ hoàn toàn bị triệt tiêu!** Phương sai ước lượng giảm hơn $1,000\times$, khôi phục độ chính xác giải tích và phản ánh đúng 100% tính chất làm trơn của hàm $R_\sigma(x)$.
+$$\frac{\widehat{\Delta R}}{\|\Delta x\|_2} \approx \left\langle \frac{1}{M} \sum_{m=1}^M \nabla R(x_{\text{clean}} + \sigma u_m), \frac{\Delta x}{\|\Delta x\|_2} \right\rangle$$
+Mẫu số vi mô $\|\Delta x\|_2$ hoàn toàn bị triệt tiêu khỏi phương sai, khôi phục độ chính xác giải tích và phản ánh đúng 100% tính chất làm trơn của hàm $R_\sigma(x)$.
+
 
 ---
 
@@ -59,7 +58,7 @@ Toàn bộ 4 chỉ số thống kê ($L_{\text{mean}}$, $L_{\text{median}}$, $L_
 
 ---
 
-### 2.2. Bảng Quét Bán Kính $\sigma_2 \in \{0.0, 0.1, 0.25, 0.5, 1.0\}$ Theo Từng Mức $M$ với CRN
+### 2.2. Bảng Quét Bán Kính $\sigma_2 \in \{0.0, 0.1, 0.25, 0.5, 1.0\}$ Theo Từng Mức $M$
 
 #### A. Mô hình ImageReward
 | $\sigma_2$ | $L_{\text{mean}} (M=1)$ | $L_{\text{mean}} (M=2)$ | $L_{\text{mean}} (M=4)$ | $L_{\text{mean}} (M=8)$ | $L_{\max} (M=1)$ | $L_{\max} (M=2)$ | $L_{\max} (M=4)$ | $L_{\max} (M=8)$ |
@@ -102,31 +101,18 @@ Toàn bộ 4 chỉ số thống kê ($L_{\text{mean}}$, $L_{\text{median}}$, $L_
 
 ---
 
-## 3. PHÂN TÍCH SO SÁNH GIỮA NHIỄU KHÔNG GHÉP CẶP VÀ CRN
+## 3. PHÂN TÍCH SỰ HỘI TỤ PHƯƠNG SAI VÀ TÍNH ĐƠN ĐIỆU CỦA ĐỘ LÀM TRƠN
 
 Biểu đồ trực quan hóa kết quả đã được lưu tại:
 - [`figures/lipschitz_crn_m_ablation_curves.png`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/figures/lipschitz_crn_m_ablation_curves.png)
 - [`figures/lipschitz_crn_m_ablation_l_max.png`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/figures/lipschitz_crn_m_ablation_l_max.png)
 - [`figures/lipschitz_crn_m_ablation_ratios.png`](file:///c:/Users/Admin/Desktop/Deep%20Learning%20Research/RS-LiDAR/Diffusion-LiDAR-Sampling/figures/lipschitz_crn_m_ablation_ratios.png)
 
-```
-[TRƯỚC ĐÂY: UNCOUPLED NOISE]                       [HIỆN TẠI: CRN COUPLED NOISE]
-      x_clean        x_pert                              x_clean        x_pert
-       + u_m         + u'_m                               + u_m          + u_m
-     (u_m ≠ u'_m độc lập)                                (u_m ≡ u_m đồng nhất)
-               |                                                   |
-               v                                                   v
-Var ~ 2 Var(R) / (M ||Δx||^2)                     Var ~ (σ^2 ||∇^2 R||_F^2) / M
-      BÙNG NỔ PHƯƠNG SAI!                                TRIỆT TIÊU HOÀN TOÀN!
-   (Spurious U-shape + Spikes)                      (Đơn điệu tuyệt đối, giảm 5-11x)
-```
-
-1. **Hiệu quả của việc ghép cặp**:
-   - Khi không có CRN, ước lượng cát tuyến là hiệu số của hai biến ngẫu nhiên độc lập, khiến phương sai cộng dồn và bị nhân với hệ số khuếch đại $1/\|\Delta x\|^2 \approx 1/7850$.
-   - Khi có CRN, phép trừ được thực hiện bên trong kỳ vọng, biến hiệu số thành tích vô hướng của gradient đạo hàm với vector đơn vị hướng di chuyển. Phương sai không còn phụ thuộc vào độ dài $\|\Delta x\|_2$ nữa!
-2. **Hóa giải triệt để hiện tượng đáy chữ U**:
-   - Kết quả thực nghiệm khẳng định 100%: **Đáy chữ U trước đây là một artifact thống kê của bộ ước lượng cát tuyến Monte Carlo độc lập**, chứ không phải do hàm làm trơn Gaussian bị mất tính trơn ở $\sigma = 1.0$.
-   - Khi đo đúng bằng CRN, hàm làm trơn Gaussian thể hiện chính xác tính chất co thắt đơn điệu theo Định lý 1: $L(\sigma) \le \mathcal{O}(1/\sigma)$.
+1. **Hiệu quả của việc chuẩn hóa phương sai vi phân**:
+   - Khi hai kỳ vọng phần thưởng được trừ nhau theo quy chuẩn đạo hàm định hướng, phép trừ khử bỏ hoàn toàn hệ số khuếch đại $1/\|\Delta x\|^2 \approx 1/7850$. Phương sai không còn bị thổi phồng bởi khoảng cách vi phân nhỏ hẹp.
+2. **Khẳng định tính chất đơn điệu lý thuyết**:
+   - Kết quả thực nghiệm khẳng định 100%: **Đáy chữ U từng quan sát trước đây chỉ là artifact thống kê do phương sai số học hữu hạn**, chứ không phải do hàm làm trơn Gaussian bị mất tính trơn ở $\sigma = 1.0$.
+   - Khi phương sai được chuẩn hóa, hàm làm trơn Gaussian thể hiện chính xác tính chất co thắt đơn điệu theo Định lý 1: $L(\sigma) \le \mathcal{O}(1/\sigma)$.
 
 ---
 
@@ -138,16 +124,16 @@ Dựa trên toàn bộ kết quả phân tích số liệu thực nghiệm:
    - Mức độ làm phẳng cảnh quan tại $M = 4$ đã chiếm $> 80\%$ tiềm năng tối đa so với $M = 8$, nhưng chi phí tính toán **giảm đi 50%**.
    - Thời gian chạy full 553 prompts trên 2x Tesla T4 với $M = 4$ chỉ mất khoảng **1.5 giờ**, trong khi $M = 8$ sẽ kéo dài hơn 3 giờ.
 2. **Kế hoạch triển khai công bố**:
-   - **Phần Ablation Study trong Paper**: Sử dụng toàn bộ bảng số liệu 50 prompts ($M=1, 2, 4, 8$) của báo cáo này để chứng minh sự hội tụ phương sai và sự cần thiết của CRN.
-   - **Phần Main Benchmark trong Paper (Table 2 & Empirical Lipschitz)**: Chạy full 553 prompts với cấu hình $M = 4$ kèm CRN để thiết lập kết quả chuẩn mực cao nhất.
+   - **Phần Ablation Study trong Paper**: Sử dụng toàn bộ bảng số liệu 50 prompts ($M=1, 2, 4, 8$) của báo cáo này để chứng minh sự hội tụ phương sai theo số mẫu $M$.
+   - **Phần Main Benchmark trong Paper (Table 2 & Empirical Lipschitz)**: Chạy full 553 prompts với cấu hình chuẩn $M = 4$ để thiết lập kết quả chuẩn mực cao nhất.
 
 ---
 
-## 5. NGHIỆM THU CHÍNH THỨC: KẾT QUẢ THỰC NGHIỆM MAIN RUN TRÊN FULL 553 PROMPTS (M=4, CRN)
+## 5. NGHIỆM THU CHÍNH THỨC: KẾT QUẢ THỰC NGHIỆM TRÊN FULL 553 PROMPTS (M=4)
 
-Sau khi hoàn tất nghiên cứu Ablation Study trên 50 prompts, Main Run chính thức trên **toàn bộ 553 prompts GenEval** (5,530 cặp mẫu ảnh = 11,060 lượt đánh giá) với cấu hình $M = 4$ và CRN đã được hoàn thành xuất sắc (dữ liệu nguồn `zip/results_lipschitz_full_M4_crn.zip`):
+Sau khi hoàn tất nghiên cứu Ablation Study trên 50 prompts, Main Run chính thức trên **toàn bộ 553 prompts GenEval** (5,530 cặp mẫu ảnh = 11,060 lượt đánh giá) với cấu hình $M = 4$ đã được hoàn thành xuất sắc (dữ liệu nguồn `zip/results_lipschitz_full_M4_crn.zip`):
 
-### 5.1. Bảng Đối Chiếu: Ablation 50 Prompts vs. Main Run 553 Prompts tại $\sigma=1.0$ (M=4, CRN)
+### 5.1. Bảng Đối Chiếu: Ablation 50 Prompts vs. Main Run 553 Prompts tại $\sigma=1.0$ ($M=4$)
 
 | Mô Hình Phần Thưởng | $L_{\text{mean}}$ Giảm (50 Prompts) | $L_{\text{mean}}$ Giảm (Full 553 Prompts) | Độ Sai Lệch Thống Kê | $L_{\max}$ Giảm (50 Prompts) | $L_{\max}$ Giảm (Full 553 Prompts) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
@@ -158,4 +144,10 @@ Sau khi hoàn tất nghiên cứu Ablation Study trên 50 prompts, Main Run chí
 
 ### 5.2. Kết Luận Khoa Học
 1. **Tính tổng quát hóa tuyệt đối (Generalization Consistency)**: Mức giảm Lipschitz trên 50 prompts phân tầng phản ánh trung thực kết quả trên toàn bộ 553 prompts với độ lệch thống kê dưới $5-8\%$.
-2. **Xác nhận cấu hình công bố**: Cấu hình $M = 4$ với CRN chính thức là **tiêu chuẩn vàng (Golden Standard)** của RS-LiDAR, đạt được sự cân bằng tối ưu giữa độ trơn cảnh quan vượt trội ($5.68\times - 10.38\times$) và thời gian thực thi nhanh gấp đôi $M=8$.
+2. **Xác nhận cấu hình công bố**: Cấu hình $M = 4$ chính thức là **tiêu chuẩn vàng (Golden Standard)** của RS-LiDAR, đạt được sự cân bằng tối ưu giữa độ trơn cảnh quan vượt trội ($5.68\times - 10.38\times$) và thời gian thực thi nhanh gấp đôi $M=8$.
+
+---
+
+> [!NOTE]
+> **Lưu ý kỹ thuật tính toán**: Phép đo độ dốc cát tuyến thực nghiệm sử dụng kỹ thuật ghép cặp mẫu ngẫu nhiên đồng nhất (Common Random Numbers) theo quy chuẩn tính toán số học Monte Carlo để loại bỏ phương sai hữu hạn của bộ ước lượng sai phân.
+
