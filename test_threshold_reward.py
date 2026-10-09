@@ -456,7 +456,7 @@ def main():
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--shard_id", type=int, default=0)
     parser.add_argument("--gpu_id", type=int, default=0)
-    parser.add_argument("--output_dir", type=str, default="results/threshold_reward")
+    parser.add_argument("--output_dir", type=str, default="results/New_Rewards/Threshold_Rewards")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--merge_shards", action="store_true")
     args = parser.parse_args()
