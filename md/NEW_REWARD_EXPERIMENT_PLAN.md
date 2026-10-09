@@ -8,12 +8,14 @@ Dưới đây là chi tiết cụ thể (từ logic hàm, công cụ, đến ph�
 
 ## 1. Hàm "Bước nhảy" (Binary / Threshold Reward) - *Không Lipschitz (Lipschitz = ∞)*
 
-Hàm bước nhảy là minh chứng kinh điển nhất cho sức mạnh của RS. Đạo hàm của chúng bằng 0 ở mọi nơi và bằng vô cực ở điểm giao, khiến các phương pháp Vanilla bị "mù" gradient. RS sẽ biến hàm bậc thang thành hàm mượt (như Sigmoid), tạo ra sườn dốc để tối ưu.
+Hàm bước nhảy là minh chứng kinh điển nhất cho sức mạnh của RS. Đạo hàm của chúng bằng 0 ở mọi nơi và bằng vô cực ở điểm giao, khiến các phương pháp Vanilla bị "mù" gradient. RS sẽ biến hàm bậc thang thành hàm mượt (như Sigmoid), tạo ra sườn dốc để tối ưu. Thay vì chỉ kiểm tra sinh ảnh bằng mắt, chúng ta sẽ áp dụng **pipeline đo Lipschitz thực nghiệm** để chứng minh toán học sự thay đổi này.
 
 ### Chi tiết triển khai với OWL-ViT (Zero-shot Object Counting):
-*   **Mục đích:** Chứng minh RS-LiDAR có thể hướng dẫn mô hình sinh ảnh đáp ứng chính xác số lượng vật thể, ngay cả khi hàm Reward không cung cấp gradient liên tục.
+*   **Mục đích cốt lõi:** 
+    1. Đo đạc trực tiếp hệ số Lipschitz thực nghiệm (Empirical Lipschitz Constant) của hàm Threshold Reward để chứng minh: Vanilla Reward không có tính Lipschitz (độ dốc cực trị tiến tới $\infty$), trong khi RS-LiDAR biến đổi nó thành hàm Lipschitz-continuous (độ dốc bị chặn).
+    2. Vẽ biểu đồ đối chiếu phân phối phần thưởng (Reward Distribution) và tỷ lệ thành công (Success Rate) sinh đúng số lượng vật thể.
 *   **Cài đặt Model:** 
-    * Sử dụng mô hình `google/owlvit-base-patch32` từ HuggingFace `transformers`. Đây là mô hình detection siêu nhẹ, chạy cực nhanh trên GPU so với VLM lớn.
+    * Sử dụng `google/owlvit-base-patch32` (`transformers`) làm Zero-shot Detector để chấm điểm.
 *   **Logic Hàm Reward (Pseudocode):**
     ```python
     def binary_counting_reward(image, text_prompt="apple", target_count=3):
@@ -21,21 +23,24 @@ Hàm bước nhảy là minh chứng kinh điển nhất cho sức mạnh của 
         inputs = processor(text=text_prompt, images=image, return_tensors="pt")
         outputs = model(**inputs)
         
-        # 2. Đếm số lượng bounding box có độ tin cậy > 0.1 hoặc 0.2
-        logits = outputs.logits[0]
-        probs = logits.sigmoid()
-        count = (probs > 0.2).sum().item()
+        # 2. Đếm số lượng bounding box
+        probs = outputs.logits[0].sigmoid().max(dim=-1).values
+        count = (probs > 0.1).sum().item()
         
         # 3. Hàm bước nhảy (Binary)
-        if count == target_count:
-            return 1.0  # Reward tuyệt đối
-        else:
-            return 0.0  # Hoàn toàn không có thông tin (Mù gradient)
+        return 1.0 if count == target_count else 0.0
     ```
-*   **Kỳ vọng & Tiêu chí đánh giá:**
-    *   **Vanilla LiDAR:** Do không gian Reward hầu hết bằng 0, trọng số softmax của tất cả các hạt (particles) quanh điểm xuất phát đều bằng nhau (như Random Search). Ảnh sinh ra sẽ ngẫu nhiên có 1, 2 hoặc 4 quả.
-    *   **RS-LiDAR:** Nhờ phân bố nhiễu Gaussian rộng ($\sigma$ đủ lớn), một số hạt bị nhiễu sẽ "chạm" vào vùng không gian sinh ra 3 quả táo ($R=1$). Quá trình lấy trung bình kỳ vọng $\mathbb{E}[R(x+\epsilon)]$ tạo ra một sườn dốc (soft gradient) dẫn dắt thuật toán từ $R=0$ leo lên $R=1$.
-    *   **Metric:** Tỷ lệ thành công (Success Rate) sinh đúng số lượng vật thể trên 100 prompts.
+*   **Phương pháp đo đạc & Tiêu chí đánh giá (Dựa theo pipeline `test_empirical_lipschitz.py`):**
+    *   **Thực nghiệm Đo Lipschitz:** 
+        * Tạo cặp ảnh sạch ($x$) và ảnh vi nhiễu ($x_{pert} = x + \sigma_1$). 
+        * **Vanilla LiDAR**: Tính sai phân $\frac{|R(x) - R(x_{pert})|}{\Delta x}$. Ở hầu hết không gian, độ dốc $= 0$. Nhưng tại ranh giới quyết định (chuyển từ đếm sai sang đếm đúng), độ dốc bắn vọt lên cực đại ($L \to \infty$).
+        * **RS-LiDAR**: Tính toán tử làm mịn Monte Carlo $\tilde{R}_{\sigma_2}(x)$. Kỳ vọng $\mathbb{E}[R(x+\epsilon)]$ sẽ san phẳng bước nhảy, độ dốc thực nghiệm bị chặn ở mức an toàn.
+    *   **Thực nghiệm Tỷ lệ thành công & Phân phối Reward:** Chạy thuật toán lấy mẫu trên tập 50 prompts GenEval (Counting tasks).
+    *   **Output Metrics & Plots cần có:**
+        1. **Bảng tóm tắt Lipschitz**: Cung cấp $L_{max}$ và $L_{mean}$ cho Vanilla và RS-LiDAR.
+        2. **KDE Density Plot**: Biểu đồ phân phối độ dốc (Slope Distribution) chứng minh RS-LiDAR ép độ dốc về dải hẹp, triệt tiêu các "spikes" vô cực.
+        3. **Reward Landscape / Distribution Plot**: Biểu đồ Histogram so sánh Reward trả về. Vanilla chỉ có giá trị `0` và `1` (Rời rạc). RS-LiDAR trải đều liên tục từ `0.0` đến `1.0` (Mượt).
+        4. **Success Rate Plot**: Biểu đồ cột so sánh tỷ lệ đếm đúng (Exact Match) giữa Vanilla và RS-LiDAR.
 
 ---
 
