@@ -13,6 +13,7 @@ Mục đích:
 import os
 import sys
 import json
+import glob
 import argparse
 import math
 import torch
@@ -462,7 +463,6 @@ def main():
     args = parser.parse_args()
 
     if args.merge_shards:
-        import glob
         merge_and_plot_results(args.output_dir, args.sigma2)
         return
 
