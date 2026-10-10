@@ -663,10 +663,12 @@ def main():
         num_mc = 1
     else:
         num_mc = args.num_mc_samples if args.num_mc_samples is not None else 4
-        if args.sigma is not None:
+        if "sdxl" in args.setting:
+            sigma = 0.5 if (args.sigma is None or args.sigma == 1.0) else args.sigma
+        elif args.sigma is not None:
             sigma = args.sigma
         else:
-            sigma = 0.5 if "sdxl" in args.setting else 1.0
+            sigma = 1.0
 
     # Phân giải reward_batch_size
     if args.reward_batch_size is None or str(args.reward_batch_size).lower() in ["none", "null", "full"]:
@@ -675,12 +677,18 @@ def main():
         reward_batch_size = int(args.reward_batch_size)
 
     # Phân giải danh sách bước Phase 1 cần chạy
-    if args.sweep_steps is not None and args.sweep_steps.strip() != "":
+    if "sdxl" in args.setting:
+        if args.sweep_steps is not None and args.sweep_steps.strip() not in ["1", ""]:
+            print(f"⚡ [SDXL DMD-1 Auto-Dispatch]: SDXL DMD-1 là mô hình chưng cất 1-step (Table 2). Tự động bỏ sweep đa bước '{args.sweep_steps}' và chỉ chạy 1 lần duy nhất với 1 step.")
+        elif args.lookahead_steps is not None and args.lookahead_steps != 1:
+            print(f"⚡ [SDXL DMD-1 Auto-Dispatch]: SDXL DMD-1 là mô hình chưng cất 1-step (Table 2). Tự động đặt Lookahead Steps = 1 thay vì {args.lookahead_steps}.")
+        steps_to_run = [1]
+    elif args.sweep_steps is not None and args.sweep_steps.strip() != "":
         steps_to_run = [int(s.strip()) for s in args.sweep_steps.split(",") if s.strip().isdigit()]
     elif args.lookahead_steps is not None:
         steps_to_run = [args.lookahead_steps]
     else:
-        default_step = 1 if "sdxl" in args.setting else 5
+        default_step = 5
         steps_to_run = [default_step]
 
     os.makedirs(args.output_dir, exist_ok=True)
