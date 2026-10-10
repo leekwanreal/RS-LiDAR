@@ -164,8 +164,13 @@ class InMemoryLookaheadDataset:
 # ==============================================================================
 # 2. Xử Lý Prompts
 # ==============================================================================
-def load_prompts(prompt_path: str, max_prompts: int = 3, prompt_indices: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Nạp danh sách prompts từ file JSON hoặc JSONL."""
+def load_prompts(
+    prompt_path: str,
+    max_prompts: int = 3,
+    prompt_indices: Optional[str] = None,
+    prompts_per_category: Optional[int] = None
+) -> List[Dict[str, Any]]:
+    """Nạp danh sách prompts từ file JSON hoặc JSONL, hỗ trợ chọn phân tầng theo Category."""
     if not os.path.exists(prompt_path):
         # Fallback thử tìm trong thư mục Diffusion-LiDAR-Sampling
         alt_path = os.path.join("Diffusion-LiDAR-Sampling", prompt_path)
@@ -175,11 +180,11 @@ def load_prompts(prompt_path: str, max_prompts: int = 3, prompt_indices: Optiona
             # Fallback tạo prompts mẫu nếu không tìm thấy file
             print(f"⚠️ Prompt file '{prompt_path}' không tồn tại. Tạo {max_prompts} prompts chuẩn GenEval mẫu.")
             default_prompts = [
-                {"prompt": "A cute small dog wearing sunglasses on a beach", "original_idx": 0},
-                {"prompt": "A modern red sports car parked in front of a white villa", "original_idx": 1},
-                {"prompt": "A plate of pancakes with strawberries and maple syrup", "original_idx": 2},
-                {"prompt": "An astronaut riding a green horse on the surface of mars", "original_idx": 3},
-                {"prompt": "A serene lake surrounded by pine trees under a sunset sky", "original_idx": 4},
+                {"prompt": "A cute small dog wearing sunglasses on a beach", "original_idx": 0, "tag": "single_object"},
+                {"prompt": "A modern red sports car parked in front of a white villa", "original_idx": 1, "tag": "single_object"},
+                {"prompt": "A plate of pancakes with strawberries and maple syrup", "original_idx": 2, "tag": "single_object"},
+                {"prompt": "An astronaut riding a green horse on the surface of mars", "original_idx": 3, "tag": "single_object"},
+                {"prompt": "A serene lake surrounded by pine trees under a sunset sky", "original_idx": 4, "tag": "single_object"},
             ]
             return default_prompts[:max_prompts]
 
@@ -190,12 +195,14 @@ def load_prompts(prompt_path: str, max_prompts: int = 3, prompt_indices: Optiona
         with open(prompt_path, "r", encoding="utf-8") as f:
             data = [json.loads(line) for line in f if line.strip()]
 
-    # Chuẩn hóa key 'prompt' và 'original_idx'
+    # Chuẩn hóa key 'prompt', 'tag', và 'original_idx'
     for idx, item in enumerate(data):
         if "prompt" not in item:
             item["prompt"] = item.get("text", "")
         if "original_idx" not in item:
             item["original_idx"] = idx
+        if "tag" not in item:
+            item["tag"] = item.get("category", "general")
 
     if prompt_indices is not None and prompt_indices.strip() != "":
         s = prompt_indices.strip()
@@ -205,6 +212,21 @@ def load_prompts(prompt_path: str, max_prompts: int = 3, prompt_indices: Optiona
         else:
             selected_ids = [int(x.strip()) for x in s.split(",") if x.strip().isdigit()]
         data = [item for item in data if item["original_idx"] in selected_ids]
+    elif prompts_per_category is not None and prompts_per_category > 0:
+        # Gom nhóm prompts theo category (tag)
+        cat_dict = {}
+        for item in data:
+            tag = item.get("tag", "general")
+            cat_dict.setdefault(tag, []).append(item)
+
+        selected_data = []
+        print(f"📊 Chọn phân tầng (Stratified) {prompts_per_category} prompts cho mỗi Category:")
+        for tag, items in cat_dict.items():
+            picked = items[:prompts_per_category]
+            selected_data.extend(picked)
+            indices_str = ", ".join(str(p["original_idx"]) for p in picked)
+            print(f"   • [{tag}]: {len(picked)}/{len(items)} prompts (IDs: {indices_str})")
+        data = selected_data
     else:
         data = data[:max_prompts]
 
@@ -564,6 +586,7 @@ def benchmark_single_prompt(
     return {
         "prompt_idx": real_idx,
         "prompt": prompt_str,
+        "category": item.get("tag", "general"),
         "t_lookahead": t_lookahead,
         "t_reward": t_reward,              # Chấm điểm thuần túy
         "t_convert": t_convert,            # Đổi Tensor -> PIL
@@ -588,6 +611,8 @@ def main():
     parser.add_argument("--method", type=str, default="rs-lidar", choices=["rs-lidar", "lidar"],
                         help="Sampling method: rs-lidar (Randomized Smoothing) or lidar (Vanilla)")
     parser.add_argument("--num_prompts", type=int, default=3, help="Number of prompts to benchmark and average")
+    parser.add_argument("--prompts_per_category", type=int, default=None,
+                        help="Number of representative prompts per category (e.g. 2 -> 12 prompts across 6 GenEval categories)")
     parser.add_argument("--lookahead_steps", "--phase1_steps", "--num_inference_steps", type=int, default=None,
                         help="Number of Phase 1 lookahead generation steps (default: 5 for SD1.5, 1 for SDXL)")
     parser.add_argument("--sweep_steps", type=str, default=None,
@@ -669,7 +694,10 @@ def main():
     print(f"• Smoothing Sigma:     {sigma}")
     print(f"• Monte Carlo M:       {num_mc}")
     print(f"• Reward Batch Size:   {'FULL BATCH (None)' if reward_batch_size is None else reward_batch_size}")
-    print(f"• Số Prompts đo:       {args.num_prompts}")
+    if args.prompts_per_category is not None:
+        print(f"• Chọn Prompt:         Phân tầng {args.prompts_per_category} prompts/category")
+    else:
+        print(f"• Số Prompts đo:       {args.num_prompts}")
     print(f"• Output Directory:    {args.output_dir}")
     print(f"{'='*75}\n")
 
@@ -679,7 +707,12 @@ def main():
     )
 
     # 2. Nạp dữ liệu Prompts
-    prompts_data = load_prompts(args.prompt_path, max_prompts=args.num_prompts, prompt_indices=args.prompt_indices)
+    prompts_data = load_prompts(
+        args.prompt_path,
+        max_prompts=args.num_prompts,
+        prompt_indices=args.prompt_indices,
+        prompts_per_category=args.prompts_per_category
+    )
     print(f"📋 Đã chọn {len(prompts_data)} prompts để tiến hành benchmark.")
 
     # 3. Chạy Warm-Up GPU (Nếu bật)
@@ -712,7 +745,7 @@ def main():
         json_path = os.path.join(args.output_dir, json_filename)
 
         csv_fields = [
-            "prompt_idx", "prompt", "setting", "method", "lookahead_steps", "sigma", "num_mc",
+            "prompt_idx", "category", "prompt", "setting", "method", "lookahead_steps", "sigma", "num_mc",
             "t_lookahead", "t_reward", "t_convert", "t_target", "t_total", "vram_phase2_gib", "peak_vram_gib"
         ]
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -739,6 +772,7 @@ def main():
 
             row = {
                 "prompt_idx": res["prompt_idx"],
+                "category": res.get("category", ""),
                 "prompt": res["prompt"],
                 "setting": args.setting,
                 "method": args.method,
@@ -766,7 +800,8 @@ def main():
                 except Exception as e_drive:
                     print(f"⚠️ Cảnh báo: Không thể đồng bộ CSV sang Google Drive ({e_drive})")
 
-            print(f"\n  [Step {cur_step} | Prompt #{res['prompt_idx']:03d}] T_look: {res['t_lookahead']:.2f}s | T_rew (Chấm điểm): {res['t_reward']:.2f}s (Convert PIL: {res['t_convert']:.2f}s) | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
+            cat_str = f" ({res.get('category')})" if res.get('category') else ""
+            print(f"\n  [Step {cur_step} | #{res['prompt_idx']:03d}{cat_str}] T_look: {res['t_lookahead']:.2f}s | T_rew (Chấm điểm): {res['t_reward']:.2f}s (Convert PIL: {res['t_convert']:.2f}s) | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
 
         # Tính toán thống kê trung bình
         mean_t_look = float(np.mean([r["t_lookahead"] for r in results_list]))
