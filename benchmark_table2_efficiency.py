@@ -47,6 +47,10 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from tqdm import tqdm
+import warnings
+
+# Suppress harmless diffusers warning about float16 pipelines
+warnings.filterwarnings("ignore", message=".*Pipelines loaded with.*dtype=torch.float16.*cannot run with.*cpu.*")
 # Universal compatibility patch for transformers, diffusers, peft, protobuf, and ImageReward
 try:
     import google.protobuf
@@ -438,10 +442,8 @@ def benchmark_single_prompt(
     n_tar = config["num_target_images"]
     is_sdxl = "sdxl" in getattr(pipe_phase1, "_name_or_path", "").lower() or hasattr(pipe_phase1, "unet") and pipe_phase1.unet.config.sample_size == 128
 
-    # Đồng bộ hóa GPU và quản lý VRAM động (Offload Phase 2 để dồn toàn lực VRAM cho Phase 1)
+    # Đồng bộ hóa GPU trước Phase 1
     torch.cuda.synchronize(device)
-    pipe_phase2.to("cpu")
-    pipe_phase1.to(device)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
 
@@ -549,12 +551,9 @@ def benchmark_single_prompt(
     torch.cuda.synchronize(device)
     peak_vram_p1_gib = torch.cuda.max_memory_allocated(device) / (1024 ** 3)
 
-    # Đảo models trong VRAM (Offload Phase 1, Load Phase 2) để mô phỏng pipeline tách rời
-    pipe_phase1.to("cpu")
-    pipe_phase2.to(device)
-    torch.cuda.empty_cache()
-
     # Reset stats trước Phase 2 để đo riêng biệt Peak VRAM của Target Sampling (khớp Table 2 & Figure 10)
+    torch.cuda.synchronize(device)
+    torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats(device)
 
     ev_tar_start = torch.cuda.Event(enable_timing=True)
