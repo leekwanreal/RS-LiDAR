@@ -281,7 +281,7 @@ def evaluate_reward_full_batch(
 # ==============================================================================
 # 4. Pipeline Factory Theo Cấu Hình Setting
 # ==============================================================================
-def setup_models(setting: str, device: str = "cuda:0"):
+def setup_models(setting: str, device: str = "cuda:0", lookahead_steps: Optional[int] = None):
     """
     Khởi tạo Model Phase 1 (Lookahead), Model Phase 2 (Target) và ImageReward
     theo đúng thông số chuẩn Bảng 2.
@@ -316,7 +316,7 @@ def setup_models(setting: str, device: str = "cuda:0"):
         pipe_phase2 = FKDStableDiffusion.from_pretrained(model_id, torch_dtype=torch.float16).to(device)
         pipe_phase2.scheduler = DDIMScheduler.from_config(pipe_phase2.scheduler.config)
 
-        # Phase 1 Pipeline: DPM-Solver 5 bước (Chia sẻ chung trọng số UNet/VAE/TextEncoder với Phase 2 để tránh nhân đôi VRAM)
+        # Phase 1 Pipeline: DPM-Solver (Chia sẻ chung trọng số UNet/VAE/TextEncoder với Phase 2 để tránh nhân đôi VRAM)
         pipe_phase1 = StableDiffusionPipeline(
             vae=pipe_phase2.vae,
             text_encoder=pipe_phase2.text_encoder,
@@ -328,7 +328,8 @@ def setup_models(setting: str, device: str = "cuda:0"):
         )
 
         # Cấu hình siêu tham số
-        lookahead_steps = 5
+        default_lookahead_steps = 5
+        actual_lookahead_steps = lookahead_steps if lookahead_steps is not None else default_lookahead_steps
         num_particles_phase1 = 50
         num_target_images = 4
 
@@ -344,8 +345,8 @@ def setup_models(setting: str, device: str = "cuda:0"):
     elif setting == "sdxl_dmd1":
         base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
 
-        # Phase 1 Pipeline: SDXL DMD-1 (1 bước Lookahead)
-        print(f"🔹 Khởi tạo Phase 1: SDXL DMD-1 (1 bước)...")
+        # Phase 1 Pipeline: SDXL DMD-1 (Lookahead)
+        print(f"🔹 Khởi tạo Phase 1: SDXL DMD-1...")
         repo_name = "tianweiy/DMD2"
         ckpt_name = "dmd2_sdxl_1step_unet_fp16.bin"
         unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
@@ -365,7 +366,8 @@ def setup_models(setting: str, device: str = "cuda:0"):
         ).to(device)
         pipe_phase2.scheduler = DDIMScheduler.from_config(pipe_phase2.scheduler.config)
 
-        lookahead_steps = 1
+        default_lookahead_steps = 1
+        actual_lookahead_steps = lookahead_steps if lookahead_steps is not None else default_lookahead_steps
         num_particles_phase1 = 100
         num_target_images = 4
         target_steps = 100
@@ -376,7 +378,7 @@ def setup_models(setting: str, device: str = "cuda:0"):
         raise ValueError(f"Không hỗ trợ cấu hình setting '{setting}'. Lựa chọn: sdv1.5_ddim50, sdv1.5_ddpm100, sdxl_dmd1")
 
     config = {
-        "lookahead_steps": lookahead_steps,
+        "lookahead_steps": actual_lookahead_steps,
         "num_particles_phase1": num_particles_phase1,
         "num_target_images": num_target_images,
         "target_steps": target_steps,
@@ -438,7 +440,7 @@ def benchmark_single_prompt(
                 prompt_batch,
                 num_inference_steps=config["lookahead_steps"],
                 guidance_scale=0.0,
-                timesteps=[399],
+                timesteps=[399] if config["lookahead_steps"] == 1 else None,
                 output_type="latent"
             ).images  # Tensor (N, 4, 128, 128)
 
@@ -586,6 +588,10 @@ def main():
     parser.add_argument("--method", type=str, default="rs-lidar", choices=["rs-lidar", "lidar"],
                         help="Sampling method: rs-lidar (Randomized Smoothing) or lidar (Vanilla)")
     parser.add_argument("--num_prompts", type=int, default=3, help="Number of prompts to benchmark and average")
+    parser.add_argument("--lookahead_steps", "--phase1_steps", "--num_inference_steps", type=int, default=None,
+                        help="Number of Phase 1 lookahead generation steps (default: 5 for SD1.5, 1 for SDXL)")
+    parser.add_argument("--sweep_steps", type=str, default=None,
+                        help="Comma-separated list of Phase 1 steps to benchmark consecutively in a single session (e.g. '2,3,4,5' or '2, 3, 4, 5')")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl",
                         help="Path to prompts JSON or JSONL file")
     parser.add_argument("--prompt_indices", type=str, default=None,
@@ -643,6 +649,15 @@ def main():
     else:
         reward_batch_size = int(args.reward_batch_size)
 
+    # Phân giải danh sách bước Phase 1 cần chạy
+    if args.sweep_steps is not None and args.sweep_steps.strip() != "":
+        steps_to_run = [int(s.strip()) for s in args.sweep_steps.split(",") if s.strip().isdigit()]
+    elif args.lookahead_steps is not None:
+        steps_to_run = [args.lookahead_steps]
+    else:
+        default_step = 1 if "sdxl" in args.setting else 5
+        steps_to_run = [default_step]
+
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"\n{'='*75}")
@@ -650,6 +665,7 @@ def main():
     print(f"{'='*75}")
     print(f"• Cấu hình Setting:    {args.setting}")
     print(f"• Phương pháp Method:  {args.method.upper()}")
+    print(f"• Phase 1 Steps:       {steps_to_run if len(steps_to_run) > 1 else steps_to_run[0]}")
     print(f"• Smoothing Sigma:     {sigma}")
     print(f"• Monte Carlo M:       {num_mc}")
     print(f"• Reward Batch Size:   {'FULL BATCH (None)' if reward_batch_size is None else reward_batch_size}")
@@ -657,8 +673,10 @@ def main():
     print(f"• Output Directory:    {args.output_dir}")
     print(f"{'='*75}\n")
 
-    # 1. Nạp Model & Pipeline
-    pipe_phase1, pipe_phase2, ir_model, config = setup_models(args.setting, device=device)
+    # 1. Nạp Model & Pipeline (Chỉ nạp 1 lần duy nhất trong toàn phiên để tối ưu tốc độ)
+    pipe_phase1, pipe_phase2, ir_model, config = setup_models(
+        args.setting, device=device, lookahead_steps=steps_to_run[0]
+    )
 
     # 2. Nạp dữ liệu Prompts
     prompts_data = load_prompts(args.prompt_path, max_prompts=args.num_prompts, prompt_indices=args.prompt_indices)
@@ -681,137 +699,207 @@ def main():
         )
         print("✅ Warm-up hoàn tất! Bắt đầu bấm giờ chính thức.")
 
-    # 4. Thiết lập File CSV & JSON Real-time Persistence
+    # 4. Thực Thi Đo Đạc Cho Từng Bước (Hỗ trợ chạy đơn lẻ hoặc Sweep 2, 3, 4, 5 steps liên tục)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_filename = f"efficiency_{args.setting}_{args.method}_{timestamp}.csv"
-    json_filename = f"efficiency_{args.setting}_{args.method}_{timestamp}.json"
-    csv_path = os.path.join(args.output_dir, csv_filename)
-    json_path = os.path.join(args.output_dir, json_filename)
+    sweep_summaries = []
 
-    csv_fields = [
-        "prompt_idx", "prompt", "setting", "method", "sigma", "num_mc",
-        "t_lookahead", "t_reward", "t_convert", "t_target", "t_total", "vram_phase2_gib", "peak_vram_gib"
-    ]
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=csv_fields)
-        writer.writeheader()
+    for step_idx, cur_step in enumerate(steps_to_run):
+        config["lookahead_steps"] = cur_step
+        step_suffix = f"_step{cur_step}" if (len(steps_to_run) > 1 or args.lookahead_steps is not None) else ""
+        csv_filename = f"efficiency_{args.setting}_{args.method}{step_suffix}_{timestamp}.csv"
+        json_filename = f"efficiency_{args.setting}_{args.method}{step_suffix}_{timestamp}.json"
+        csv_path = os.path.join(args.output_dir, csv_filename)
+        json_path = os.path.join(args.output_dir, json_filename)
 
-    results_list = []
+        csv_fields = [
+            "prompt_idx", "prompt", "setting", "method", "lookahead_steps", "sigma", "num_mc",
+            "t_lookahead", "t_reward", "t_convert", "t_target", "t_total", "vram_phase2_gib", "peak_vram_gib"
+        ]
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=csv_fields)
+            writer.writeheader()
 
-    # 5. Vòng Lặp Đo Đạc Chính Thức
-    print(f"\n⏱️ Bắt đầu đo đạc {len(prompts_data)} prompts...")
-    for idx, item in enumerate(tqdm(prompts_data, desc="Benchmarking")):
-        res = benchmark_single_prompt(
-            item=item,
-            pipe_phase1=pipe_phase1,
-            pipe_phase2=pipe_phase2,
-            ir_model=ir_model,
-            config=config,
-            method=args.method,
-            sigma=sigma,
-            num_mc=num_mc,
-            reward_batch_size=reward_batch_size,
-            device=device
-        )
-        results_list.append(res)
+        results_list = []
 
-        # Ghi tức thì vào CSV sau mỗi prompt (chống mất dữ liệu nếu Colab ngắt kết nối)
-        row = {
-            "prompt_idx": res["prompt_idx"],
-            "prompt": res["prompt"],
+        print(f"\n⏱️ [{step_idx + 1}/{len(steps_to_run)}] Bắt đầu đo đạc {len(prompts_data)} prompts cho Phase 1 ({cur_step} steps)...")
+        for idx, item in enumerate(tqdm(prompts_data, desc=f"Benchmarking (Step={cur_step})")):
+            res = benchmark_single_prompt(
+                item=item,
+                pipe_phase1=pipe_phase1,
+                pipe_phase2=pipe_phase2,
+                ir_model=ir_model,
+                config=config,
+                method=args.method,
+                sigma=sigma,
+                num_mc=num_mc,
+                reward_batch_size=reward_batch_size,
+                device=device
+            )
+            results_list.append(res)
+
+            row = {
+                "prompt_idx": res["prompt_idx"],
+                "prompt": res["prompt"],
+                "setting": args.setting,
+                "method": args.method,
+                "lookahead_steps": cur_step,
+                "sigma": sigma,
+                "num_mc": num_mc,
+                "t_lookahead": f"{res['t_lookahead']:.3f}",
+                "t_reward": f"{res['t_reward']:.3f}",
+                "t_convert": f"{res['t_convert']:.3f}",
+                "t_target": f"{res['t_target']:.3f}",
+                "t_total": f"{res['t_total']:.3f}",
+                "vram_phase2_gib": f"{res['vram_phase2_gib']:.2f}",
+                "peak_vram_gib": f"{res['peak_vram_gib']:.2f}",
+            }
+            with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=csv_fields)
+                writer.writerow(row)
+
+            # Tự động sao chép sang Google Drive ngay lập tức sau mỗi prompt nếu có cấu hình
+            if args.drive_backup_dir:
+                try:
+                    os.makedirs(args.drive_backup_dir, exist_ok=True)
+                    drive_csv_target = os.path.join(args.drive_backup_dir, csv_filename)
+                    shutil.copyfile(csv_path, drive_csv_target)
+                except Exception as e_drive:
+                    print(f"⚠️ Cảnh báo: Không thể đồng bộ CSV sang Google Drive ({e_drive})")
+
+            print(f"\n  [Step {cur_step} | Prompt #{res['prompt_idx']:03d}] T_look: {res['t_lookahead']:.2f}s | T_rew (Chấm điểm): {res['t_reward']:.2f}s (Convert PIL: {res['t_convert']:.2f}s) | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
+
+        # Tính toán thống kê trung bình
+        mean_t_look = float(np.mean([r["t_lookahead"] for r in results_list]))
+        mean_t_rew = float(np.mean([r["t_reward"] for r in results_list]))
+        mean_t_conv = float(np.mean([r["t_convert"] for r in results_list]))
+        mean_t_tar = float(np.mean([r["t_target"] for r in results_list]))
+        mean_t_tot = float(np.mean([r["t_total"] for r in results_list]))
+        mean_vram_p2 = float(np.mean([r["vram_phase2_gib"] for r in results_list]))
+        max_peak_vram = float(np.max([r["peak_vram_gib"] for r in results_list]))
+
+        summary = {
             "setting": args.setting,
             "method": args.method,
+            "lookahead_steps": cur_step,
             "sigma": sigma,
             "num_mc": num_mc,
-            "t_lookahead": f"{res['t_lookahead']:.3f}",
-            "t_reward": f"{res['t_reward']:.3f}",
-            "t_convert": f"{res['t_convert']:.3f}",
-            "t_target": f"{res['t_target']:.3f}",
-            "t_total": f"{res['t_total']:.3f}",
-            "vram_phase2_gib": f"{res['vram_phase2_gib']:.2f}",
-            "peak_vram_gib": f"{res['peak_vram_gib']:.2f}",
+            "reward_batch_size": "Full-Batch" if reward_batch_size is None else reward_batch_size,
+            "num_prompts": len(results_list),
+            "mean_t_lookahead_sec": mean_t_look,
+            "mean_t_reward_sec": mean_t_rew,
+            "mean_t_convert_sec": mean_t_conv,
+            "mean_t_reward_total_sec": mean_t_rew + mean_t_conv,
+            "mean_t_target_sec": mean_t_tar,
+            "mean_t_total_sec": mean_t_tot,
+            "mean_vram_phase2_gib": mean_vram_p2,
+            "max_peak_vram_gib": max_peak_vram,
+            "detailed_results": results_list,
         }
-        with open(csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=csv_fields)
-            writer.writerow(row)
 
-        # Tự động sao chép sang Google Drive ngay lập tức sau mỗi prompt nếu có cấu hình
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=4, ensure_ascii=False)
+
+        # Đồng bộ JSON sang Google Drive
         if args.drive_backup_dir:
             try:
-                os.makedirs(args.drive_backup_dir, exist_ok=True)
-                drive_csv_target = os.path.join(args.drive_backup_dir, csv_filename)
-                shutil.copyfile(csv_path, drive_csv_target)
+                drive_json_target = os.path.join(args.drive_backup_dir, json_filename)
+                shutil.copyfile(json_path, drive_json_target)
+                print(f"☁️ Đã đồng bộ kết quả Step {cur_step} (JSON & CSV) sang Google Drive tại: {args.drive_backup_dir}")
             except Exception as e_drive:
-                print(f"⚠️ Cảnh báo: Không thể đồng bộ CSV sang Google Drive ({e_drive})")
+                print(f"⚠️ Cảnh báo: Không thể đồng bộ JSON sang Google Drive ({e_drive})")
 
-        print(f"\n  [Prompt #{res['prompt_idx']:03d}] T_look: {res['t_lookahead']:.2f}s | T_rew (Chấm điểm): {res['t_reward']:.2f}s (Convert PIL: {res['t_convert']:.2f}s) | T_tar: {res['t_target']:.2f}s | T_tot: {res['t_total']:.2f}s | VRAM P2: {res['vram_phase2_gib']:.2f} GiB (Peak: {res['peak_vram_gib']:.2f} GiB)")
+        sweep_summaries.append(summary)
 
-    # 6. Tính Toán Thống Kê Trung Bình & Xuất Báo Cáo
-    mean_t_look = float(np.mean([r["t_lookahead"] for r in results_list]))
-    mean_t_rew = float(np.mean([r["t_reward"] for r in results_list]))
-    mean_t_conv = float(np.mean([r["t_convert"] for r in results_list]))
-    mean_t_tar = float(np.mean([r["t_target"] for r in results_list]))
-    mean_t_tot = float(np.mean([r["t_total"] for r in results_list]))
-    mean_vram_p2 = float(np.mean([r["vram_phase2_gib"] for r in results_list]))
-    max_peak_vram = float(np.max([r["peak_vram_gib"] for r in results_list]))
+        # In bảng tổng kết của từng bước
+        paper_t_look = "5.69s" if "sdv1.5" in args.setting else "4.30s"
+        paper_t_rew = "0.65s" if "sdv1.5" in args.setting else "1.30s"
+        paper_t_tar = "7.07s" if "ddpm100" in args.setting else ("3.58s" if "ddim50" in args.setting else "50.00s")
+        paper_t_tot = "13.41s" if "ddpm100" in args.setting else ("9.92s" if "ddim50" in args.setting else "55.60s")
+        paper_vram = "8.90 GiB" if "sdv1.5" in args.setting else "33.84 GiB"
 
-    summary = {
-        "setting": args.setting,
-        "method": args.method,
-        "sigma": sigma,
-        "num_mc": num_mc,
-        "reward_batch_size": "Full-Batch" if reward_batch_size is None else reward_batch_size,
-        "num_prompts": len(results_list),
-        "mean_t_lookahead_sec": mean_t_look,
-        "mean_t_reward_sec": mean_t_rew,
-        "mean_t_convert_sec": mean_t_conv,
-        "mean_t_reward_total_sec": mean_t_rew + mean_t_conv,
-        "mean_t_target_sec": mean_t_tar,
-        "mean_t_total_sec": mean_t_tot,
-        "mean_vram_phase2_gib": mean_vram_p2,
-        "max_peak_vram_gib": max_peak_vram,
-        "detailed_results": results_list,
-    }
+        print(f"\n{'='*95}")
+        print(f"📊 BẢNG TỔNG KẾT PHÂN RÃ THỜI GIAN & BỘ NHỚ (PHASE 1: {cur_step} STEPS)")
+        print(f"{'='*95}")
+        print(f"Setting: {args.setting} | Method: {args.method.upper()} | Lookahead Steps: {cur_step} | Prompts: {len(results_list)} | Batch: {'Full Batch' if reward_batch_size is None else reward_batch_size}")
+        print(f"{'-'*95}")
+        print(f"• T_lookahead (Sinh N hạt Lookahead):            {mean_t_look:6.2f} giây  (Bài báo DPM-5 / n=50: {paper_t_look})")
+        print(f"• T_reward    (Chấm điểm ImageReward thuần túy): {mean_t_rew:6.2f} giây  (Bài báo n=50 / M=1:   {paper_t_rew})")
+        print(f"  └─ Phụ phí đổi Tensor sang PIL (Convert):       {mean_t_conv:6.2f} giây")
+        print(f"• T_target    (Khử nhiễu 4 ảnh đích Phase 2):    {mean_t_tar:6.2f} giây  (Bài báo Target:       {paper_t_tar})")
+        print(f"--------------------------------------------------------------------------------------------")
+        print(f"👉 TỔNG THỜI GIAN THEO TABLE 9 (Look + Rew + Tar):   {mean_t_tot:6.2f} giây  (Bài báo Table 9:     {paper_t_tot})")
+        print(f"👉 VRAM PHASE 2 (Target Sampling - Khớp Table 2):    {mean_vram_p2:6.2f} GiB  (Bài báo & Fig 10:     {paper_vram})")
+        print(f"👉 ĐỈNH BỘ NHỚ TOÀN BỘ (Peak Overall VRAM):          {max_peak_vram:6.2f} GiB")
+        print(f"{'='*95}")
+        print(f"📁 Dữ liệu chi tiết Step {cur_step} đã lưu tại:")
+        print(f"   CSV:  {csv_path}")
+        print(f"   JSON: {json_path}")
+        if args.drive_backup_dir:
+            print(f"   Google Drive: {args.drive_backup_dir}")
+        print(f"{'='*95}\n")
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=4, ensure_ascii=False)
+    # Nếu chạy Sweep nhiều bước: Xuất file tổng hợp và in bảng Ablation đối chiếu
+    if len(steps_to_run) > 1:
+        sweep_data = {
+            "setting": args.setting,
+            "method": args.method,
+            "sweep_steps": steps_to_run,
+            "sigma": sigma,
+            "num_mc": num_mc,
+            "num_prompts": len(prompts_data),
+            "sweep_results": sweep_summaries
+        }
+        sweep_json_filename = f"efficiency_sweep_{args.setting}_{args.method}_{timestamp}.json"
+        sweep_csv_filename = f"efficiency_sweep_{args.setting}_{args.method}_{timestamp}.csv"
+        sweep_json_path = os.path.join(args.output_dir, sweep_json_filename)
+        sweep_csv_path = os.path.join(args.output_dir, sweep_csv_filename)
 
-    # Đồng bộ JSON sang Google Drive
-    if args.drive_backup_dir:
-        try:
-            drive_json_target = os.path.join(args.drive_backup_dir, json_filename)
-            shutil.copyfile(json_path, drive_json_target)
-            print(f"☁️ Đã đồng bộ toàn bộ kết quả CSV & JSON sang Google Drive tại: {args.drive_backup_dir}")
-        except Exception as e_drive:
-            print(f"⚠️ Cảnh báo: Không thể đồng bộ JSON sang Google Drive ({e_drive})")
+        with open(sweep_json_path, "w", encoding="utf-8") as f:
+            json.dump(sweep_data, f, indent=4, ensure_ascii=False)
 
-    # 7. In Bảng Tổng Kết Chuẩn Bảng 9 và Bảng 2
-    paper_t_look = "5.69s" if "sdv1.5" in args.setting else "4.30s"
-    paper_t_rew = "0.65s" if "sdv1.5" in args.setting else "1.30s"
-    paper_t_tar = "7.07s" if "ddpm100" in args.setting else ("3.58s" if "ddim50" in args.setting else "50.00s")
-    paper_t_tot = "13.41s" if "ddpm100" in args.setting else ("9.92s" if "ddim50" in args.setting else "55.60s")
-    paper_vram = "8.90 GiB" if "sdv1.5" in args.setting else "33.84 GiB"
+        sweep_csv_fields = [
+            "lookahead_steps", "mean_t_lookahead_sec", "mean_t_reward_sec", "mean_t_convert_sec",
+            "mean_t_target_sec", "mean_t_total_sec", "mean_vram_phase2_gib", "max_peak_vram_gib"
+        ]
+        with open(sweep_csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=sweep_csv_fields)
+            writer.writeheader()
+            for sm in sweep_summaries:
+                writer.writerow({
+                    "lookahead_steps": sm["lookahead_steps"],
+                    "mean_t_lookahead_sec": f"{sm['mean_t_lookahead_sec']:.3f}",
+                    "mean_t_reward_sec": f"{sm['mean_t_reward_sec']:.3f}",
+                    "mean_t_convert_sec": f"{sm['mean_t_convert_sec']:.3f}",
+                    "mean_t_target_sec": f"{sm['mean_t_target_sec']:.3f}",
+                    "mean_t_total_sec": f"{sm['mean_t_total_sec']:.3f}",
+                    "mean_vram_phase2_gib": f"{sm['mean_vram_phase2_gib']:.2f}",
+                    "max_peak_vram_gib": f"{sm['max_peak_vram_gib']:.2f}",
+                })
 
-    print(f"\n{'='*95}")
-    print(f"📊 BẢNG TỔNG KẾT PHÂN RÃ THỜI GIAN & BỘ NHỚ (KHỚP TABLE 9 & TABLE 2 ICML 2026)")
-    print(f"{'='*95}")
-    print(f"Setting: {args.setting} | Method: {args.method.upper()} | Prompts: {len(results_list)} | Batch: {'Full Batch' if reward_batch_size is None else reward_batch_size}")
-    print(f"{'-'*95}")
-    print(f"• T_lookahead (Sinh N hạt Lookahead):            {mean_t_look:6.2f} giây  (Bài báo DPM-5 / n=50: {paper_t_look})")
-    print(f"• T_reward    (Chấm điểm ImageReward thuần túy): {mean_t_rew:6.2f} giây  (Bài báo n=50 / M=1:   {paper_t_rew})")
-    print(f"  └─ Phụ phí đổi Tensor sang PIL (Convert):       {mean_t_conv:6.2f} giây")
-    print(f"• T_target    (Khử nhiễu 4 ảnh đích Phase 2):    {mean_t_tar:6.2f} giây  (Bài báo Target:       {paper_t_tar})")
-    print(f"--------------------------------------------------------------------------------------------")
-    print(f"👉 TỔNG THỜI GIAN THEO TABLE 9 (Look + Rew + Tar):   {mean_t_tot:6.2f} giây  (Bài báo Table 9:     {paper_t_tot})")
-    print(f"👉 VRAM PHASE 2 (Target Sampling - Khớp Table 2):    {mean_vram_p2:6.2f} GiB  (Bài báo & Fig 10:     {paper_vram})")
-    print(f"👉 ĐỈNH BỘ NHỚ TOÀN BỘ (Peak Overall VRAM):          {max_peak_vram:6.2f} GiB")
-    print(f"{'='*95}")
-    print(f"📁 Dữ liệu chi tiết đã lưu tại:")
-    print(f"   CSV:  {csv_path}")
-    print(f"   JSON: {json_path}")
-    if args.drive_backup_dir:
-        print(f"   Google Drive: {args.drive_backup_dir}")
-    print(f"{'='*95}\n")
+        if args.drive_backup_dir:
+            try:
+                shutil.copyfile(sweep_json_path, os.path.join(args.drive_backup_dir, sweep_json_filename))
+                shutil.copyfile(sweep_csv_path, os.path.join(args.drive_backup_dir, sweep_csv_filename))
+                print(f"☁️ Đã đồng bộ file tổng hợp SWEEP (JSON & CSV) sang Google Drive tại: {args.drive_backup_dir}")
+            except Exception as e_drive:
+                print(f"⚠️ Cảnh báo: Không thể đồng bộ Sweep files sang Google Drive ({e_drive})")
+
+        print(f"\n{'='*105}")
+        print(f"📊 BẢNG TỔNG HỢP ABLATION LOOKAHEAD STEPS (SWEEP: {steps_to_run})")
+        print(f"{'='*105}")
+        print(f"Setting: {args.setting} | Method: {args.method.upper()} | Prompts: {len(prompts_data)}")
+        print(f"{'-'*105}")
+        print(f"{'Lookahead Steps (δ)':<22} | {'T_lookahead':<12} | {'T_reward':<10} | {'T_target':<10} | {'T_total':<10} | {'VRAM P2':<10} | {'Peak VRAM':<10}")
+        print(f"{'-'*105}")
+        for sm in sweep_summaries:
+            st = sm['lookahead_steps']
+            st_name = f"δ = {st} (DPM-{st})" if "sdv1.5" in args.setting else f"δ = {st} (DMD-{st})"
+            print(f"{st_name:<22} | {sm['mean_t_lookahead_sec']:10.2f}s | {sm['mean_t_reward_sec']:8.2f}s | {sm['mean_t_target_sec']:8.2f}s | {sm['mean_t_total_sec']:8.2f}s | {sm['mean_vram_phase2_gib']:6.2f} GiB | {sm['max_peak_vram_gib']:6.2f} GiB")
+        print(f"{'='*105}")
+        print(f"📁 File tổng hợp Sweep đã lưu tại:")
+        print(f"   CSV:  {sweep_csv_path}")
+        print(f"   JSON: {sweep_json_path}")
+        print(f"{'='*105}\n")
 
 
 if __name__ == "__main__":
