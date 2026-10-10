@@ -81,7 +81,42 @@ COUNTING_PROMPTS = [
     {"prompt": "two bicycles leaning against a wall", "object": "bicycle", "count": 2},
     {"prompt": "three people walking down the street", "object": "person", "count": 3},
     {"prompt": "four potted plants by the window", "object": "potted plant", "count": 4},
-    {"prompt": "five balloons tied to a fence", "object": "balloon", "count": 5}
+    {"prompt": "five balloons tied to a fence", "object": "balloon", "count": 5},
+    {"prompt": "two buses on the road", "object": "bus", "count": 2},
+    {"prompt": "three motorcycles in the parking lot", "object": "motorcycle", "count": 3},
+    {"prompt": "four boats on the lake", "object": "boat", "count": 4},
+    {"prompt": "five trees in the garden", "object": "tree", "count": 5},
+    {"prompt": "two ducks in the pond", "object": "duck", "count": 2},
+    {"prompt": "three cows in the meadow", "object": "cow", "count": 3},
+    {"prompt": "four sheep on the hill", "object": "sheep", "count": 4},
+    {"prompt": "one train at the station", "object": "train", "count": 1},
+    {"prompt": "two elephants in the zoo", "object": "elephant", "count": 2},
+    {"prompt": "three monkeys on a tree", "object": "monkey", "count": 3},
+    {"prompt": "four lions in the savanna", "object": "lion", "count": 4},
+    {"prompt": "five penguins on the ice", "object": "penguin", "count": 5},
+    {"prompt": "two pizzas on the table", "object": "pizza", "count": 2},
+    {"prompt": "three burgers on a plate", "object": "burger", "count": 3},
+    {"prompt": "four sandwiches in the basket", "object": "sandwich", "count": 4},
+    {"prompt": "five hotdogs on the grill", "object": "hotdog", "count": 5},
+    {"prompt": "two donuts in a box", "object": "donut", "count": 2},
+    {"prompt": "three cakes on display", "object": "cake", "count": 3},
+    {"prompt": "four apples in a bowl", "object": "apple", "count": 4},
+    {"prompt": "five oranges on the counter", "object": "orange", "count": 5},
+    {"prompt": "two bananas in a bunch", "object": "banana", "count": 2},
+    {"prompt": "three strawberries on a plate", "object": "strawberry", "count": 3},
+    {"prompt": "four grapes on a vine", "object": "grape", "count": 4},
+    {"prompt": "five watermelons in a cart", "object": "watermelon", "count": 5},
+    {"prompt": "two carrots on a cutting board", "object": "carrot", "count": 2},
+    {"prompt": "three potatoes in a sack", "object": "potato", "count": 3},
+    {"prompt": "four tomatoes in a basket", "object": "tomato", "count": 4},
+    {"prompt": "five onions in a bowl", "object": "onion", "count": 5},
+    {"prompt": "two peppers on a grill", "object": "pepper", "count": 2},
+    {"prompt": "three mushrooms in a pan", "object": "mushroom", "count": 3},
+    {"prompt": "four cucumbers in a salad", "object": "cucumber", "count": 4},
+    {"prompt": "five lemons in a basket", "object": "lemon", "count": 5},
+    {"prompt": "two smartphones on the desk", "object": "smartphone", "count": 2},
+    {"prompt": "three tablets on the table", "object": "tablet", "count": 3},
+    {"prompt": "four monitors on the wall", "object": "monitor", "count": 4}
 ]
 
 # ======================================================================================
@@ -183,7 +218,7 @@ def run_empirical_lipschitz_test(
         try:
             sigma2_vals = [float(s.strip()) for s in args.sigma2_list.split(",") if s.strip()]
         except Exception:
-            sigma2_vals = [0.0, 0.1, 0.25, 0.5, 1.0]
+            sigma2_vals = [0.0, 0.1, 0.25, 0.5, 1.0] # default list
     else:
         sigma2_vals = [args.sigma2]
 
@@ -355,15 +390,26 @@ def merge_and_plot_results(output_dir, primary_sigma2):
 
     print(f"✅ Đã gộp thành công {len(merged_pairs)} cặp mẫu duy nhất.")
 
-    # 1. Trích xuất dữ liệu
+    # 1. Trích xuất dữ liệu cho tất cả các sigma
     vanilla_slopes = []
-    rs_slopes = []
     vanilla_rewards = []
-    rs_rewards = []
     
-    s2_key = str(primary_sigma2)
-    if s2_key == "0.0":
-        s2_key = str(float(primary_sigma2))
+    # Lấy danh sách tất cả các sigma2 có trong dữ liệu
+    available_sigmas = set()
+    for p in merged_pairs:
+        m_data = p["models"].get("OWL-ViT-Count")
+        if m_data and "rs_by_sigma" in m_data:
+            for s2 in m_data["rs_by_sigma"].keys():
+                available_sigmas.add(float(s2))
+    
+    available_sigmas = sorted(list(available_sigmas))
+    if len(available_sigmas) == 0:
+        print("⚠️ Không có dữ liệu RS-LiDAR.")
+        return
+
+    # Dict lưu trữ slope theo từng sigma
+    rs_slopes_by_sigma = {s: [] for s in available_sigmas}
+    rs_rewards_by_sigma = {s: [] for s in available_sigmas}
 
     for p in merged_pairs:
         m_data = p["models"].get("OWL-ViT-Count")
@@ -372,70 +418,173 @@ def merge_and_plot_results(output_dir, primary_sigma2):
         vanilla_slopes.append(m_data["slope_vanilla"])
         vanilla_rewards.append(m_data["r_clean_vanilla"])
         
-        if s2_key in m_data["rs_by_sigma"]:
-            rs_slopes.append(m_data["rs_by_sigma"][s2_key]["slope"])
-            rs_rewards.append(m_data["rs_by_sigma"][s2_key]["r_clean"])
+        for s2 in available_sigmas:
+            s2_key = str(s2)
+            if s2_key == "0.0":
+                s2_key = str(float(s2))
+            
+            if s2_key in m_data["rs_by_sigma"]:
+                rs_slopes_by_sigma[s2].append(m_data["rs_by_sigma"][s2_key]["slope"])
+                rs_rewards_by_sigma[s2].append(m_data["rs_by_sigma"][s2_key]["r_clean"])
 
     vanilla_slopes = np.array(vanilla_slopes)
-    rs_slopes = np.array(rs_slopes)
     vanilla_rewards = np.array(vanilla_rewards)
-    rs_rewards = np.array(rs_rewards)
-
-    # 2. Tính toán Metric Lipschitz
+    
     L_max_vanilla = float(np.max(vanilla_slopes)) if len(vanilla_slopes)>0 else 0
     L_mean_vanilla = float(np.mean(vanilla_slopes)) if len(vanilla_slopes)>0 else 0
-    L_max_rs = float(np.max(rs_slopes)) if len(rs_slopes)>0 else 0
-    L_mean_rs = float(np.mean(rs_slopes)) if len(rs_slopes)>0 else 0
 
-    print("=" * 60)
-    print("🏆 BẢNG TỔNG HỢP HỆ SỐ LIPSCHITZ (THRESHOLD REWARD)")
-    print("=" * 60)
-    print(f"Vanilla LiDAR  - L_max: {L_max_vanilla:10.4f} | L_mean: {L_mean_vanilla:10.4f}")
-    print(f"RS-LiDAR       - L_max: {L_max_rs:10.4f} | L_mean: {L_mean_rs:10.4f}")
-    if L_max_rs > 0:
-        print(f"==> Reduction Ratio (L_max): {L_max_vanilla / L_max_rs:.2f}x")
-    print("=" * 60)
-
-    # 3. Vẽ 3-Panel Plot
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    # Tính metric cho từng sigma
+    L_max_rs_list = []
+    L_mean_rs_list = []
     
-    # Panel 1: Bar Chart Lipschitz
-    bar_width = 0.35
+    for s2 in available_sigmas:
+        arr = np.array(rs_slopes_by_sigma[s2])
+        L_max_rs_list.append(float(np.max(arr)) if len(arr) > 0 else 0)
+        L_mean_rs_list.append(float(np.mean(arr)) if len(arr) > 0 else 0)
+
+    # Lấy primary_sigma2 (hoặc lớn nhất nếu không có)
+    if primary_sigma2 not in available_sigmas:
+        non_zero = [s for s in available_sigmas if s > 0]
+        primary_sigma2 = non_zero[-1] if non_zero else available_sigmas[0]
+        
+    idx_primary = available_sigmas.index(primary_sigma2)
+    L_max_rs_primary = L_max_rs_list[idx_primary]
+    L_mean_rs_primary = L_mean_rs_list[idx_primary]
+    rs_slopes_primary = np.array(rs_slopes_by_sigma[primary_sigma2])
+    rs_rewards_primary = np.array(rs_rewards_by_sigma[primary_sigma2])
+
+    print("=" * 60)
+    print("🏆 BẢNG TỔNG HỢP HỆ SỐ LI    # 3. Vẽ Ablation curve over sigma2 (chung cho tất cả)
+    if len(available_sigmas) > 1:
+        plt.figure(figsize=(8, 5))
+        plt.plot(available_sigmas, L_max_rs_list, marker='o', color='skyblue', lw=2, label='RS-LiDAR $L_{max}$')
+        plt.plot(available_sigmas, L_mean_rs_list, marker='s', color='navy', lw=2, label='RS-LiDAR $L_{mean}$')
+        plt.axhline(L_max_vanilla, color='salmon', linestyle='--', label='Vanilla $L_{max}$')
+        plt.axhline(L_mean_vanilla, color='darkred', linestyle='--', label='Vanilla $L_{mean}$')
+        plt.xlabel('Smoothing Radius $\\sigma_2$')
+        plt.ylabel('Lipschitz Constant')
+        plt.title('Lipschitz Bound vs. Smoothing Radius $\\sigma_2$')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "threshold_sigma_ablation.png"), dpi=300)
+        plt.close()
+        print(f"📈 Đã lưu đồ thị Ablation tại threshold_sigma_ablation.png")
+
+    # 4. Lặp qua từng mức sigma để vẽ biểu đồ riêng lẻ
+    non_zero_sigmas = [s for s in available_sigmas if s > 0]
+    bar_width = 0.4
     x_pos = np.arange(2)
-    axes[0].bar(x_pos[0] - bar_width/2, L_max_vanilla, bar_width, label='Vanilla L_max', color='salmon')
-    axes[0].bar(x_pos[0] + bar_width/2, L_mean_vanilla, bar_width, label='Vanilla L_mean', color='darkred')
-    axes[0].bar(x_pos[1] - bar_width/2, L_max_rs, bar_width, label='RS-LiDAR L_max', color='skyblue')
-    axes[0].bar(x_pos[1] + bar_width/2, L_mean_rs, bar_width, label='RS-LiDAR L_mean', color='navy')
-    axes[0].set_xticks(x_pos)
-    axes[0].set_xticklabels(['Vanilla', 'RS-LiDAR'])
-    axes[0].set_ylabel('Empirical Lipschitz Constant')
-    axes[0].set_title(f'Lipschitz Reduction (OWL-ViT Threshold)')
-    axes[0].legend()
 
-    # Panel 2: Distribution of Rewards (Histogram)
-    axes[1].hist(vanilla_rewards, bins=10, alpha=0.5, color='red', label='Vanilla (Discrete 0/1)', density=True)
-    axes[1].hist(rs_rewards, bins=20, alpha=0.5, color='blue', label='RS-LiDAR (Smoothed)', density=True)
-    axes[1].set_xlabel('Reward Value')
-    axes[1].set_ylabel('Density')
-    axes[1].set_title('Reward Distribution Smoothing')
-    axes[1].legend()
+    for s2 in non_zero_sigmas:
+        is_primary = (s2 == primary_sigma2)
+        primary_text = " (Primary)" if is_primary else ""
+        file_suffix = f"sigma_{s2}{'_primary' if is_primary else ''}"
+        
+        idx_s2 = available_sigmas.index(s2)
+        L_max_rs_s2 = L_max_rs_list[idx_s2]
+        L_mean_rs_s2 = L_mean_rs_list[idx_s2]
+        rs_slopes_s2 = np.array(rs_slopes_by_sigma[s2])
+        rs_rewards_s2 = np.array(rs_rewards_by_sigma[s2])
 
-    # Panel 3: Slope Scatter
-    axes[2].scatter(vanilla_slopes, rs_slopes, alpha=0.5, color='purple', s=10)
-    max_val = max(np.percentile(vanilla_slopes, 99) if len(vanilla_slopes)>0 else 1,
-                  np.percentile(rs_slopes, 99) if len(rs_slopes)>0 else 1)
-    axes[2].plot([0, max_val], [0, max_val], 'k--', label='y = x (No Reduction)')
-    axes[2].set_xlabel('Vanilla Slope')
-    axes[2].set_ylabel('RS-LiDAR Slope')
-    axes[2].set_xlim(0, max_val)
-    axes[2].set_ylim(0, max_val)
-    axes[2].set_title('Slope Reduction (Scatter)')
-    axes[2].legend()
+        # 4.1 Vẽ Plot tổng hợp chung (2x2) cho s2
+        fig = plt.figure(figsize=(16, 12))
+        gs = fig.add_gridspec(2, 2)
+        
+        ax_lmax = fig.add_subplot(gs[0, 0])
+        ax_lmean = fig.add_subplot(gs[0, 1])
+        ax_dist = fig.add_subplot(gs[1, 0])
+        ax_scatter = fig.add_subplot(gs[1, 1])
+        
+        fig.suptitle(f"Threshold Reward Analysis - RS-LiDAR σ={s2}{primary_text}", fontsize=16, fontweight='bold')
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, "threshold_lipschitz_comparison.png"), dpi=300)
-    print(f"📈 Đã lưu đồ thị tại {output_dir}/threshold_lipschitz_comparison.png")
+        # Subplot 1: Bar Chart L_max
+        ax_lmax.bar(x_pos, [L_max_vanilla, L_max_rs_s2], bar_width, color=['salmon', 'skyblue'])
+        ax_lmax.set_xticks(x_pos)
+        ax_lmax.set_xticklabels(['Vanilla', f'RS-LiDAR\n(σ={s2})'])
+        ax_lmax.set_ylabel('Empirical Lipschitz $L_{max}$')
+        ax_lmax.set_title(f'Lipschitz $L_{max}$ Reduction')
+        
+        # Subplot 2: Bar Chart L_mean
+        ax_lmean.bar(x_pos, [L_mean_vanilla, L_mean_rs_s2], bar_width, color=['darkred', 'navy'])
+        ax_lmean.set_xticks(x_pos)
+        ax_lmean.set_xticklabels(['Vanilla', f'RS-LiDAR\n(σ={s2})'])
+        ax_lmean.set_ylabel('Empirical Lipschitz $L_{mean}$')
+        ax_lmean.set_title(f'Lipschitz $L_{mean}$ Reduction')
 
+        # Subplot 3: Reward Distribution
+        ax_dist.hist(vanilla_rewards, bins=10, alpha=0.5, color='red', label='Vanilla (Discrete 0/1)', density=True)
+        ax_dist.hist(rs_rewards_s2, bins=20, alpha=0.5, color='blue', label=f'RS-LiDAR (σ={s2})', density=True)
+        ax_dist.set_xlabel('Reward Value')
+        ax_dist.set_ylabel('Density')
+        ax_dist.set_title('Reward Distribution Smoothing')
+        ax_dist.legend()
+
+        # Subplot 4: Slope Scatter
+        ax_scatter.scatter(vanilla_slopes, rs_slopes_s2, alpha=0.5, color='purple', s=10)
+        max_val = max(np.percentile(vanilla_slopes, 99) if len(vanilla_slopes)>0 else 1,
+                      np.percentile(rs_slopes_s2, 99) if len(rs_slopes_s2)>0 else 1)
+        ax_scatter.plot([0, max_val], [0, max_val], 'k--', label='y = x')
+        ax_scatter.set_xlabel('Vanilla Slope')
+        ax_scatter.set_ylabel(f'RS-LiDAR Slope (σ={s2})')
+        ax_scatter.set_xlim(0, max_val)
+        ax_scatter.set_ylim(0, max_val)
+        ax_scatter.set_title('Slope Reduction (Scatter)')
+        ax_scatter.legend()
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        combined_path = os.path.join(output_dir, f"threshold_lipschitz_combined_{file_suffix}.png")
+        plt.savefig(combined_path, dpi=300)
+        plt.close()
+        
+        # 4.2 LƯU TỪNG BIỂU ĐỒ RIÊNG LẺ
+        # 1. Bar Chart L_max
+        plt.figure(figsize=(6, 5))
+        plt.bar(x_pos, [L_max_vanilla, L_max_rs_s2], bar_width, color=['salmon', 'skyblue'])
+        plt.xticks(x_pos, ['Vanilla', f'RS-LiDAR (σ={s2})'])
+        plt.ylabel('Empirical Lipschitz $L_{max}$')
+        plt.title(f'Lipschitz $L_{max}$ Reduction{primary_text}')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"threshold_lmax_bar_{file_suffix}.png"), dpi=300)
+        plt.close()
+
+        # 2. Bar Chart L_mean
+        plt.figure(figsize=(6, 5))
+        plt.bar(x_pos, [L_mean_vanilla, L_mean_rs_s2], bar_width, color=['darkred', 'navy'])
+        plt.xticks(x_pos, ['Vanilla', f'RS-LiDAR (σ={s2})'])
+        plt.ylabel('Empirical Lipschitz $L_{mean}$')
+        plt.title(f'Lipschitz $L_{mean}$ Reduction{primary_text}')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"threshold_lmean_bar_{file_suffix}.png"), dpi=300)
+        plt.close()
+
+        # 3. Reward Distribution
+        plt.figure(figsize=(7, 5))
+        plt.hist(vanilla_rewards, bins=10, alpha=0.5, color='red', label='Vanilla (Discrete 0/1)', density=True)
+        plt.hist(rs_rewards_s2, bins=20, alpha=0.5, color='blue', label=f'RS-LiDAR (σ={s2})', density=True)
+        plt.xlabel('Reward Value')
+        plt.ylabel('Density')
+        plt.title(f'Reward Distribution Smoothing{primary_text}')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"threshold_reward_dist_{file_suffix}.png"), dpi=300)
+        plt.close()
+
+        # 4. Slope Scatter
+        plt.figure(figsize=(6, 6))
+        plt.scatter(vanilla_slopes, rs_slopes_s2, alpha=0.5, color='purple', s=10)
+        plt.plot([0, max_val], [0, max_val], 'k--', label='y = x')
+        plt.xlabel('Vanilla Slope')
+        plt.ylabel(f'RS-LiDAR Slope (σ={s2})')
+        plt.xlim(0, max_val)
+        plt.ylim(0, max_val)
+        plt.title(f'Slope Reduction (Scatter){primary_text}')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"threshold_slope_scatter_{file_suffix}.png"), dpi=300)
+        plt.close()
+        
+    print(f"📈 Đã lưu tất cả các biểu đồ cho từng mức sigma vào thư mục {output_dir}")
 
 # ======================================================================================
 # 🏁 MAIN ENTRY POINT
