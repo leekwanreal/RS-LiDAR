@@ -511,14 +511,14 @@ def merge_and_plot_results(output_dir, primary_sigma2):
         ax_lmax.set_xticks(x_pos)
         ax_lmax.set_xticklabels(['Vanilla', f'RS-LiDAR\n(σ={s2})'])
         ax_lmax.set_ylabel('Empirical Lipschitz $L_{max}$')
-        ax_lmax.set_title(f'Lipschitz $L_{max}$ Reduction')
+        ax_lmax.set_title('Lipschitz $L_{max}$ Reduction')
         
         # Subplot 2: Bar Chart L_mean
         ax_lmean.bar(x_pos, [L_mean_vanilla, L_mean_rs_s2], bar_width, color=['darkred', 'navy'])
         ax_lmean.set_xticks(x_pos)
         ax_lmean.set_xticklabels(['Vanilla', f'RS-LiDAR\n(σ={s2})'])
         ax_lmean.set_ylabel('Empirical Lipschitz $L_{mean}$')
-        ax_lmean.set_title(f'Lipschitz $L_{mean}$ Reduction')
+        ax_lmean.set_title('Lipschitz $L_{mean}$ Reduction')
 
         # Subplot 3: Reward Distribution
         ax_dist.hist(vanilla_rewards, bins=10, alpha=0.5, color='red', label='Vanilla (Discrete 0/1)', density=True)
@@ -551,7 +551,7 @@ def merge_and_plot_results(output_dir, primary_sigma2):
         plt.bar(x_pos, [L_max_vanilla, L_max_rs_s2], bar_width, color=['salmon', 'skyblue'])
         plt.xticks(x_pos, ['Vanilla', f'RS-LiDAR (σ={s2})'])
         plt.ylabel('Empirical Lipschitz $L_{max}$')
-        plt.title(f'Lipschitz $L_{max}$ Reduction{primary_text}')
+        plt.title(f'Lipschitz $L_{{max}}$ Reduction{primary_text}')
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"threshold_lmax_bar_{file_suffix}.png"), dpi=300)
         plt.close()
@@ -561,7 +561,7 @@ def merge_and_plot_results(output_dir, primary_sigma2):
         plt.bar(x_pos, [L_mean_vanilla, L_mean_rs_s2], bar_width, color=['darkred', 'navy'])
         plt.xticks(x_pos, ['Vanilla', f'RS-LiDAR (σ={s2})'])
         plt.ylabel('Empirical Lipschitz $L_{mean}$')
-        plt.title(f'Lipschitz $L_{mean}$ Reduction{primary_text}')
+        plt.title(f'Lipschitz $L_{{mean}}$ Reduction{primary_text}')
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f"threshold_lmean_bar_{file_suffix}.png"), dpi=300)
         plt.close()
