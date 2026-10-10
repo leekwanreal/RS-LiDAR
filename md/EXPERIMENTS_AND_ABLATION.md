@@ -37,7 +37,7 @@
    - Giữ nguyên bằng chính xác Vanilla và LiDAR vì RS-LiDAR kế thừa trọn vẹn đặc tính **Closed-form Guidance (No-BackPropagation)**, không lưu graph tính toán đạo hàm ngược như UG / DATE.
 2. **Thời gian (Time)**:
    - Số đứng trước (ví dụ `9.97s` / `13.46s` / `78.77s`): Áp dụng cơ chế **Latent Perturbation Smoothing** (chỉ tốn thêm $\approx 0.05\text{s} - 0.1\text{s}$ trên GPU).
-   - Số trong ngoặc `(11.87s)` / `(15.36s)` / `(88.67s)`: Áp dụng cơ chế **Monte Carlo ImageReward Smoothing ($M=4$ samples)** (tính thêm $M$ lần chấm điểm reward).
+   - Số trong ngoặc `(11.87s)` / `(15.36s)` / `(84.58s)`: Áp dụng cơ chế **Monte Carlo ImageReward Smoothing ($M=4$ samples)** (tính thêm $M$ lần chấm điểm reward).
 
 ---
 
@@ -51,13 +51,13 @@
 
 ### Bảng 1.1: Tổng Hợp Thước Đo Chính (Table 2 Metrics)
 
-| Backbone | Cấu hình Monte Carlo ($M$) | IR (↑) | CLIP (↑) | HPS (↑) | GenEval (↑) | Time (sec.) (↓) | Mem. (GiB) (↓) | 
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **SD v1.5 (DDIM-50)** | $M = 1$ | 0.332 | 0.278 | 0.268 | 0.459 | 9.92 | 8.90 |
-| **SD v1.5 (DDIM-50)** | $M = 2$ | 0.349 | 0.278 | 0.268 | 0.465 | 10.57 | 8.90 |
-| **SD v1.5 (DDIM-50)** | $M = 4$ | 0.368 | 0.279 | 0.268 | 0.465 | 11.87 | 8.90 |
-| **SD v1.5 (DDIM-50)** | $M = 8$ | **0.376** | **0.279** | **0.268** | **0.467** | 14.47 | 8.90 |
-| **SD v1.5 (DDIM-50)** | $M = 16$ | 0.359 | 0.278 | 0.268 | 0.462 | 19.67 | 8.90 |
+| Backbone | Cấu hình Monte Carlo ($M$) | IR (↑) | CLIP (↑) | HPS (↑) | GenEval (↑) | 
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **SD v1.5 (DDIM-50)** | $M = 1$ | 0.332 | 0.278 | 0.268 | 0.459 |
+| **SD v1.5 (DDIM-50)** | $M = 2$ | 0.349 | 0.278 | 0.268 | 0.465 |
+| **SD v1.5 (DDIM-50)** | $M = 4$ | 0.368 | 0.279 | 0.268 | 0.465 |
+| **SD v1.5 (DDIM-50)** | $M = 8$ | **0.376** | **0.279** | **0.268** | **0.467** |
+| **SD v1.5 (DDIM-50)** | $M = 16$ | 0.359 | 0.278 | 0.268 | 0.462 
 
 ---
 
@@ -71,12 +71,12 @@
 
 ### Bảng 2.1: Tổng Hợp Thước Đo Chính (Table 2 Metrics)
 
-| Backbone | Lookahead Solver (Steps $\delta$) | IR (↑) | CLIP (↑) | HPS (↑) | GenEval (↑) | Time (sec.) (↓) | Mem. (GiB) (↓) | 
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | 
-| **SD v1.5 (DDIM-50)** | $\delta = 2$ (DPM-2) | 0.154 | 0.275 | 0.263 | 0.448 | | | 
-| **SD v1.5 (DDIM-50)** | $\delta = 3$ (DPM-3) | 0.224 | 0.275 | 0.265 | 0.466 | | | 
-| **SD v1.5 (DDIM-50)** | $\delta = 4$ (DPM-4) | 0.314 | 0.277 | 0.268 | **0.467** | | | 
-| **SD v1.5 (DDIM-50)** | $\delta = 5$ (DPM-5) | **0.376** | **0.279** | **0.272** | **0.467** | 14.47 | 8.90 |
+| Backbone | Lookahead Solver (Steps $\delta$) | IR (↑) | CLIP (↑) | HPS (↑) | GenEval (↑) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **SD v1.5 (DDIM-50)** | $\delta = 2$ (DPM-2) | 0.154 | 0.275 | 0.263 | 0.448 |
+| **SD v1.5 (DDIM-50)** | $\delta = 3$ (DPM-3) | 0.224 | 0.275 | 0.265 | 0.466 |
+| **SD v1.5 (DDIM-50)** | $\delta = 4$ (DPM-4) | 0.314 | 0.277 | 0.268 | **0.467** |
+| **SD v1.5 (DDIM-50)** | $\delta = 5$ (DPM-5) | **0.376** | **0.279** | **0.272** | **0.467** |
 
 ---
 
@@ -84,7 +84,7 @@
 
 > **Mô tả**: Đo đạc chi phí thời gian (giây) theo 3 thành phần trong quy trình suy luận 2-Phase (khớp cấu trúc Bảng 9 bài báo gốc ICML 2026), tính trung bình trên GPU NVIDIA A100.
 
-| Giai đoạn (Stage) | SD v1.5 (DDIM-50 / DPM-5) | SD v1.5 (DDPM-50 / DPM-5) | SDXL (DDPM-100 / DMD-1) |
+| Giai đoạn (Stage) | SD v1.5 (DDIM-50 / DPM-5) | SD v1.5 (DDPM-100 / DPM-5) | SDXL (DDPM-100 / DMD-1) |
 | :--- | :---: | :---: | :---: |
 | Lookahead sampling | 5.69 | 5.69 | 31.45 |
 | Reward annotation | 0.65 | 0.65 | 1.97 |
