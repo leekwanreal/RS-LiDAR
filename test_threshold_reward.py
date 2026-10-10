@@ -454,7 +454,15 @@ def merge_and_plot_results(output_dir, primary_sigma2):
     rs_rewards_primary = np.array(rs_rewards_by_sigma[primary_sigma2])
 
     print("=" * 60)
-    print("🏆 BẢNG TỔNG HỢP HỆ SỐ LI    # 3. Vẽ Ablation curve over sigma2 (chung cho tất cả)
+    print("🏆 BẢNG TỔNG HỢP HỆ SỐ LIPSCHITZ (THRESHOLD REWARD)")
+    print("=" * 60)
+    print(f"Vanilla LiDAR  - L_max: {L_max_vanilla:10.4f} | L_mean: {L_mean_vanilla:10.4f}")
+    print(f"RS-LiDAR (σ={primary_sigma2}) - L_max: {L_max_rs_primary:10.4f} | L_mean: {L_mean_rs_primary:10.4f}")
+    if L_max_rs_primary > 0:
+        print(f"==> Reduction Ratio (L_max): {L_max_vanilla / L_max_rs_primary:.2f}x")
+    print("=" * 60)
+
+    # 3. Vẽ Ablation curve over sigma2 (chung cho tất cả)
     if len(available_sigmas) > 1:
         plt.figure(figsize=(8, 5))
         plt.plot(available_sigmas, L_max_rs_list, marker='o', color='skyblue', lw=2, label='RS-LiDAR $L_{max}$')
