@@ -25,6 +25,7 @@ venv/
 # Experiment outputs & weights
 Lookahead_samples/
 Target_samples/
+Threshold_Rewards*/
 *.pt
 *.pth
 *.bin
