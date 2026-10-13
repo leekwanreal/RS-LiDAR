@@ -40,6 +40,8 @@ from test_sensitive_prompt_landscape import (
     InMemoryLookaheadDataset,
     pil_to_tensor_neg1_to_1,
     tensor_to_pil,
+    extract_single_pil_image,
+    extract_pil_images_list,
 )
 
 
@@ -114,11 +116,17 @@ class MockDiffusionPipeline:
                 color = (40, 180, 140)  # RS-LiDAR (Xanh ngọc teal)
             pils.append(Image.new("RGB", (64, 64), color=color))
 
+        # Mô phỏng chuẩn FKDStableDiffusion trả về tuple([StableDiffusionPipelineOutput(...)])
+        if fkd_args is not None:
+            return tuple([SimpleNamespace(images=pils)])
+
         return SimpleNamespace(images=pils)
 
 
 class MockImageRewardModel:
     def score(self, prompt, pil_image):
+        if not isinstance(pil_image, Image.Image):
+            raise TypeError(f"ImageReward scoring requires PIL.Image or str, got {type(pil_image)}")
         # Trả về điểm giả lập dựa trên độ sáng trung bình và prompt hash
         arr = np.array(pil_image, dtype=np.float32) / 255.0
         mean_val = float(np.mean(arr))
@@ -229,6 +237,34 @@ class TestAblation1Mock(unittest.TestCase):
         self.assertIn("r_rs", p2_res)
         self.assertIn("delta_r", p2_res)
         self.assertIsInstance(p2_res["img_unsteered"], Image.Image)
+        self.assertIsInstance(p2_res["img_vanilla"], Image.Image)
+        self.assertIsInstance(p2_res["img_rs"], Image.Image)
+
+    def test_03b_extract_single_pil_image_unwrapping(self):
+        """Kiểm tra bóc tách an toàn tuyệt đối từ các cấu trúc lồng nhau của Diffusers output."""
+        base_img = Image.new("RGB", (32, 32), color=(100, 150, 200))
+
+        # 1. Tuple of PipelineOutput (FKDStableDiffusion return format)
+        nested_tuple = tuple([SimpleNamespace(images=[base_img])])
+        self.assertIsInstance(extract_single_pil_image(nested_tuple), Image.Image)
+
+        # 2. PipelineOutput trực tiếp
+        pipe_out = SimpleNamespace(images=[base_img])
+        self.assertIsInstance(extract_single_pil_image(pipe_out), Image.Image)
+
+        # 3. List of PIL
+        self.assertIsInstance(extract_single_pil_image([base_img]), Image.Image)
+
+        # 4. Pure PIL
+        self.assertIsInstance(extract_single_pil_image(base_img), Image.Image)
+
+        # 5. Tensor [-1, 1]
+        dummy_tensor = torch.zeros(1, 3, 32, 32)
+        self.assertIsInstance(extract_single_pil_image(dummy_tensor), Image.Image)
+
+        # 6. NumPy array
+        dummy_arr = np.zeros((32, 32, 3), dtype=np.uint8)
+        self.assertIsInstance(extract_single_pil_image(dummy_arr), Image.Image)
 
     def test_04_compute_1d_landscape_slicing(self):
         """Kiểm tra cắt lát 1D dọc vector vi sai và tính đạo hàm số học vi phân."""

@@ -303,11 +303,82 @@ def load_stratified_prompts_per_category(
 
 
 # ======================================================================================
+# 🔄 TENSOR & IMAGE CONVERSION UTILITIES
+# ======================================================================================
+def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
+    """Chuyển PyTorch Tensor [1, 3, H, W] hoặc [3, H, W] trong [-1.0, 1.0] thành ảnh PIL."""
+    if tensor.dim() == 4:
+        tensor = tensor.squeeze(0)
+    arr = (tensor.contiguous().permute(1, 2, 0).detach().cpu().numpy() + 1.0) * 127.5
+    arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+def extract_single_pil_image(item: Any) -> Image.Image:
+    """
+    Rút trích triệt để 1 đối tượng PIL.Image từ bất kỳ cấu trúc lồng nhau nào:
+    (tuple, list, StableDiffusionPipelineOutput, torch.Tensor, np.ndarray, v.v.)
+    Học tập cơ chế bóc tách an toàn của test_empirical_lipschitz.py & LiDAR_sampling.py.
+    """
+    cur = item
+    # 1. Bóc tách các lớp tuple/list bên ngoài
+    while isinstance(cur, (tuple, list)) and len(cur) > 0:
+        cur = cur[0]
+
+    # 2. Bóc tách thuộc tính .images của Diffusers Pipeline Output
+    if hasattr(cur, "images"):
+        cur = cur.images
+        while isinstance(cur, (tuple, list)) and len(cur) > 0:
+            cur = cur[0]
+
+    # 3. Chuyển đổi định dạng nếu cần
+    if isinstance(cur, Image.Image):
+        return cur
+    if isinstance(cur, torch.Tensor):
+        return tensor_to_pil(cur)
+    if isinstance(cur, np.ndarray):
+        if cur.dtype != np.uint8:
+            cur = np.clip(cur * 255.0, 0, 255).astype(np.uint8)
+        return Image.fromarray(cur)
+    if hasattr(cur, "cpu") and hasattr(cur, "numpy"):
+        return tensor_to_pil(cur)
+
+    return cur
+
+def extract_pil_images_list(raw_imgs: Any) -> List[Image.Image]:
+    """
+    Rút trích danh sách PIL.Image từ output của Diffusers pipeline hoặc bất kỳ cấu trúc nào.
+    """
+    if hasattr(raw_imgs, "images"):
+        raw_list = raw_imgs.images
+    elif isinstance(raw_imgs, (tuple, list)):
+        if len(raw_imgs) == 0:
+            return []
+        first = raw_imgs[0]
+        if hasattr(first, "images"):
+            raw_list = first.images
+        elif isinstance(first, (tuple, list)):
+            return extract_pil_images_list(first)
+        else:
+            raw_list = list(raw_imgs)
+    else:
+        raw_list = [raw_imgs]
+
+    return [extract_single_pil_image(it) for it in raw_list]
+
+def pil_to_tensor_neg1_to_1(pil_img: Any, device: str = "cpu") -> torch.Tensor:
+    """Chuyển ảnh PIL thành PyTorch Tensor [1, 3, H, W] trong dải [-1.0, 1.0]."""
+    clean_img = extract_single_pil_image(pil_img)
+    arr = np.array(clean_img.convert("RGB"), dtype=np.float32) / 127.5 - 1.0
+    tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous().to(device)
+    return tensor
+
+
+# ======================================================================================
 # ⚡ REWARD SCORING UTILITIES
 # ======================================================================================
 @torch.inference_mode()
 def score_single_reward_model(
-    images: List[Image.Image],
+    images: List[Any],
     prompt: str,
     reward_name: str = "ImageReward",
     ir_model: Any = None,
@@ -315,16 +386,19 @@ def score_single_reward_model(
 ) -> np.ndarray:
     """
     Chấm điểm 1 danh sách ảnh PIL với prompt bằng mô hình Reward được chỉ định.
+    Tự động chuẩn hóa và rút trích PIL.Image thuần túy cho từng phần tử để chống crash
+    (tương tự evaluate_reward_all_models trong test_empirical_lipschitz.py).
     Trả về numpy array 1D chứa điểm của từng ảnh.
     """
-    N = len(images)
     p_str = prompt[0] if isinstance(prompt, (list, tuple)) else str(prompt)
+    clean_images = [extract_single_pil_image(im) for im in images]
+    N = len(clean_images)
 
     # 1. ImageReward
     if "image" in reward_name.lower():
         if ir_model is not None:
             try:
-                scores = [float(ir_model.score(p_str, img)) for img in images]
+                scores = [float(ir_model.score(p_str, img)) for img in clean_images]
                 return np.array(scores, dtype=np.float32)
             except Exception as e:
                 print(f"⚠️ Lỗi ImageReward scoring: {e}")
@@ -338,7 +412,7 @@ def score_single_reward_model(
                 clip_obj = REWARDS_DICT["Clip-Score"]
                 clip_model = clip_obj.clip_model
                 preprocess = clip_obj.preprocess
-                tensors = torch.stack([preprocess(img) for img in images]).to(device=device)
+                tensors = torch.stack([preprocess(img) for img in clean_images]).to(device=device)
                 image_features = F.normalize(clip_model.encode_image(tensors))
                 text_tokens = clip.tokenize(p_str, truncate=True).to(device)
                 txt_features = F.normalize(clip_model.encode_text(text_tokens))
@@ -351,30 +425,12 @@ def score_single_reward_model(
     # 3. HPS v2.1
     if "hps" in reward_name.lower() and do_human_preference_score is not None:
         try:
-            scs = do_human_preference_score(images=images, prompts=[p_str] * N)
+            scs = do_human_preference_score(images=clean_images, prompts=[p_str] * N)
             return np.array(scs, dtype=np.float32)
         except Exception:
             pass
 
     return np.zeros(N, dtype=np.float32)
-
-
-# ======================================================================================
-# 🔄 TENSOR & IMAGE CONVERSION UTILITIES
-# ======================================================================================
-def pil_to_tensor_neg1_to_1(pil_img: Image.Image, device: str = "cpu") -> torch.Tensor:
-    """Chuyển ảnh PIL thành PyTorch Tensor [1, 3, H, W] trong dải [-1.0, 1.0]."""
-    arr = np.array(pil_img.convert("RGB"), dtype=np.float32) / 127.5 - 1.0
-    tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous().to(device)
-    return tensor
-
-def tensor_to_pil(tensor: torch.Tensor) -> Image.Image:
-    """Chuyển PyTorch Tensor [1, 3, H, W] hoặc [3, H, W] trong [-1.0, 1.0] thành ảnh PIL."""
-    if tensor.dim() == 4:
-        tensor = tensor.squeeze(0)
-    arr = (tensor.contiguous().permute(1, 2, 0).detach().cpu().numpy() + 1.0) * 127.5
-    arr = np.clip(arr, 0, 255).astype(np.uint8)
-    return Image.fromarray(arr)
 
 
 # ======================================================================================
@@ -518,17 +574,6 @@ def run_phase2_target_steering(
     if DDIMScheduler is not None and not isinstance(pipe.scheduler, DDIMScheduler):
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
-    def _extract_first_pil(res):
-        if hasattr(res, "images"):
-            imgs = res.images
-        elif isinstance(res, (tuple, list)):
-            imgs = res[0]
-        else:
-            imgs = res
-        if isinstance(imgs, (list, tuple)) and len(imgs) > 0:
-            return imgs[0]
-        return imgs
-
     # 1. Nhánh 1: Unsteered (s = 0)
     if StableDiffusionPipeline is not None and isinstance(pipe, StableDiffusionPipeline):
         out_unsteered = StableDiffusionPipeline.__call__(
@@ -546,7 +591,7 @@ def run_phase2_target_steering(
             latents=init_latents.clone(),
             fkd_args=None
         )
-    img_unsteered = _extract_first_pil(out_unsteered)
+    img_unsteered = extract_single_pil_image(out_unsteered)
     r_unsteered = float(score_single_reward_model([img_unsteered], prompt, "ImageReward", ir_model, device=device)[0])
 
     # 2. Nhánh 2: Vanilla LiDAR (s = 12.5)
@@ -578,7 +623,7 @@ def run_phase2_target_steering(
         latents=init_latents.clone(),
         fkd_args=fkd_args_vanilla
     )
-    img_vanilla = _extract_first_pil(out_vanilla)
+    img_vanilla = extract_single_pil_image(out_vanilla)
     r_vanilla = float(score_single_reward_model([img_vanilla], prompt, "ImageReward", ir_model, device=device)[0])
 
     # 3. Nhánh 3: RS-LiDAR (s = 12.5)
@@ -610,7 +655,7 @@ def run_phase2_target_steering(
         latents=init_latents.clone(),
         fkd_args=fkd_args_rs
     )
-    img_rs = _extract_first_pil(out_rs)
+    img_rs = extract_single_pil_image(out_rs)
     r_rs = float(score_single_reward_model([img_rs], prompt, "ImageReward", ir_model, device=device)[0])
 
     return {
@@ -629,8 +674,8 @@ def run_phase2_target_steering(
 # ======================================================================================
 @torch.inference_mode()
 def compute_1d_landscape_profile(
-    img_vanilla: Image.Image,
-    img_rs: Image.Image,
+    img_vanilla: Any,
+    img_rs: Any,
     prompt: str,
     ir_model: Any,
     slicing_points: int = 41,
@@ -648,6 +693,8 @@ def compute_1d_landscape_profile(
       f_RS(alpha)      = (1/M) sum R(clip(x(alpha) + sigma * u_m, -1, 1)) với CRN
       Numerical Secant Derivative |Df(alpha)| = |f(alpha + da) - f(alpha)| / da
     """
+    img_vanilla = extract_single_pil_image(img_vanilla)
+    img_rs = extract_single_pil_image(img_rs)
     t_v = pil_to_tensor_neg1_to_1(img_vanilla, device=device)
     t_rs = pil_to_tensor_neg1_to_1(img_rs, device=device)
 
@@ -1110,9 +1157,9 @@ def run_ablation1_experiment(pipe, vae, ir_model, prompts_list, args, device="cu
         unsteered_path = os.path.join(images_dir, f"{real_idx:05d}_unsteered.png")
         vanilla_path = os.path.join(images_dir, f"{real_idx:05d}_vanilla.png")
         rs_path = os.path.join(images_dir, f"{real_idx:05d}_rs.png")
-        p2_results["img_unsteered"].save(unsteered_path)
-        p2_results["img_vanilla"].save(vanilla_path)
-        p2_results["img_rs"].save(rs_path)
+        extract_single_pil_image(p2_results["img_unsteered"]).save(unsteered_path)
+        extract_single_pil_image(p2_results["img_vanilla"]).save(vanilla_path)
+        extract_single_pil_image(p2_results["img_rs"]).save(rs_path)
 
         # ----------------------------------------------------------------------
         # BƯỚC 3: 1D DIRECTIONAL LANDSCAPE SLICING
