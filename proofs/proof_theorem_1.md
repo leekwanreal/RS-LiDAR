@@ -75,3 +75,17 @@ $$\|\nabla R_\sigma(\mathbf{x})\|_2 = \sup_{\mathbf{v} \in \mathbb{S}^{D-1}} |\m
 
 Bất đẳng thức đúng với mọi $\mathbf{x} \in \mathbb{R}^D$ mà không cần bất kỳ giả định nào về tính khả vi hay tính Lipschitz của $R$.  
 Chứng minh hoàn tất. $\blacksquare$
+
+---
+
+### BƯỚC 6 (BỔ SUNG): TÍNH BẢO TOÀN DƯỚI TOÁN TỬ KẸP BIÊN $\Pi_{[-1, 1]}$
+
+Trong thực tế pipeline ảnh diffusion, tensor ảnh sau giải mã VAE được giới hạn trong dải động vật lý qua toán tử chiếu trực giao $\Pi_{[-1, 1]}(\mathbf{z}) \triangleq \operatorname{clip}(\mathbf{z}, -1.0, 1.0)$. Khi đánh giá hàm phần thưởng trên ảnh bị kẹp biên $\widetilde{R} \triangleq R \circ \Pi_{[-1, 1]}$:
+
+1. **Bảo toàn biên độ dao động**: Do miền giá trị của phép chiếu $\Pi_{[-1, 1]}(\mathbb{R}^D) \subseteq [-1, 1]^D$, biên độ dao động của hàm hợp thỏa mãn:
+   $$\Delta \widetilde{R} = \operatorname{ess\,sup}_{\mathbf{z}} \widetilde{R}(\mathbf{z}) - \operatorname{ess\,inf}_{\mathbf{z}} \widetilde{R}(\mathbf{z}) \le \Delta R < \infty$$
+2. **Bảo toàn bất đẳng thức Định lý 1**: Áp dụng trực tiếp 5 bước chứng minh của Định lý 1 cho hàm bị chặn $\widetilde{R} \in L^\infty(\mathbb{R}^D)$, ta có:
+   $$\|\nabla R_\sigma^{\text{clip}}(\mathbf{x})\|_2 \le \frac{\Delta R}{\sigma \sqrt{2\pi}}$$
+   Cận trên lý thuyết được bảo toàn nguyên vẹn 100%.
+3. **Hiệu ứng giảm chấn gradient (Gradient Damping)**: Do đạo hàm của phép chiếu $\frac{\partial \Pi(z_i)}{\partial z_i} = \mathbb{I}(-1.0 \le z_i \le 1.0)$, tại các tọa độ pixel bão hòa ($|z_i| > 1.0$), gradient chiếu bằng 0. Do đó, phép kẹp biên triệt tiêu gradient ở các vùng bão hòa, đóng vai trò như một bộ giảm chấn giúp gradient thực nghiệm càng phẳng và ổn định hơn.
+
