@@ -411,15 +411,28 @@ def run_phase1_lookahead_dual_annotation(
     if DPMSolverMultistepScheduler is not None:
         pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
-    latents_out = pipe(
-        prompt=[prompt] * num_particles,
-        num_inference_steps=guidance_steps,
-        guidance_scale=7.5,
-        generator=generator,
-        output_type="latent"
-    )
+    # Sử dụng superclass StableDiffusionPipeline.__call__ để bypass FK Steering hook trong Phase 1
+    # Tránh lỗi KeyError: 'pred_original_sample' khi dùng DPMSolverMultistepScheduler
+    if StableDiffusionPipeline is not None and isinstance(pipe, StableDiffusionPipeline):
+        latents_out = StableDiffusionPipeline.__call__(
+            pipe,
+            prompt=[prompt] * num_particles,
+            num_inference_steps=guidance_steps,
+            guidance_scale=7.5,
+            generator=generator,
+            output_type="latent"
+        )
+    else:
+        latents_out = pipe(
+            prompt=[prompt] * num_particles,
+            num_inference_steps=guidance_steps,
+            guidance_scale=7.5,
+            generator=generator,
+            output_type="latent"
+        )
     pipe.scheduler = scheduler_backup
-    lookahead_latents = latents_out.images.detach() # [50, 4, 64, 64]
+    raw_latents = latents_out.images if hasattr(latents_out, "images") else latents_out[0]
+    lookahead_latents = raw_latents.detach() # [50, 4, 64, 64]
 
     # 2. Giải mã VAE sang tensor pixel [-1.0, 1.0] (theo chunk để tránh OOM)
     scaled = (lookahead_latents / vae.config.scaling_factor).to(device=device, dtype=vae.dtype)
@@ -505,15 +518,35 @@ def run_phase2_target_steering(
     if DDIMScheduler is not None and not isinstance(pipe.scheduler, DDIMScheduler):
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
+    def _extract_first_pil(res):
+        if hasattr(res, "images"):
+            imgs = res.images
+        elif isinstance(res, (tuple, list)):
+            imgs = res[0]
+        else:
+            imgs = res
+        if isinstance(imgs, (list, tuple)) and len(imgs) > 0:
+            return imgs[0]
+        return imgs
+
     # 1. Nhánh 1: Unsteered (s = 0)
-    out_unsteered = pipe(
-        prompt=prompt,
-        num_inference_steps=target_steps,
-        guidance_scale=7.5,
-        latents=init_latents.clone(),
-        fkd_args=None
-    )
-    img_unsteered = out_unsteered.images[0]
+    if StableDiffusionPipeline is not None and isinstance(pipe, StableDiffusionPipeline):
+        out_unsteered = StableDiffusionPipeline.__call__(
+            pipe,
+            prompt=prompt,
+            num_inference_steps=target_steps,
+            guidance_scale=7.5,
+            latents=init_latents.clone()
+        )
+    else:
+        out_unsteered = pipe(
+            prompt=prompt,
+            num_inference_steps=target_steps,
+            guidance_scale=7.5,
+            latents=init_latents.clone(),
+            fkd_args=None
+        )
+    img_unsteered = _extract_first_pil(out_unsteered)
     r_unsteered = float(score_single_reward_model([img_unsteered], prompt, "ImageReward", ir_model, device=device)[0])
 
     # 2. Nhánh 2: Vanilla LiDAR (s = 12.5)
@@ -545,7 +578,7 @@ def run_phase2_target_steering(
         latents=init_latents.clone(),
         fkd_args=fkd_args_vanilla
     )
-    img_vanilla = out_vanilla.images[0]
+    img_vanilla = _extract_first_pil(out_vanilla)
     r_vanilla = float(score_single_reward_model([img_vanilla], prompt, "ImageReward", ir_model, device=device)[0])
 
     # 3. Nhánh 3: RS-LiDAR (s = 12.5)
@@ -577,7 +610,7 @@ def run_phase2_target_steering(
         latents=init_latents.clone(),
         fkd_args=fkd_args_rs
     )
-    img_rs = out_rs.images[0]
+    img_rs = _extract_first_pil(out_rs)
     r_rs = float(score_single_reward_model([img_rs], prompt, "ImageReward", ir_model, device=device)[0])
 
     return {
