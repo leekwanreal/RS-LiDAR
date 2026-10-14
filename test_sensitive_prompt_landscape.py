@@ -202,6 +202,7 @@ GENEVAL_CATEGORIES = [
 
 def load_stratified_prompts_per_category(
     prompt_path: str = "prompt_files/geneval_metadata.jsonl",
+    categories: Optional[str] = None,
     prompts_per_category: int = 2,
     max_prompts: int = -1,
     prompt_indices: Optional[str] = None,
@@ -209,7 +210,8 @@ def load_stratified_prompts_per_category(
 ) -> List[Dict[str, Any]]:
     """
     Nạp danh sách prompts phân tầng chặt chẽ theo từng Category chuẩn GenEval.
-    - Nếu prompts_per_category > 0: Chọn đúng K prompts cho mỗi category trong 6 category chuẩn.
+    - categories: Cho phép người dùng lọc danh mục cụ thể (vd: 'two_object,colors,color_attr').
+    - Nếu prompts_per_category > 0: Chọn đúng K prompts cho mỗi category trong danh sách chọn lọc.
     - Giữ nguyên 'original_idx' để bảo toàn vị trí gốc trong metadata.
     """
     if not os.path.exists(prompt_path):
@@ -283,10 +285,20 @@ def load_stratified_prompts_per_category(
             cat = it.get("tag", "general")
             by_cat.setdefault(cat, []).append(it)
 
+        # Xử lý danh mục được chọn (nếu có)
+        if categories is not None and str(categories).strip().lower() not in ["", "none", "all"]:
+            specified_cats = [c.strip() for c in str(categories).split(",") if c.strip()]
+            active_cats = [c for c in specified_cats if c in by_cat]
+            if not active_cats:
+                print(f"⚠️ Không tìm thấy category nào trong {specified_cats} phù hợp với metadata! Fallback về tất cả.")
+                active_cats = [c for c in GENEVAL_CATEGORIES if c in by_cat] + [c for c in by_cat if c not in GENEVAL_CATEGORIES]
+            else:
+                print(f"🎯 Đang áp dụng bộ lọc Category: {active_cats}")
+        else:
+            active_cats = [c for c in GENEVAL_CATEGORIES if c in by_cat] + [c for c in by_cat if c not in GENEVAL_CATEGORIES]
+
         selected = []
         print(f"📊 Chọn phân tầng (Stratified) {prompts_per_category} prompts cho mỗi Category:")
-        # Ưu tiên các category chuẩn GenEval trước
-        active_cats = [c for c in GENEVAL_CATEGORIES if c in by_cat] + [c for c in by_cat if c not in GENEVAL_CATEGORIES]
         for cat in active_cats:
             bucket = by_cat[cat]
             k = min(prompts_per_category, len(bucket))
@@ -1362,7 +1374,8 @@ def main():
 
     # Dữ liệu & Cấu hình Prompts
     parser.add_argument("--prompts_file", type=str, default="prompt_files/geneval_metadata.jsonl", help="Đường dẫn file prompt")
-    parser.add_argument("--prompts_per_category", type=int, default=2, help="Số prompts đại diện chọn cho mỗi Category (mặc định 2 -> 12 prompts)")
+    parser.add_argument("--categories", type=str, default=None, help="Danh sách Category chọn lọc (phân tách dấu phẩy, vd: 'two_object,colors,color_attr' hoặc 'all')")
+    parser.add_argument("--prompts_per_category", type=int, default=2, help="Số prompts đại diện chọn cho mỗi Category")
     parser.add_argument("--num_prompts", type=int, default=12, help="Tổng số prompts (dùng khi không phân tầng)")
     parser.add_argument("--prompt_indices", type=str, default=None, help="Chỉ định ID prompts cụ thể (ví dụ: '0,5,11' hoặc '0-11')")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -1425,6 +1438,7 @@ def main():
     # 1. Nạp danh sách Prompts phân tầng theo Category
     prompts_list = load_stratified_prompts_per_category(
         prompt_path=args.prompts_file,
+        categories=args.categories,
         prompts_per_category=args.prompts_per_category,
         max_prompts=args.num_prompts,
         prompt_indices=args.prompt_indices,
