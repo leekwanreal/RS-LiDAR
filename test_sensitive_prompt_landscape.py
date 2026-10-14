@@ -36,6 +36,7 @@ import argparse
 import glob
 import math
 import random
+import shutil
 from typing import Dict, List, Any, Optional, Tuple
 
 import numpy as np
@@ -554,6 +555,7 @@ def run_phase2_target_steering(
     ds_rs: InMemoryLookaheadDataset,
     ir_model: Any,
     guidance_scale: float = 12.5,
+    particle_scale: Optional[float] = None,
     target_steps: int = 50,
     lmbda: float = 5000.0,
     resampling_t_end: int = 200,
@@ -562,10 +564,13 @@ def run_phase2_target_steering(
 ) -> Dict[str, Any]:
     """
     Chạy Phase 2 Target Steering với cùng seed khởi tạo x_T cho cả 3 nhánh:
-    1. Nhánh 1: Baseline Unsteered (s=0, không lái).
-    2. Nhánh 2: Vanilla LiDAR (s=12.5, lái qua ds_vanilla).
-    3. Nhánh 3: RS-LiDAR (s=12.5, lái qua ds_rs).
+    1. Nhánh 1: Baseline Unsteered (CFG=12.5, fkd_args=None, không dùng LiDAR guidance).
+    2. Nhánh 2: Vanilla LiDAR (CFG=12.5, particle_scale s=12.5, lái qua ds_vanilla).
+    3. Nhánh 3: RS-LiDAR (CFG=12.5, particle_scale s=12.5, lái qua ds_rs).
     """
+    if particle_scale is None:
+        particle_scale = guidance_scale
+
     # Khởi tạo nhiễu khởi đầu cố định x_T
     init_gen = torch.Generator(device=device).manual_seed(seed * 1000 + real_idx)
     init_latents = torch.randn((1, 4, 64, 64), generator=init_gen, device=device, dtype=torch.float16 if "cuda" in device else torch.float32)
@@ -574,30 +579,30 @@ def run_phase2_target_steering(
     if DDIMScheduler is not None and not isinstance(pipe.scheduler, DDIMScheduler):
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
-    # 1. Nhánh 1: Unsteered (s = 0)
+    # 1. Nhánh 1: Unsteered (Text CFG = guidance_scale, fkd_args = None)
     if StableDiffusionPipeline is not None and isinstance(pipe, StableDiffusionPipeline):
         out_unsteered = StableDiffusionPipeline.__call__(
             pipe,
             prompt=prompt,
             num_inference_steps=target_steps,
-            guidance_scale=7.5,
+            guidance_scale=guidance_scale,
             latents=init_latents.clone()
         )
     else:
         out_unsteered = pipe(
             prompt=prompt,
             num_inference_steps=target_steps,
-            guidance_scale=7.5,
+            guidance_scale=guidance_scale,
             latents=init_latents.clone(),
             fkd_args=None
         )
     img_unsteered = extract_single_pil_image(out_unsteered)
     r_unsteered = float(score_single_reward_model([img_unsteered], prompt, "ImageReward", ir_model, device=device)[0])
 
-    # 2. Nhánh 2: Vanilla LiDAR (s = 12.5)
+    # 2. Nhánh 2: Vanilla LiDAR (Text CFG = guidance_scale, Particle Scale s = particle_scale)
     fkd_args_vanilla = dict(
         lmbda=lmbda,
-        scale=guidance_scale,
+        scale=particle_scale,
         reward_type="ImageReward",
         num_particles=1,
         use_smc=False,
@@ -619,17 +624,17 @@ def run_phase2_target_steering(
         prompt=prompt,
         prompt_idx=real_idx,
         num_inference_steps=target_steps,
-        guidance_scale=7.5,
+        guidance_scale=guidance_scale,
         latents=init_latents.clone(),
         fkd_args=fkd_args_vanilla
     )
     img_vanilla = extract_single_pil_image(out_vanilla)
     r_vanilla = float(score_single_reward_model([img_vanilla], prompt, "ImageReward", ir_model, device=device)[0])
 
-    # 3. Nhánh 3: RS-LiDAR (s = 12.5)
+    # 3. Nhánh 3: RS-LiDAR (Text CFG = guidance_scale, Particle Scale s = particle_scale)
     fkd_args_rs = dict(
         lmbda=lmbda,
-        scale=guidance_scale,
+        scale=particle_scale,
         reward_type="ImageReward",
         num_particles=1,
         use_smc=False,
@@ -651,7 +656,7 @@ def run_phase2_target_steering(
         prompt=prompt,
         prompt_idx=real_idx,
         num_inference_steps=target_steps,
-        guidance_scale=7.5,
+        guidance_scale=guidance_scale,
         latents=init_latents.clone(),
         fkd_args=fkd_args_rs
     )
@@ -781,21 +786,75 @@ def compute_1d_landscape_profile(
 # ======================================================================================
 # 🎯 DIVERGENCE SCORE & TOP-5 RANKING
 # ======================================================================================
+def compute_prompt_rescue_score(
+    delta_r: float,
+    r_unsteered: float,
+    r_vanilla: float,
+    l_max_vanilla: float,
+    l_max_rs: float,
+    dist_l2: float,
+    tau_dist: float = 500.0
+) -> float:
+    """
+    Tính điểm Divergence Cứu Nguy (Failure-Rescue Divergence Index) có chặn chuẩn hóa:
+      Score = Delta R
+            + 1.5 * max(0, R_unsteered - R_vanilla)
+            + 1.0 * min(1.0, ||dx||_2 / tau_dist)
+            + 0.5 * tanh((L_vanilla - L_RS) / (L_vanilla + 1e-6))
+    Ghi chú: Giữ nguyên Delta R (có thể âm) để phạt thẳng tay các prompt mà RS làm suy giảm reward,
+    đảm bảo bảng Top 5 chỉ tôn vinh các ca cứu nguy thực thụ.
+    """
+    term_gain = float(delta_r)
+    term_rescue = 1.5 * max(0.0, float(r_unsteered - r_vanilla))
+    term_visual = 1.0 * min(1.0, float(dist_l2) / max(tau_dist, 1e-6))
+    term_smooth = 0.5 * math.tanh((float(l_max_vanilla) - float(l_max_rs)) / (float(l_max_vanilla) + 1e-6))
+    return float(term_gain + term_rescue + term_visual + term_smooth)
+
+
+def compute_prompt_smoothness_score(
+    delta_r: float,
+    l_max_vanilla: float,
+    l_max_rs: float
+) -> float:
+    """
+    Tính điểm Divergence Làm Mịn Lipschitz (Smoothness Divergence Index):
+      Score = tanh((L_vanilla - L_RS) / (L_vanilla + 1e-6)) * ln(1 + max(0, L_vanilla / (L_RS + 1e-6)))
+            + 0.2 * max(0, Delta R)
+    """
+    tanh_diff = math.tanh((float(l_max_vanilla) - float(l_max_rs)) / (float(l_max_vanilla) + 1e-6))
+    ratio = float(l_max_vanilla) / (float(l_max_rs) + 1e-6)
+    log_ratio = math.log(1.0 + max(0.0, ratio))
+    return float(tanh_diff * log_ratio + 0.2 * max(0.0, float(delta_r)))
+
+
 def compute_prompt_divergence_score(
     delta_r: float,
     l_max_vanilla: float,
     l_max_rs: float,
     dist_l2: float,
-    total_pixels: int = 3 * 512 * 512
+    r_unsteered: Optional[float] = None,
+    r_vanilla: Optional[float] = None,
+    total_pixels: int = 3 * 512 * 512,
+    tau_dist: float = 500.0
 ) -> float:
     """
-    Tính điểm chỉ số Divergence tổng hợp để tìm prompt nhạy cảm nhất:
-      Score = (R_RS - R_vanilla) + 0.5 * (L_vanilla / L_RS) + 1.0 * (||x_RS - x_vanilla||_2 / sqrt(D))
+    Hàm tính điểm tổng hợp: Ưu tiên dùng Failure-Rescue Divergence Score nếu có r_unsteered và r_vanilla,
+    hoặc tính có chặn visual + smoothness nếu không có.
     """
-    ratio_l = l_max_vanilla / (l_max_rs + 1e-6)
-    norm_dist = dist_l2 / math.sqrt(total_pixels)
-    score = float(delta_r + 0.5 * ratio_l + 1.0 * norm_dist)
-    return score
+    if r_unsteered is not None and r_vanilla is not None:
+        return compute_prompt_rescue_score(
+            delta_r=delta_r,
+            r_unsteered=r_unsteered,
+            r_vanilla=r_vanilla,
+            l_max_vanilla=l_max_vanilla,
+            l_max_rs=l_max_rs,
+            dist_l2=dist_l2,
+            tau_dist=tau_dist
+        )
+    term_gain = float(delta_r)
+    term_visual = 1.0 * min(1.0, float(dist_l2) / max(tau_dist, 1e-6))
+    term_smooth = 0.5 * math.tanh((float(l_max_vanilla) - float(l_max_rs)) / (float(l_max_vanilla) + 1e-6))
+    return float(term_gain + term_visual + term_smooth)
 
 
 # ======================================================================================
@@ -803,14 +862,15 @@ def compute_prompt_divergence_score(
 # ======================================================================================
 def plot_top5_divergence_panel(
     top5_records: List[Dict[str, Any]],
-    output_path: str
+    output_path: str,
+    panel_title: str = "RS-LiDAR ABLATION 1: TOP 5 DIVERGENT PROMPTS"
 ):
     """
     Xuất bảng ghép đồ họa chất lượng cao Side-by-Side gồm 5 hàng x 5 cột:
     - Cột 1: Thông tin Prompt & Category (Category badge, Prompt text, Divergence score, Delta R, Ratio).
-    - Cột 2: Ảnh Unsteered (s=0).
-    - Cột 3: Ảnh Vanilla LiDAR (s=12.5) kèm điểm R và độ dốc L.
-    - Cột 4: Ảnh RS-LiDAR (s=12.5, sigma=1.0) kèm điểm R và độ dốc L.
+    - Cột 2: Ảnh Unsteered (CFG=12.5, No LiDAR Guidance).
+    - Cột 3: Ảnh Vanilla LiDAR (CFG=12.5, s=12.5) kèm điểm R và độ dốc L.
+    - Cột 4: Ảnh RS-LiDAR (CFG=12.5, s=12.5, sigma=1.0) kèm điểm R và độ dốc L.
     - Cột 5: Đồ thị 1D Slicing Curve Profile thu nhỏ đặt ngay cạnh ảnh!
     """
     num_rows = len(top5_records)
@@ -827,7 +887,7 @@ def plot_top5_divergence_panel(
         rank = i + 1
         tag = rec.get("category", rec.get("tag", "general"))
         prompt_text = rec.get("prompt", "")
-        score = rec.get("divergence_score", 0.0)
+        score = rec.get("rescue_score", rec.get("divergence_score", 0.0))
         dr = rec.get("delta_r", 0.0)
         l_ratio = rec.get("l_reduction_ratio", 1.0)
         r_v = rec.get("r_vanilla", 0.0)
@@ -850,7 +910,7 @@ def plot_top5_divergence_panel(
             f"Prompt Text:",
             f"  \"{prompt_text[:75]}...\"" if len(prompt_text) > 75 else f"  \"{prompt_text}\"",
             f"---------------------------------",
-            f"Divergence Score:  {score:.3f}",
+            f"Rescue Score:      {score:.3f}",
             f"Reward Gain dR:    {dr:+.3f}",
             f"Lipschitz Ratio:   {l_ratio:.2f}x",
         ]
@@ -867,7 +927,7 @@ def plot_top5_divergence_panel(
             img_un = Image.open(rec["img_unsteered_path"])
         if img_un is not None:
             ax_un.imshow(img_un)
-            ax_un.set_title(f"Unsteered ($s=0$)\n$R = {rec.get('r_unsteered', 0.0):.3f}$", fontsize=10.5, fontweight="bold", color="#1D3557")
+            ax_un.set_title(f"Unsteered (CFG=12.5, No LiDAR Guidance)\n$R = {rec.get('r_unsteered', 0.0):.3f}$", fontsize=9.5, fontweight="bold", color="#1D3557")
         else:
             ax_un.text(0.5, 0.5, "Image N/A", ha="center", va="center")
         ax_un.axis("off")
@@ -881,7 +941,7 @@ def plot_top5_divergence_panel(
             img_vl = Image.open(rec["img_vanilla_path"])
         if img_vl is not None:
             ax_vl.imshow(img_vl)
-            ax_vl.set_title(f"Vanilla LiDAR ($s=12.5$)\n$R = {r_v:.3f}$ | $L_{{\\max}} = {lv:.1f}$", fontsize=10.5, fontweight="bold", color="#E63946")
+            ax_vl.set_title(f"Vanilla LiDAR (CFG=12.5, $s=12.5, \\lambda=5000$)\n$R = {r_v:.3f}$ | $L_{{\\max}} = {lv:.1f}$", fontsize=9.5, fontweight="bold", color="#E63946")
             for spine in ax_vl.spines.values():
                 spine.set_edgecolor("#E63946")
                 spine.set_linewidth(2.0)
@@ -898,7 +958,7 @@ def plot_top5_divergence_panel(
             img_rs = Image.open(rec["img_rs_path"])
         if img_rs is not None:
             ax_rs.imshow(img_rs)
-            ax_rs.set_title(f"RS-LiDAR ($s=12.5, \\sigma=1.0$)\n$R = {r_rs:.3f}$ | $L_{{\\max}} = {lrs:.1f}$", fontsize=10.5, fontweight="bold", color="#2A9D8F")
+            ax_rs.set_title(f"RS-LiDAR (CFG=12.5, $s=12.5, \\sigma=1.0$)\n$R = {r_rs:.3f}$ | $L_{{\\max}} = {lrs:.1f}$", fontsize=9.5, fontweight="bold", color="#2A9D8F")
             for spine in ax_rs.spines.values():
                 spine.set_edgecolor("#2A9D8F")
                 spine.set_linewidth(2.0)
@@ -914,7 +974,6 @@ def plot_top5_divergence_panel(
         alphas = slicing.get("alphas", [])
         cv = slicing.get("curve_vanilla", [])
         crs = slicing.get("curve_rs", [])
-        bound = slicing.get("theoretical_bound", 0.0)
 
         if len(alphas) > 0 and len(cv) > 0:
             ax_sl.plot(alphas, cv, color="#E63946", lw=2.2, label="Vanilla $R(x)$ (Spiky)", linestyle="-")
@@ -928,8 +987,7 @@ def plot_top5_divergence_panel(
         else:
             ax_sl.text(0.5, 0.5, "Profile N/A", ha="center", va="center")
 
-    plt.suptitle("RS-LiDAR ABLATION 1: TOP 5 DIVERGENT PROMPTS & NON-LIPSCHITZ LANDSCAPE COMPARISON",
-                 fontsize=15, fontweight="bold", y=0.995, color="#1D3557")
+    plt.suptitle(panel_title, fontsize=15, fontweight="bold", y=0.995, color="#1D3557")
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close()
     print(f"🖼️ Đã xuất biểu đồ so sánh Top 5 Panel chất lượng cao: {output_path}")
@@ -977,7 +1035,8 @@ def plot_summary_landscape_curves(
 def merge_shard_checkpoints(output_dir: str):
     """
     Gộp toàn bộ các file checkpoint_ablation1_shard_*.json trong output_dir thành 1 tập dữ liệu,
-    sau đó sắp xếp xếp hạng Divergence Score, xuất Top 5 và kết xuất các đồ thị.
+    tính toán các chỉ số Divergence phân kỳ (Rescue Index & Smoothness Index),
+    xuất Top 5 Rescue, Top 5 Smoothness và kết xuất các đồ thị & bảng thị giác trực quan hóa kép.
     """
     ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint_ablation1_shard_*.json")))
     if not ckpts:
@@ -1003,13 +1062,40 @@ def merge_shard_checkpoints(output_dir: str):
 
     print(f"✅ Đã gộp thành công {len(merged_records)} prompts đo đạc duy nhất.")
 
-    # 1. Sắp xếp giảm dần theo Divergence Score
-    merged_records.sort(key=lambda x: x.get("divergence_score", 0.0), reverse=True)
+    # Tự động tính toán / cập nhật Rescue Score và Smoothness Score cho mọi bản ghi
+    for r in merged_records:
+        r_un = r.get("r_unsteered", 0.0)
+        r_vl = r.get("r_vanilla", 0.0)
+        r_rs = r.get("r_rs", 0.0)
+        dr = r.get("delta_r", r_rs - r_vl)
+        lv = r.get("l_max_vanilla", 0.0)
+        lrs = r.get("l_max_rs", 0.0)
+        dl2 = r.get("dist_l2", 0.0)
+
+        resc_score = compute_prompt_rescue_score(
+            delta_r=dr,
+            r_unsteered=r_un,
+            r_vanilla=r_vl,
+            l_max_vanilla=lv,
+            l_max_rs=lrs,
+            dist_l2=dl2
+        )
+        smooth_score = compute_prompt_smoothness_score(
+            delta_r=dr,
+            l_max_vanilla=lv,
+            l_max_rs=lrs
+        )
+        r["rescue_score"] = resc_score
+        r["smoothness_score"] = smooth_score
+        r["divergence_score"] = resc_score # Đồng bộ để giữ tính tương thích ngược
+
+    # 1. Sắp xếp giảm dần theo Rescue Score làm bảng tổng hợp chính
+    merged_records.sort(key=lambda x: x.get("rescue_score", 0.0), reverse=True)
 
     # 2. Xuất bảng CSV tổng hợp tất cả prompt
     summary_csv_path = os.path.join(output_dir, "ablation1_summary.csv")
     with open(summary_csv_path, "w", encoding="utf-8") as f:
-        f.write("rank,original_idx,category,prompt,r_unsteered,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,dist_l2,divergence_score\n")
+        f.write("rank,original_idx,category,prompt,r_unsteered,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,dist_l2,rescue_score,smoothness_score,divergence_score\n")
         for rank, r in enumerate(merged_records, 1):
             p_text = r.get("prompt", "").replace('"', '""')
             cat = r.get("category", r.get("tag", "general"))
@@ -1017,50 +1103,90 @@ def merge_shard_checkpoints(output_dir: str):
                 f"{rank},{r.get('original_idx', '')},{cat},\"{p_text}\","
                 f"{r.get('r_unsteered', 0.0):.4f},{r.get('r_vanilla', 0.0):.4f},{r.get('r_rs', 0.0):.4f},"
                 f"{r.get('delta_r', 0.0):.4f},{r.get('l_max_vanilla', 0.0):.2f},{r.get('l_max_rs', 0.0):.2f},"
-                f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('dist_l2', 0.0):.4f},{r.get('divergence_score', 0.0):.4f}\n"
+                f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('dist_l2', 0.0):.4f},"
+                f"{r.get('rescue_score', 0.0):.4f},{r.get('smoothness_score', 0.0):.4f},{r.get('divergence_score', 0.0):.4f}\n"
             )
     print(f"📄 Đã lưu bảng CSV tổng hợp: {summary_csv_path}")
 
-    # 3. Trích xuất Top 5 Prompts chênh lệch nhất
-    top5_records = merged_records[:5]
-    top5_csv_path = os.path.join(output_dir, "ablation1_top5_divergence.csv")
-    with open(top5_csv_path, "w", encoding="utf-8") as f:
-        f.write("rank,original_idx,category,prompt,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,divergence_score\n")
-        for rank, r in enumerate(top5_records, 1):
+    # 3. Trích xuất Top 5 Prompts Giải Cứu Sụp Đổ (Failure Rescue)
+    top5_rescue = sorted(merged_records, key=lambda x: x.get("rescue_score", 0.0), reverse=True)[:5]
+    top5_rescue_csv = os.path.join(output_dir, "ablation1_top5_rescue.csv")
+    with open(top5_rescue_csv, "w", encoding="utf-8") as f:
+        f.write("rank,original_idx,category,prompt,r_unsteered,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,dist_l2,rescue_score\n")
+        for rank, r in enumerate(top5_rescue, 1):
+            p_text = r.get("prompt", "").replace('"', '""')
+            cat = r.get("category", r.get("tag", "general"))
+            f.write(
+                f"{rank},{r.get('original_idx', '')},{cat},\"{p_text}\","
+                f"{r.get('r_unsteered', 0.0):.4f},{r.get('r_vanilla', 0.0):.4f},{r.get('r_rs', 0.0):.4f},{r.get('delta_r', 0.0):.4f},"
+                f"{r.get('l_max_vanilla', 0.0):.2f},{r.get('l_max_rs', 0.0):.2f},"
+                f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('dist_l2', 0.0):.4f},{r.get('rescue_score', 0.0):.4f}\n"
+            )
+    print(f"🏆 Đã lưu bảng CSV Top 5 Rescue: {top5_rescue_csv}")
+
+    # Tạo alias ablation1_top5_divergence.csv để tương thích ngược
+    alias_csv_path = os.path.join(output_dir, "ablation1_top5_divergence.csv")
+    shutil.copyfile(top5_rescue_csv, alias_csv_path)
+
+    # 4. Trích xuất Top 5 Prompts Làm Mịn Lipschitz (Smoothness Top 5)
+    top5_smoothness = sorted(merged_records, key=lambda x: x.get("smoothness_score", 0.0), reverse=True)[:5]
+    top5_smooth_csv = os.path.join(output_dir, "ablation1_top5_smoothness.csv")
+    with open(top5_smooth_csv, "w", encoding="utf-8") as f:
+        f.write("rank,original_idx,category,prompt,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,smoothness_score\n")
+        for rank, r in enumerate(top5_smoothness, 1):
             p_text = r.get("prompt", "").replace('"', '""')
             cat = r.get("category", r.get("tag", "general"))
             f.write(
                 f"{rank},{r.get('original_idx', '')},{cat},\"{p_text}\","
                 f"{r.get('r_vanilla', 0.0):.4f},{r.get('r_rs', 0.0):.4f},{r.get('delta_r', 0.0):.4f},"
                 f"{r.get('l_max_vanilla', 0.0):.2f},{r.get('l_max_rs', 0.0):.2f},"
-                f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('divergence_score', 0.0):.4f}\n"
+                f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('smoothness_score', 0.0):.4f}\n"
             )
-    print(f"🏆 Đã lưu bảng CSV Top 5 Divergence: {top5_csv_path}")
+    print(f"🌟 Đã lưu bảng CSV Top 5 Smoothness: {top5_smooth_csv}")
 
-    # 4. Xuất JSON Metrics chi tiết
+    # 5. Xuất JSON Metrics chi tiết
     metrics_json_path = os.path.join(output_dir, "ablation1_metrics.json")
     with open(metrics_json_path, "w", encoding="utf-8") as f:
         json.dump({
             "total_prompts": len(merged_records),
-            "top5_prompts": [
+            "top5_rescue_prompts": [
                 {
                     "rank": i + 1,
                     "original_idx": r.get("original_idx"),
                     "category": r.get("category"),
                     "prompt": r.get("prompt"),
-                    "divergence_score": r.get("divergence_score"),
+                    "rescue_score": r.get("rescue_score"),
                     "delta_r": r.get("delta_r"),
                     "l_reduction_ratio": r.get("l_reduction_ratio")
                 }
-                for i, r in enumerate(top5_records)
+                for i, r in enumerate(top5_rescue)
+            ],
+            "top5_smoothness_prompts": [
+                {
+                    "rank": i + 1,
+                    "original_idx": r.get("original_idx"),
+                    "category": r.get("category"),
+                    "prompt": r.get("prompt"),
+                    "smoothness_score": r.get("smoothness_score"),
+                    "l_reduction_ratio": r.get("l_reduction_ratio"),
+                    "delta_r": r.get("delta_r")
+                }
+                for i, r in enumerate(top5_smoothness)
             ],
             "all_records": merged_records
         }, f, indent=2, ensure_ascii=False)
     print(f"📊 Đã lưu file JSON metrics: {metrics_json_path}")
 
-    # 5. Vẽ biểu đồ so sánh Top 5 Panel và 1D Curves
-    panel_path = os.path.join(output_dir, "ablation1_top5_divergence_panel.png")
-    plot_top5_divergence_panel(top5_records, panel_path)
+    # 6. Vẽ biểu đồ so sánh Top 5 Panel Kép (Rescue Panel & Smoothness Panel)
+    panel_rescue_path = os.path.join(output_dir, "ablation1_top5_rescue_panel.png")
+    plot_top5_divergence_panel(top5_rescue, panel_rescue_path, panel_title="RS-LiDAR ABLATION 1: TOP 5 FAILURE-RESCUE PROMPTS (VANILLA COLLAPSE)")
+
+    panel_smooth_path = os.path.join(output_dir, "ablation1_top5_smoothness_panel.png")
+    plot_top5_divergence_panel(top5_smoothness, panel_smooth_path, panel_title="RS-LiDAR ABLATION 1: TOP 5 LIPSCHITZ SMOOTHNESS PROMPTS (THEORETICAL CERTIFICATION)")
+
+    # Alias file panel cũ cho tương thích
+    alias_panel_path = os.path.join(output_dir, "ablation1_top5_divergence_panel.png")
+    shutil.copyfile(panel_rescue_path, alias_panel_path)
 
     curves_path = os.path.join(output_dir, "ablation1_landscape_1d_curves.png")
     plot_summary_landscape_curves(merged_records, curves_path)
@@ -1146,6 +1272,7 @@ def run_ablation1_experiment(pipe, vae, ir_model, prompts_list, args, device="cu
             ds_rs=ds_rs,
             ir_model=ir_model,
             guidance_scale=args.guidance_scale,
+            particle_scale=getattr(args, "particle_scale", None),
             target_steps=args.target_steps,
             lmbda=args.lmbda,
             resampling_t_end=args.resampling_t_end,
@@ -1177,13 +1304,20 @@ def run_ablation1_experiment(pipe, vae, ir_model, prompts_list, args, device="cu
         )
 
         # ----------------------------------------------------------------------
-        # BƯỚC 4: TÍNH ĐIỂM DIVERGENCE SCORE
+        # BƯỚC 4: TÍNH ĐIỂM DIVERGENCE SCORE (RESCUE & SMOOTHNESS)
         # ----------------------------------------------------------------------
-        div_score = compute_prompt_divergence_score(
+        resc_score = compute_prompt_rescue_score(
             delta_r=p2_results["delta_r"],
+            r_unsteered=p2_results["r_unsteered"],
+            r_vanilla=p2_results["r_vanilla"],
             l_max_vanilla=slicing_res["l_max_vanilla"],
             l_max_rs=slicing_res["l_max_rs"],
             dist_l2=slicing_res["dist_l2"]
+        )
+        smooth_score = compute_prompt_smoothness_score(
+            delta_r=p2_results["delta_r"],
+            l_max_vanilla=slicing_res["l_max_vanilla"],
+            l_max_rs=slicing_res["l_max_rs"]
         )
 
         record = {
@@ -1202,7 +1336,9 @@ def run_ablation1_experiment(pipe, vae, ir_model, prompts_list, args, device="cu
             "l_max_vanilla": slicing_res["l_max_vanilla"],
             "l_max_rs": slicing_res["l_max_rs"],
             "l_reduction_ratio": slicing_res["l_reduction_ratio"],
-            "divergence_score": div_score,
+            "rescue_score": resc_score,
+            "smoothness_score": smooth_score,
+            "divergence_score": resc_score,
             "slicing": slicing_res,
             "phase1_stats": p1_stats
         }
@@ -1243,7 +1379,8 @@ def main():
     parser.add_argument("--no_crn", action="store_false", dest="use_crn")
 
     # Cấu hình Phase 2 Target Steering
-    parser.add_argument("--guidance_scale", type=float, default=12.5, help="Hệ số lái scale s (mặc định 12.5 chuẩn SD 1.5 Table 2)")
+    parser.add_argument("--guidance_scale", type=float, default=12.5, help="Hệ số Classifier-Free Guidance (Text CFG) cho Phase 2 (mặc định 12.5 chuẩn SD 1.5 Table 2)")
+    parser.add_argument("--particle_scale", type=float, default=None, help="Hệ số lái lookahead particle scale s (mặc định None -> tự động nhận bằng guidance_scale)")
     parser.add_argument("--num_target_images", type=int, default=1, help="Số ảnh sinh mỗi prompt ở Phase 2 (mặc định 1 ảnh để đối chiếu 1-1)")
     parser.add_argument("--target_steps", type=int, default=50, help="Số bước DDIM Solver Phase 2 (mặc định 50)")
     parser.add_argument("--lmbda", type=float, default=5000.0, help="Lambda softmax exponent")

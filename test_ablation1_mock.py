@@ -91,6 +91,8 @@ class MockDiffusionPipeline:
         pass
 
     def __call__(self, prompt, num_inference_steps=5, guidance_scale=7.5, generator=None, output_type="pil", latents=None, fkd_args=None, **kwargs):
+        self.last_guidance_scale = guidance_scale
+        self.last_fkd_args = fkd_args
         if isinstance(prompt, list):
             b = len(prompt)
         else:
@@ -240,6 +242,11 @@ class TestAblation1Mock(unittest.TestCase):
         self.assertIsInstance(p2_res["img_vanilla"], Image.Image)
         self.assertIsInstance(p2_res["img_rs"], Image.Image)
 
+        # Kiểm tra Text CFG = 12.5 và Particle Guidance scale = 12.5 được truyền đúng chuẩn
+        self.assertEqual(self.mock_pipe.last_guidance_scale, 12.5)
+        self.assertIsNotNone(self.mock_pipe.last_fkd_args)
+        self.assertEqual(self.mock_pipe.last_fkd_args["scale"], 12.5)
+
     def test_03b_extract_single_pil_image_unwrapping(self):
         """Kiểm tra bóc tách an toàn tuyệt đối từ các cấu trúc lồng nhau của Diffusers output."""
         base_img = Image.new("RGB", (32, 32), color=(100, 150, 200))
@@ -383,14 +390,22 @@ class TestAblation1Mock(unittest.TestCase):
         # Kiểm tra các file kết quả
         summary_csv = os.path.join(self.test_dir, "ablation1_summary.csv")
         top5_csv = os.path.join(self.test_dir, "ablation1_top5_divergence.csv")
+        rescue_csv = os.path.join(self.test_dir, "ablation1_top5_rescue.csv")
+        smooth_csv = os.path.join(self.test_dir, "ablation1_top5_smoothness.csv")
         metrics_json = os.path.join(self.test_dir, "ablation1_metrics.json")
         panel_png = os.path.join(self.test_dir, "ablation1_top5_divergence_panel.png")
+        rescue_png = os.path.join(self.test_dir, "ablation1_top5_rescue_panel.png")
+        smooth_png = os.path.join(self.test_dir, "ablation1_top5_smoothness_panel.png")
         curves_png = os.path.join(self.test_dir, "ablation1_landscape_1d_curves.png")
 
         self.assertTrue(os.path.exists(summary_csv), "Thiếu file ablation1_summary.csv")
         self.assertTrue(os.path.exists(top5_csv), "Thiếu file ablation1_top5_divergence.csv")
+        self.assertTrue(os.path.exists(rescue_csv), "Thiếu file ablation1_top5_rescue.csv")
+        self.assertTrue(os.path.exists(smooth_csv), "Thiếu file ablation1_top5_smoothness.csv")
         self.assertTrue(os.path.exists(metrics_json), "Thiếu file ablation1_metrics.json")
         self.assertTrue(os.path.exists(panel_png), "Thiếu file ablation1_top5_divergence_panel.png")
+        self.assertTrue(os.path.exists(rescue_png), "Thiếu file ablation1_top5_rescue_panel.png")
+        self.assertTrue(os.path.exists(smooth_png), "Thiếu file ablation1_top5_smoothness_panel.png")
         self.assertTrue(os.path.exists(curves_png), "Thiếu file ablation1_landscape_1d_curves.png")
 
         # Kiểm tra nội dung Top 5 CSV có đủ 5 bản ghi và xếp hạng đúng
@@ -400,7 +415,56 @@ class TestAblation1Mock(unittest.TestCase):
 
         # Kiểm tra file ảnh PNG không rỗng
         self.assertGreater(os.path.getsize(panel_png), 1000)
+        self.assertGreater(os.path.getsize(rescue_png), 1000)
+        self.assertGreater(os.path.getsize(smooth_png), 1000)
         self.assertGreater(os.path.getsize(curves_png), 1000)
+
+    def test_06_bounded_rescue_divergence_ranking(self):
+        """Kiểm tra logic xếp hạng mới: Failure Rescue vs Smoothness Index."""
+        from test_sensitive_prompt_landscape import compute_prompt_rescue_score, compute_prompt_smoothness_score
+
+        # Case 1: Prompt 80 (Failure Rescue - Vanilla sụp đổ dưới Unsteered, RS cứu ngoạn mục)
+        # R_un = -0.328, R_v = -1.660, R_rs = +1.849, dR = +3.509, dist_l2 = 81.3, Lv = 20.47, Lrs = 1.03
+        score_rescue_80 = compute_prompt_rescue_score(
+            delta_r=3.509,
+            r_unsteered=-0.328,
+            r_vanilla=-1.660,
+            l_max_vanilla=20.47,
+            l_max_rs=1.03,
+            dist_l2=81.3,
+            tau_dist=500.0
+        )
+
+        # Case 2: Prompt 260 (Pink Car Paradox - 2 ảnh gần như giống hệt nhau, dR ~ 0.005, dist_l2 = 40.8, Lv = 1.43, Lrs = 0.03)
+        score_rescue_260 = compute_prompt_rescue_score(
+            delta_r=0.006,
+            r_unsteered=1.642,
+            r_vanilla=1.678,
+            l_max_vanilla=1.43,
+            l_max_rs=0.03,
+            dist_l2=40.8,
+            tau_dist=500.0
+        )
+
+        # Case 3: Prompt 454 (RS thua Vanilla - dR = -0.34)
+        score_rescue_454 = compute_prompt_rescue_score(
+            delta_r=-0.34,
+            r_unsteered=-1.037,
+            r_vanilla=-0.469,
+            l_max_vanilla=2.16,
+            l_max_rs=0.05,
+            dist_l2=77.0,
+            tau_dist=500.0
+        )
+
+        # Rescue Score phải ưu tiên mạnh mẽ Prompt 80 trên Prompt 260 và Prompt 454!
+        self.assertGreater(score_rescue_80, score_rescue_260, "Prompt 80 cứu nguy sụp đổ phải có điểm Rescue cao hơn hẳn Prompt 260!")
+        self.assertGreater(score_rescue_260, score_rescue_454, "Prompt 260 phải xếp trên Prompt 454 nơi RS bị suy giảm reward!")
+
+        # Trong khi đó, Smoothness Score phải tôn vinh tỷ số làm mịn Lipschitz (Prompt 260 có ratio = 48.98x)
+        score_smooth_260 = compute_prompt_smoothness_score(delta_r=0.006, l_max_vanilla=1.43, l_max_rs=0.03)
+        self.assertGreater(score_smooth_260, 2.5, "Smoothness Score của Prompt 260 phải cao do tỷ số triệt tiêu độ dốc 48.98x!")
+
         print("✅ Toàn bộ các kiểm tra Unit Test Giả Lập cho Ablation 1 đều HOÀN THÀNH XUẤT SẮC!")
 
 
