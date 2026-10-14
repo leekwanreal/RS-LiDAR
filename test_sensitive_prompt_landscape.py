@@ -271,18 +271,8 @@ def load_stratified_prompts_per_category(
         if "original_idx" not in it:
             it["original_idx"] = idx
 
-    # 0. Nếu bật chế độ tuyển chọn siêu phẩm (Curated Selection: Host-Guest & High-Divergence)
-    CURATED_SUPERSTAR_INDICES = [80, 98, 95, 93, 97, 109, 110, 125, 138, 142, 156, 457, 464]
-    if curated_selection:
-        id_to_item = {it["original_idx"]: it for it in items if "original_idx" in it}
-        selected = [id_to_item[i] for i in CURATED_SUPERSTAR_INDICES if i in id_to_item]
-        print(f"🌟 [Curated Selection] Đã chọn {len(selected)} prompts siêu phẩm có cấu trúc hình học Chủ-Khách (Host-Guest) & Ràng buộc màu phân hóa cao:")
-        for rank, s in enumerate(selected, 1):
-            print(f"   {rank}. #{s['original_idx']} [{s.get('tag')}]: \"{s.get('prompt')}\"")
-        return selected
-
-    # 1. Nếu chỉ định cụ thể prompt_indices
-    if prompt_indices is not None and str(prompt_indices).strip() != "":
+    # 0. Nếu chỉ định cụ thể prompt_indices (ƯU TIÊN TUYỆT ĐỐI SỐ 1)
+    if prompt_indices is not None and str(prompt_indices).strip() not in ["", "none", "None"]:
         s = str(prompt_indices).strip()
         if "-" in s and "," not in s:
             parts = s.split("-")
@@ -291,7 +281,19 @@ def load_stratified_prompts_per_category(
             selected_ids = [int(x.strip()) for x in s.split(",") if x.strip().isdigit()]
         id_to_item = {it["original_idx"]: it for it in items if "original_idx" in it}
         selected = [id_to_item[i] for i in selected_ids if i in id_to_item]
-        print(f"📋 Đã chọn {len(selected)} prompts theo chỉ số chỉ định ({prompt_indices}).")
+        print(f"🎯 [Chỉ định cụ thể] Đã chọn chính xác {len(selected)} prompts theo danh sách ({prompt_indices}):")
+        for rank, s in enumerate(selected, 1):
+            print(f"   {rank}. #{s['original_idx']} [{s.get('tag')}]: \"{s.get('prompt')}\"")
+        return selected
+
+    # 1. Nếu bật chế độ tuyển chọn siêu phẩm (Curated Selection: Host-Guest & High-Divergence)
+    CURATED_SUPERSTAR_INDICES = [80, 98, 95, 93, 97, 109, 110, 125, 138, 142, 156, 457, 464]
+    if curated_selection:
+        id_to_item = {it["original_idx"]: it for it in items if "original_idx" in it}
+        selected = [id_to_item[i] for i in CURATED_SUPERSTAR_INDICES if i in id_to_item]
+        print(f"🌟 [Curated Selection] Đã chọn {len(selected)} prompts siêu phẩm có cấu trúc hình học Chủ-Khách (Host-Guest) & Ràng buộc màu phân hóa cao:")
+        for rank, s in enumerate(selected, 1):
+            print(f"   {rank}. #{s['original_idx']} [{s.get('tag')}]: \"{s.get('prompt')}\"")
         return selected
 
     # 2. Phân tầng theo Category (Stratified per Category)
