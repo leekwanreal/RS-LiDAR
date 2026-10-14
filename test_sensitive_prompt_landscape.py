@@ -208,7 +208,8 @@ def load_stratified_prompts_per_category(
     prompt_indices: Optional[str] = None,
     anchor_indices: Optional[str] = "80",
     random_sample: bool = True,
-    seed: int = 42
+    seed: int = 42,
+    curated_selection: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Nạp danh sách prompts phân tầng chặt chẽ theo từng Category chuẩn GenEval.
@@ -270,6 +271,16 @@ def load_stratified_prompts_per_category(
         if "original_idx" not in it:
             it["original_idx"] = idx
 
+    # 0. Nếu bật chế độ tuyển chọn siêu phẩm (Curated Selection: Host-Guest & High-Divergence)
+    CURATED_SUPERSTAR_INDICES = [80, 95, 93, 97, 109, 110, 125, 138, 142, 156, 457, 464]
+    if curated_selection:
+        id_to_item = {it["original_idx"]: it for it in items if "original_idx" in it}
+        selected = [id_to_item[i] for i in CURATED_SUPERSTAR_INDICES if i in id_to_item]
+        print(f"🌟 [Curated Selection] Đã chọn {len(selected)} prompts siêu phẩm có cấu trúc hình học Chủ-Khách (Host-Guest) & Ràng buộc màu phân hóa cao:")
+        for rank, s in enumerate(selected, 1):
+            print(f"   {rank}. #{s['original_idx']} [{s.get('tag')}]: \"{s.get('prompt')}\"")
+        return selected
+
     # 1. Nếu chỉ định cụ thể prompt_indices
     if prompt_indices is not None and str(prompt_indices).strip() != "":
         s = str(prompt_indices).strip()
@@ -278,7 +289,8 @@ def load_stratified_prompts_per_category(
             selected_ids = list(range(int(parts[0]), int(parts[1]) + 1))
         else:
             selected_ids = [int(x.strip()) for x in s.split(",") if x.strip().isdigit()]
-        selected = [it for it in items if it["original_idx"] in selected_ids]
+        id_to_item = {it["original_idx"]: it for it in items if "original_idx" in it}
+        selected = [id_to_item[i] for i in selected_ids if i in id_to_item]
         print(f"📋 Đã chọn {len(selected)} prompts theo chỉ số chỉ định ({prompt_indices}).")
         return selected
 
@@ -1418,6 +1430,7 @@ def main():
     parser.add_argument("--no_random_sample", action="store_false", dest="random_sample")
     parser.add_argument("--num_prompts", type=int, default=12, help="Tổng số prompts (dùng khi không phân tầng)")
     parser.add_argument("--prompt_indices", type=str, default=None, help="Chỉ định ID prompts cụ thể (ví dụ: '0,5,11' hoặc '0-11')")
+    parser.add_argument("--curated_selection", action="store_true", default=False, help="Chế độ tuyển chọn 12 prompts siêu phẩm có cấu trúc hình học Chủ-Khách (Host-Guest) phân hóa cao (Bench & Ball, Book & Laptop, v.v.)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Mô hình Diffusion
@@ -1484,7 +1497,8 @@ def main():
         prompt_indices=args.prompt_indices,
         anchor_indices=getattr(args, "anchor_indices", "80"),
         random_sample=getattr(args, "random_sample", True),
-        seed=args.seed
+        seed=args.seed,
+        curated_selection=getattr(args, "curated_selection", False)
     )
     print(f"📋 Đã chuẩn bị {len(prompts_list)} prompts kiểm thử cho Ablation 1.")
 
