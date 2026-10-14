@@ -272,7 +272,7 @@ def load_stratified_prompts_per_category(
             it["original_idx"] = idx
 
     # 0. Nếu bật chế độ tuyển chọn siêu phẩm (Curated Selection: Host-Guest & High-Divergence)
-    CURATED_SUPERSTAR_INDICES = [80, 95, 93, 97, 109, 110, 125, 138, 142, 156, 457, 464]
+    CURATED_SUPERSTAR_INDICES = [80, 98, 95, 93, 97, 109, 110, 125, 138, 142, 156, 457, 464]
     if curated_selection:
         id_to_item = {it["original_idx"]: it for it in items if "original_idx" in it}
         selected = [id_to_item[i] for i in CURATED_SUPERSTAR_INDICES if i in id_to_item]
@@ -921,20 +921,20 @@ def compute_prompt_divergence_score(
 # ======================================================================================
 # 📊 VISUALIZATION & PUBLICATION-READY PLOTTING
 # ======================================================================================
-def plot_top5_divergence_panel(
-    top5_records: List[Dict[str, Any]],
+def plot_topk_divergence_panel(
+    topk_records: List[Dict[str, Any]],
     output_path: str,
-    panel_title: str = "RS-LiDAR ABLATION 1: TOP 5 DIVERGENT PROMPTS"
+    panel_title: str = "RS-LiDAR ABLATION 1: TOP DIVERGENT PROMPTS"
 ):
     """
-    Xuất bảng ghép đồ họa chất lượng cao Side-by-Side gồm 5 hàng x 5 cột:
+    Xuất bảng ghép đồ họa chất lượng cao Side-by-Side gồm K hàng x 5 cột:
     - Cột 1: Thông tin Prompt & Category (Category badge, Prompt text, Divergence score, Delta R, Ratio).
     - Cột 2: Ảnh Unsteered (CFG=12.5, No LiDAR Guidance).
     - Cột 3: Ảnh Vanilla LiDAR (CFG=12.5, s=12.5) kèm điểm R và độ dốc L.
     - Cột 4: Ảnh RS-LiDAR (CFG=12.5, s=12.5, sigma=1.0) kèm điểm R và độ dốc L.
     - Cột 5: Đồ thị 1D Slicing Curve Profile thu nhỏ đặt ngay cạnh ảnh!
     """
-    num_rows = len(top5_records)
+    num_rows = len(topk_records)
     if num_rows == 0:
         return
 
@@ -944,7 +944,7 @@ def plot_top5_divergence_panel(
 
     plt.subplots_adjust(wspace=0.25, hspace=0.35)
 
-    for i, rec in enumerate(top5_records):
+    for i, rec in enumerate(topk_records):
         rank = i + 1
         tag = rec.get("category", rec.get("tag", "general"))
         prompt_text = rec.get("prompt", "")
@@ -1051,7 +1051,10 @@ def plot_top5_divergence_panel(
     plt.suptitle(panel_title, fontsize=15, fontweight="bold", y=0.995, color="#1D3557")
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close()
-    print(f"🖼️ Đã xuất biểu đồ so sánh Top 5 Panel chất lượng cao: {output_path}")
+    print(f"🖼️ Đã xuất biểu đồ so sánh Top {num_rows} Panel chất lượng cao: {output_path}")
+
+# Giữ alias cho tương thích ngược
+plot_top5_divergence_panel = plot_topk_divergence_panel
 
 
 def plot_summary_landscape_curves(
@@ -1093,11 +1096,11 @@ def plot_summary_landscape_curves(
 # ======================================================================================
 # 🔗 MERGE SHARDS UTILITY
 # ======================================================================================
-def merge_shard_checkpoints(output_dir: str):
+def merge_shard_checkpoints(output_dir: str, top_k: int = 10):
     """
     Gộp toàn bộ các file checkpoint_ablation1_shard_*.json trong output_dir thành 1 tập dữ liệu,
     tính toán các chỉ số Divergence phân kỳ (Rescue Index & Smoothness Index),
-    xuất Top 5 Rescue, Top 5 Smoothness và kết xuất các đồ thị & bảng thị giác trực quan hóa kép.
+    xuất Top K Rescue, Top K Smoothness và kết xuất các đồ thị & bảng thị giác trực quan hóa kép.
     """
     ckpts = sorted(glob.glob(os.path.join(output_dir, "checkpoint_ablation1_shard_*.json")))
     if not ckpts:
@@ -1169,12 +1172,12 @@ def merge_shard_checkpoints(output_dir: str):
             )
     print(f"📄 Đã lưu bảng CSV tổng hợp: {summary_csv_path}")
 
-    # 3. Trích xuất Top 5 Prompts Giải Cứu Sụp Đổ (Failure Rescue)
-    top5_rescue = sorted(merged_records, key=lambda x: x.get("rescue_score", 0.0), reverse=True)[:5]
-    top5_rescue_csv = os.path.join(output_dir, "ablation1_top5_rescue.csv")
-    with open(top5_rescue_csv, "w", encoding="utf-8") as f:
+    # 3. Trích xuất Top K Prompts Giải Cứu Sụp Đổ (Failure Rescue)
+    top_rescue = sorted(merged_records, key=lambda x: x.get("rescue_score", 0.0), reverse=True)[:top_k]
+    top_rescue_csv = os.path.join(output_dir, f"ablation1_top{top_k}_rescue.csv")
+    with open(top_rescue_csv, "w", encoding="utf-8") as f:
         f.write("rank,original_idx,category,prompt,r_unsteered,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,dist_l2,rescue_score\n")
-        for rank, r in enumerate(top5_rescue, 1):
+        for rank, r in enumerate(top_rescue, 1):
             p_text = r.get("prompt", "").replace('"', '""')
             cat = r.get("category", r.get("tag", "general"))
             f.write(
@@ -1183,18 +1186,19 @@ def merge_shard_checkpoints(output_dir: str):
                 f"{r.get('l_max_vanilla', 0.0):.2f},{r.get('l_max_rs', 0.0):.2f},"
                 f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('dist_l2', 0.0):.4f},{r.get('rescue_score', 0.0):.4f}\n"
             )
-    print(f"🏆 Đã lưu bảng CSV Top 5 Rescue: {top5_rescue_csv}")
+    print(f"🏆 Đã lưu bảng CSV Top {top_k} Rescue: {top_rescue_csv}")
 
-    # Tạo alias ablation1_top5_divergence.csv để tương thích ngược
-    alias_csv_path = os.path.join(output_dir, "ablation1_top5_divergence.csv")
-    shutil.copyfile(top5_rescue_csv, alias_csv_path)
+    # Tạo alias cho tương thích ngược
+    alias_csv_path = os.path.join(output_dir, "ablation1_top5_rescue.csv")
+    shutil.copyfile(top_rescue_csv, alias_csv_path)
+    shutil.copyfile(top_rescue_csv, os.path.join(output_dir, "ablation1_top5_divergence.csv"))
 
-    # 4. Trích xuất Top 5 Prompts Làm Mịn Lipschitz (Smoothness Top 5)
-    top5_smoothness = sorted(merged_records, key=lambda x: x.get("smoothness_score", 0.0), reverse=True)[:5]
-    top5_smooth_csv = os.path.join(output_dir, "ablation1_top5_smoothness.csv")
-    with open(top5_smooth_csv, "w", encoding="utf-8") as f:
+    # 4. Trích xuất Top K Prompts Làm Mịn Lipschitz (Smoothness Top K)
+    top_smoothness = sorted(merged_records, key=lambda x: x.get("smoothness_score", 0.0), reverse=True)[:top_k]
+    top_smooth_csv = os.path.join(output_dir, f"ablation1_top{top_k}_smoothness.csv")
+    with open(top_smooth_csv, "w", encoding="utf-8") as f:
         f.write("rank,original_idx,category,prompt,r_vanilla,r_rs,delta_r,l_max_vanilla,l_max_rs,l_reduction_ratio,smoothness_score\n")
-        for rank, r in enumerate(top5_smoothness, 1):
+        for rank, r in enumerate(top_smoothness, 1):
             p_text = r.get("prompt", "").replace('"', '""')
             cat = r.get("category", r.get("tag", "general"))
             f.write(
@@ -1203,13 +1207,40 @@ def merge_shard_checkpoints(output_dir: str):
                 f"{r.get('l_max_vanilla', 0.0):.2f},{r.get('l_max_rs', 0.0):.2f},"
                 f"{r.get('l_reduction_ratio', 1.0):.2f},{r.get('smoothness_score', 0.0):.4f}\n"
             )
-    print(f"🌟 Đã lưu bảng CSV Top 5 Smoothness: {top5_smooth_csv}")
+    print(f"🌟 Đã lưu bảng CSV Top {top_k} Smoothness: {top_smooth_csv}")
+
+    alias_smooth_csv = os.path.join(output_dir, "ablation1_top5_smoothness.csv")
+    shutil.copyfile(top_smooth_csv, alias_smooth_csv)
 
     # 5. Xuất JSON Metrics chi tiết
     metrics_json_path = os.path.join(output_dir, "ablation1_metrics.json")
     with open(metrics_json_path, "w", encoding="utf-8") as f:
         json.dump({
             "total_prompts": len(merged_records),
+            f"top{top_k}_rescue_prompts": [
+                {
+                    "rank": i + 1,
+                    "original_idx": r.get("original_idx"),
+                    "category": r.get("category"),
+                    "prompt": r.get("prompt"),
+                    "rescue_score": r.get("rescue_score"),
+                    "delta_r": r.get("delta_r"),
+                    "l_reduction_ratio": r.get("l_reduction_ratio")
+                }
+                for i, r in enumerate(top_rescue)
+            ],
+            f"top{top_k}_smoothness_prompts": [
+                {
+                    "rank": i + 1,
+                    "original_idx": r.get("original_idx"),
+                    "category": r.get("category"),
+                    "prompt": r.get("prompt"),
+                    "smoothness_score": r.get("smoothness_score"),
+                    "l_reduction_ratio": r.get("l_reduction_ratio"),
+                    "delta_r": r.get("delta_r")
+                }
+                for i, r in enumerate(top_smoothness)
+            ],
             "top5_rescue_prompts": [
                 {
                     "rank": i + 1,
@@ -1220,7 +1251,7 @@ def merge_shard_checkpoints(output_dir: str):
                     "delta_r": r.get("delta_r"),
                     "l_reduction_ratio": r.get("l_reduction_ratio")
                 }
-                for i, r in enumerate(top5_rescue)
+                for i, r in enumerate(top_rescue[:5])
             ],
             "top5_smoothness_prompts": [
                 {
@@ -1232,22 +1263,34 @@ def merge_shard_checkpoints(output_dir: str):
                     "l_reduction_ratio": r.get("l_reduction_ratio"),
                     "delta_r": r.get("delta_r")
                 }
-                for i, r in enumerate(top5_smoothness)
+                for i, r in enumerate(top_smoothness[:5])
             ],
             "all_records": merged_records
         }, f, indent=2, ensure_ascii=False)
     print(f"📊 Đã lưu file JSON metrics: {metrics_json_path}")
 
-    # 6. Vẽ biểu đồ so sánh Top 5 Panel Kép (Rescue Panel & Smoothness Panel)
-    panel_rescue_path = os.path.join(output_dir, "ablation1_top5_rescue_panel.png")
-    plot_top5_divergence_panel(top5_rescue, panel_rescue_path, panel_title="RS-LiDAR ABLATION 1: TOP 5 FAILURE-RESCUE PROMPTS (VANILLA COLLAPSE)")
+    # 6. Vẽ biểu đồ so sánh Top K Panel Kép (Rescue Panel & Smoothness Panel)
+    panel_rescue_path = os.path.join(output_dir, f"ablation1_top{top_k}_rescue_panel.png")
+    plot_topk_divergence_panel(
+        top_rescue,
+        panel_rescue_path,
+        panel_title=f"RS-LiDAR ABLATION 1: TOP {len(top_rescue)} FAILURE-RESCUE PROMPTS (VANILLA COLLAPSE)"
+    )
 
-    panel_smooth_path = os.path.join(output_dir, "ablation1_top5_smoothness_panel.png")
-    plot_top5_divergence_panel(top5_smoothness, panel_smooth_path, panel_title="RS-LiDAR ABLATION 1: TOP 5 LIPSCHITZ SMOOTHNESS PROMPTS (THEORETICAL CERTIFICATION)")
+    panel_smooth_path = os.path.join(output_dir, f"ablation1_top{top_k}_smoothness_panel.png")
+    plot_topk_divergence_panel(
+        top_smoothness,
+        panel_smooth_path,
+        panel_title=f"RS-LiDAR ABLATION 1: TOP {len(top_smoothness)} LIPSCHITZ SMOOTHNESS PROMPTS (THEORETICAL CERTIFICATION)"
+    )
 
     # Alias file panel cũ cho tương thích
-    alias_panel_path = os.path.join(output_dir, "ablation1_top5_divergence_panel.png")
+    alias_panel_path = os.path.join(output_dir, "ablation1_top5_rescue_panel.png")
     shutil.copyfile(panel_rescue_path, alias_panel_path)
+    shutil.copyfile(panel_rescue_path, os.path.join(output_dir, "ablation1_top5_divergence_panel.png"))
+
+    alias_smooth_panel = os.path.join(output_dir, "ablation1_top5_smoothness_panel.png")
+    shutil.copyfile(panel_smooth_path, alias_smooth_panel)
 
     curves_path = os.path.join(output_dir, "ablation1_landscape_1d_curves.png")
     plot_summary_landscape_curves(merged_records, curves_path)
@@ -1293,6 +1336,19 @@ def run_ablation1_experiment(pipe, vae, ir_model, prompts_list, args, device="cu
             print(f"🔄 Đã nạp lại {len(completed_records)} prompts từ checkpoint cũ {ckpt_path}.")
         except Exception as e:
             print(f"⚠️ Lỗi đọc checkpoint: {e}")
+
+    # Xử lý Force Rerun Indices nếu có (Ép buộc tính lại các prompt chỉ định bất kể checkpoint cũ)
+    if getattr(args, "force_rerun_indices", None):
+        s_force = str(args.force_rerun_indices).strip()
+        if s_force and s_force.lower() not in ["none", ""]:
+            force_ids = {int(x.strip()) for x in s_force.split(",") if x.strip().isdigit()}
+            if force_ids:
+                old_len = len(completed_records)
+                completed_records = [r for r in completed_records if r.get("original_idx", r.get("prompt_idx")) not in force_ids]
+                completed_ids = completed_ids - force_ids
+                dropped_cnt = old_len - len(completed_records)
+                if dropped_cnt > 0:
+                    print(f"⚡ [Force Rerun] Đã xóa {dropped_cnt} prompts ({sorted(list(force_ids))}) khỏi completed checkpoint để bắt buộc chạy lại!")
 
     for idx, item in enumerate(tqdm(active_prompts, desc=f"Shard-{args.shard_id}")):
         real_idx = item.get("original_idx", idx)
@@ -1425,12 +1481,14 @@ def main():
     parser.add_argument("--prompts_file", type=str, default="prompt_files/geneval_metadata.jsonl", help="Đường dẫn file prompt")
     parser.add_argument("--categories", type=str, default=None, help="Danh sách Category chọn lọc (phân tách dấu phẩy, vd: 'two_object,colors,color_attr' hoặc 'all')")
     parser.add_argument("--prompts_per_category", type=int, default=2, help="Số prompts đại diện chọn cho mỗi Category")
-    parser.add_argument("--anchor_indices", type=str, default="80", help="ID các prompts mốc luôn luôn cố định ở đầu danh sách (mặc định '80' - bench and ball)")
+    parser.add_argument("--anchor_indices", type=str, default="80,98", help="ID các prompts mốc luôn luôn cố định ở đầu danh sách (mặc định '80,98' - bench and ball, couch and horse)")
+    parser.add_argument("--force_rerun_indices", type=str, default="80,98", help="ID các prompts bắt buộc phải chạy lại bỏ qua checkpoint (mặc định '80,98')")
+    parser.add_argument("--top_k", type=int, default=10, help="Số lượng prompts hàng đầu xếp từ cao xuống thấp để vẽ bảng và lưu CSV (mặc định 10)")
     parser.add_argument("--random_sample", action="store_true", default=True, help="Bốc ngẫu nhiên các prompt còn lại theo seed để khám phá đa dạng")
     parser.add_argument("--no_random_sample", action="store_false", dest="random_sample")
     parser.add_argument("--num_prompts", type=int, default=12, help="Tổng số prompts (dùng khi không phân tầng)")
     parser.add_argument("--prompt_indices", type=str, default=None, help="Chỉ định ID prompts cụ thể (ví dụ: '0,5,11' hoặc '0-11')")
-    parser.add_argument("--curated_selection", action="store_true", default=False, help="Chế độ tuyển chọn 12 prompts siêu phẩm có cấu trúc hình học Chủ-Khách (Host-Guest) phân hóa cao (Bench & Ball, Book & Laptop, v.v.)")
+    parser.add_argument("--curated_selection", action="store_true", default=False, help="Chế độ tuyển chọn các prompts siêu phẩm có cấu trúc hình học Chủ-Khách (Host-Guest) phân hóa cao (Bench & Ball, Couch & Horse, Book & Laptop, v.v.)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
     # Mô hình Diffusion
@@ -1473,7 +1531,7 @@ def main():
 
     # Chế độ merge shard độc lập
     if args.merge_shards:
-        merge_shard_checkpoints(args.output_dir)
+        merge_shard_checkpoints(args.output_dir, top_k=args.top_k)
         return
 
     # Thiết lập device
@@ -1495,7 +1553,7 @@ def main():
         prompts_per_category=args.prompts_per_category,
         max_prompts=args.num_prompts,
         prompt_indices=args.prompt_indices,
-        anchor_indices=getattr(args, "anchor_indices", "80"),
+        anchor_indices=getattr(args, "anchor_indices", "80,98"),
         random_sample=getattr(args, "random_sample", True),
         seed=args.seed,
         curated_selection=getattr(args, "curated_selection", False)
@@ -1531,7 +1589,7 @@ def main():
 
     # 5. Nếu chạy đơn shard, tự động tổng hợp luôn
     if args.num_shards == 1:
-        merge_shard_checkpoints(args.output_dir)
+        merge_shard_checkpoints(args.output_dir, top_k=args.top_k)
 
 
 if __name__ == "__main__":
