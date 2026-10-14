@@ -206,11 +206,15 @@ def load_stratified_prompts_per_category(
     prompts_per_category: int = 2,
     max_prompts: int = -1,
     prompt_indices: Optional[str] = None,
+    anchor_indices: Optional[str] = "80",
+    random_sample: bool = True,
     seed: int = 42
 ) -> List[Dict[str, Any]]:
     """
     Nạp danh sách prompts phân tầng chặt chẽ theo từng Category chuẩn GenEval.
     - categories: Cho phép người dùng lọc danh mục cụ thể (vd: 'two_object,colors,color_attr').
+    - anchor_indices: Các prompts mốc luôn luôn cố định ở đầu danh sách (mặc định: '80' - bench and ball).
+    - random_sample: Nếu True, bốc ngẫu nhiên các prompt còn lại theo seed để khám phá đa dạng.
     - Nếu prompts_per_category > 0: Chọn đúng K prompts cho mỗi category trong danh sách chọn lọc.
     - Giữ nguyên 'original_idx' để bảo toàn vị trí gốc trong metadata.
     """
@@ -297,15 +301,48 @@ def load_stratified_prompts_per_category(
         else:
             active_cats = [c for c in GENEVAL_CATEGORIES if c in by_cat] + [c for c in by_cat if c not in GENEVAL_CATEGORIES]
 
+        # Xử lý Anchor Prompts (mặc định luôn bao gồm #80 - bench and ball)
+        anchor_ids = set()
+        if anchor_indices is not None and str(anchor_indices).strip() not in ["", "none", "None"]:
+            anchor_ids = {int(x.strip()) for x in str(anchor_indices).split(",") if x.strip().isdigit()}
+
+        anchors = [it for it in items if it["original_idx"] in anchor_ids]
+        picked_ids = set(anchor_ids)
+
+        anchors_by_cat = {c: [] for c in active_cats}
+        for a in anchors:
+            cat = a.get("tag", "general")
+            if cat in anchors_by_cat:
+                anchors_by_cat[cat].append(a)
+
+        rng = random.Random(seed)
         selected = []
-        print(f"📊 Chọn phân tầng (Stratified) {prompts_per_category} prompts cho mỗi Category:")
+        # Luôn đưa Anchor Prompts lên vị trí ưu tiên đầu danh sách
+        selected.extend(anchors)
+
+        print(f"📊 Chọn phân tầng {prompts_per_category} prompts/category (Random Sample: {random_sample}, Seed: {seed}):")
+        if anchors:
+            anchor_desc = ", ".join(f"#{a['original_idx']} [{a.get('tag')}]: \"{a.get('prompt')}\"" for a in anchors)
+            print(f"   ⚓ Anchor Prompts (Luôn cố định): {anchor_desc}")
+
         for cat in active_cats:
-            bucket = by_cat[cat]
-            k = min(prompts_per_category, len(bucket))
-            picked = bucket[:k]
-            selected.extend(picked)
-            ids_str = ", ".join(str(p["original_idx"]) for p in picked)
-            print(f"   • [{cat}]: {len(picked)}/{len(bucket)} prompts (IDs: {ids_str})")
+            already = len(anchors_by_cat.get(cat, []))
+            needed = max(0, prompts_per_category - already)
+            available = [it for it in by_cat[cat] if it["original_idx"] not in picked_ids]
+
+            if random_sample:
+                picked = rng.sample(available, min(needed, len(available)))
+            else:
+                picked = available[:needed]
+
+            for p in picked:
+                picked_ids.add(p["original_idx"])
+                selected.append(p)
+
+            total_cat = already + len(picked)
+            ids_str = ", ".join(str(p["original_idx"]) for p in anchors_by_cat.get(cat, []) + picked)
+            print(f"   • [{cat}]: {total_cat}/{len(by_cat[cat])} prompts (IDs: {ids_str})")
+
         return selected
 
     # 3. Giới hạn theo max_prompts thông thường
@@ -1376,6 +1413,9 @@ def main():
     parser.add_argument("--prompts_file", type=str, default="prompt_files/geneval_metadata.jsonl", help="Đường dẫn file prompt")
     parser.add_argument("--categories", type=str, default=None, help="Danh sách Category chọn lọc (phân tách dấu phẩy, vd: 'two_object,colors,color_attr' hoặc 'all')")
     parser.add_argument("--prompts_per_category", type=int, default=2, help="Số prompts đại diện chọn cho mỗi Category")
+    parser.add_argument("--anchor_indices", type=str, default="80", help="ID các prompts mốc luôn luôn cố định ở đầu danh sách (mặc định '80' - bench and ball)")
+    parser.add_argument("--random_sample", action="store_true", default=True, help="Bốc ngẫu nhiên các prompt còn lại theo seed để khám phá đa dạng")
+    parser.add_argument("--no_random_sample", action="store_false", dest="random_sample")
     parser.add_argument("--num_prompts", type=int, default=12, help="Tổng số prompts (dùng khi không phân tầng)")
     parser.add_argument("--prompt_indices", type=str, default=None, help="Chỉ định ID prompts cụ thể (ví dụ: '0,5,11' hoặc '0-11')")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -1442,6 +1482,8 @@ def main():
         prompts_per_category=args.prompts_per_category,
         max_prompts=args.num_prompts,
         prompt_indices=args.prompt_indices,
+        anchor_indices=getattr(args, "anchor_indices", "80"),
+        random_sample=getattr(args, "random_sample", True),
         seed=args.seed
     )
     print(f"📋 Đã chuẩn bị {len(prompts_list)} prompts kiểm thử cho Ablation 1.")
