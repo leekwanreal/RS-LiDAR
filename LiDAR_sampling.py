@@ -224,6 +224,7 @@ def main(args):
     n_samples = 0
     average_time = 0
 
+    lookaheads = None
     if args.use_rag:
         lookaheads = gen_lookahead_samples(args.lookahead_path, args.top_k)
         if len(lookaheads) > 0:
