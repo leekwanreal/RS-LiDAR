@@ -51,6 +51,12 @@ class FKD:
         reward_min_value: float = 0.0,
         latent_to_decode_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
         device: Optional[torch.device] = None,
+        use_smc_smoothing: bool = False,
+        smc_sigma: float = 0.25,
+        smc_num_mc_samples: int = 4,
+        smc_smoothing_domain: str = "image",
+        smc_use_crn: bool = False,
+        smc_smoothing_mode: str = "loop",
         **kwargs,
     ) -> None:
         # Support FK_ prefixed argument overrides from CLI
@@ -60,6 +66,16 @@ class FKD:
             resampling_t_start = kwargs["FK_resample_t_start"]
         if "FK_resample_t_end" in kwargs and kwargs["FK_resample_t_end"] is not None:
             resampling_t_end = kwargs["FK_resample_t_end"]
+
+        # Support RS-SMC aliases from CLI / kwargs
+        if "use_rs_smc" in kwargs and kwargs["use_rs_smc"] is not None:
+            use_smc_smoothing = kwargs["use_rs_smc"]
+        if "smc_M" in kwargs and kwargs["smc_M"] is not None:
+            smc_num_mc_samples = kwargs["smc_M"]
+        if "sigma" in kwargs and kwargs["sigma"] is not None and "smc_sigma" not in kwargs:
+            smc_sigma = kwargs["sigma"]
+        if "num_mc_samples" in kwargs and kwargs["num_mc_samples"] is not None and "smc_num_mc_samples" not in kwargs:
+            smc_num_mc_samples = kwargs["num_mc_samples"]
 
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -75,6 +91,14 @@ class FKD:
 
         self.reward_fn = reward_fn
         self.latent_to_decode_fn = latent_to_decode_fn
+
+        # RS-SMC Hyperparameters
+        self.use_smc_smoothing = use_smc_smoothing
+        self.smc_sigma = smc_sigma
+        self.smc_num_mc_samples = smc_num_mc_samples
+        self.smc_smoothing_domain = smc_smoothing_domain
+        self.smc_use_crn = smc_use_crn
+        self.smc_smoothing_mode = smc_smoothing_mode
 
         # Initialize device and population reward state
         self.device = device
@@ -111,7 +135,59 @@ class FKD:
 
         # Decode latents to population images and compute rewards
         population_images = self.latent_to_decode_fn(x0_preds)
-        rs_candidates = self.reward_fn(population_images)
+
+        if not getattr(self, "use_smc_smoothing", False):
+            # Vanilla SMC: Original raw reward evaluation (Zero Regression)
+            rs_candidates = self.reward_fn(population_images)
+        else:
+            # RS-SMC: Randomized Smoothing over Tweedie estimate with M Gaussian perturbations
+            if self.smc_smoothing_domain == "image":
+                if self.smc_smoothing_mode == "loop":
+                    mc_rewards = []
+                    with torch.inference_mode():
+                        for _ in range(self.smc_num_mc_samples):
+                            if self.smc_sigma > 0:
+                                if self.smc_use_crn:
+                                    noise = torch.randn((1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * self.smc_sigma
+                                else:
+                                    noise = torch.randn_like(population_images) * self.smc_sigma
+                                noisy_imgs = (population_images + noise).clamp(-1.0, 1.0)
+                            else:
+                                noisy_imgs = population_images.clamp(-1.0, 1.0)
+                            r_m = self.reward_fn(noisy_imgs)
+                            mc_rewards.append(r_m)
+                    rs_candidates = torch.stack(mc_rewards, dim=0).mean(dim=0)
+                else: # vectorized
+                    with torch.inference_mode():
+                        if self.smc_sigma > 0:
+                            if self.smc_use_crn:
+                                noise = torch.randn((self.smc_num_mc_samples, 1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * self.smc_sigma
+                                noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
+                            else:
+                                noise = torch.randn((self.smc_num_mc_samples, *population_images.shape), device=population_images.device, dtype=population_images.dtype) * self.smc_sigma
+                                noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
+                        else:
+                            noisy_imgs = population_images.repeat(self.smc_num_mc_samples, 1, 1, 1)
+                        raw_rewards = self.reward_fn(noisy_imgs)
+                        rs_candidates = raw_rewards.view(self.smc_num_mc_samples, self.num_particles).mean(dim=0)
+            elif self.smc_smoothing_domain == "latent":
+                mc_rewards = []
+                with torch.inference_mode():
+                    for _ in range(self.smc_num_mc_samples):
+                        if self.smc_sigma > 0:
+                            if self.smc_use_crn:
+                                noise = torch.randn((1, *x0_preds.shape[1:]), device=x0_preds.device, dtype=x0_preds.dtype) * self.smc_sigma
+                            else:
+                                noise = torch.randn_like(x0_preds) * self.smc_sigma
+                            noisy_latents = x0_preds + noise
+                        else:
+                            noisy_latents = x0_preds
+                        noisy_imgs = self.latent_to_decode_fn(noisy_latents)
+                        r_m = self.reward_fn(noisy_imgs)
+                        mc_rewards.append(r_m)
+                rs_candidates = torch.stack(mc_rewards, dim=0).mean(dim=0)
+            else:
+                raise ValueError(f"Unknown smc_smoothing_domain: {self.smc_smoothing_domain}")
 
         # Ensure device and dtype alignment
         if self.population_rs.device != rs_candidates.device or self.population_rs.dtype != rs_candidates.dtype:

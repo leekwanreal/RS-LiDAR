@@ -199,10 +199,23 @@ def main(args):
 
     # set output directory
     cur_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    prefix = f"{args.num_inference_steps}_{args.eta}_{args.num_particles}_{args.top_k}_{args.resample_t_end}_{args.lmbda}_{args.scale}_{args.seed}"
     if args.run_name:
         output_dir = os.path.join(args.output_dir, args.run_name)
     else:
+        model_tag = "SDXL" if "xl" in args.model_name.lower() else "SD15"
+        if args.use_smc:
+            if getattr(args, "use_smc_smoothing", False):
+                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}_freq{args.resample_frequency}"
+            else:
+                method_tag = f"{model_tag}_SMC_N{args.num_particles}_freq{args.resample_frequency}"
+            if args.use_rag:
+                method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
+        elif args.use_rag:
+            method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
+        else:
+            method_tag = f"{model_tag}_Vanilla_N{args.num_particles}"
+
+        prefix = f"{method_tag}_steps{args.num_inference_steps}_scale{args.scale}_seed{args.seed}"
         output_dir = os.path.join(args.output_dir, f"{prefix}_{cur_time}")
 
     os.makedirs(output_dir, exist_ok=True)
@@ -288,6 +301,12 @@ def main(args):
             use_smc=args.use_smc,
             use_grad=args.use_grad,
             use_rag=args.use_rag,
+            use_smc_smoothing=getattr(args, "use_smc_smoothing", False),
+            smc_sigma=getattr(args, "smc_sigma", 0.25),
+            smc_num_mc_samples=getattr(args, "smc_num_mc_samples", 4),
+            smc_smoothing_domain=getattr(args, "smc_smoothing_domain", "image"),
+            smc_use_crn=getattr(args, "smc_use_crn", False),
+            smc_smoothing_mode=getattr(args, "smc_smoothing_mode", "loop"),
             FK_lmbda=args.FK_lmbda,
             FK_resample_t_start=args.FK_resample_t_start,
             FK_resample_t_end=args.FK_resample_t_end,
@@ -406,6 +425,16 @@ def main(args):
         json.dump(metrics_arr, f, indent=4)
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ("yes", "true", "t", "y", "1"):
+        return True
+    elif v.lower() in ("no", "false", "f", "n", "0"):
+        return False
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="Target_samples")
@@ -415,6 +444,16 @@ def get_args():
     parser.add_argument("--use_smc", action="store_true")
     parser.add_argument("--use_grad", action="store_true")
     parser.add_argument("--use_rag", action="store_true")
+
+    ## RS-SMC arguments
+    parser.add_argument("--use_smc_smoothing", action="store_true", default=False, help="Enable Randomized Smoothing for SMC resampling")
+    parser.add_argument("--use_rs_smc", action="store_true", default=False, help="Alias for --use_smc_smoothing")
+    parser.add_argument("--smc_sigma", type=float, default=0.25, help="Gaussian noise standard deviation for RS-SMC (default: 0.25)")
+    parser.add_argument("--smc_num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M for RS-SMC (default: 4)")
+    parser.add_argument("--smc_M", type=int, default=None, help="Alias for --smc_num_mc_samples")
+    parser.add_argument("--smc_smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
+    parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")
+    parser.add_argument("--smc_smoothing_mode", type=str, default="loop", choices=["loop", "vectorized"], help="Smoothing execution mode: 'loop' (default, VRAM safe) or 'vectorized'")
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)
@@ -456,6 +495,22 @@ def get_args():
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
     parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
     args = parser.parse_args()
+
+    if args.smc_M is not None:
+        args.smc_num_mc_samples = args.smc_M
+    if args.use_rs_smc:
+        args.use_smc_smoothing = True
+    if args.use_smc_smoothing:
+        args.use_smc = True
+
+    # Auto-dispatch scale for SDXL if user kept default 12.5
+    if "xl" in args.model_name.lower():
+        if args.scale == 12.5:
+            args.scale = 8.0
+            print("⚡ Auto-dispatch scale to 8.0 for SDXL (Paper Table 2 standard)")
+        if args.use_smc_smoothing and args.smc_sigma == 0.25:
+            args.smc_sigma = 0.10
+            print("⚡ Auto-dispatch smc_sigma to 0.10 for SDXL")
 
     return args
 
