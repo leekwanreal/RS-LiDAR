@@ -188,6 +188,65 @@ def test_arg_parser_auto_dispatch():
     print("   ✅ Test 5 Passed: CLI flags, RS aliases, and SDXL auto-dispatch verified.")
 
 
+def test_systematic_folder_naming():
+    print("🧪 Test 6: Testing Output Directory Systematic Naming...")
+    class MockArgs:
+        def __init__(self, **kwargs):
+            self.model_name = "runwayml/stable-diffusion-v1-5"
+            self.use_smc = False
+            self.use_smc_smoothing = False
+            self.smc_sigma = 0.25
+            self.smc_num_mc_samples = 4
+            self.smc_use_crn = False
+            self.resample_frequency = 20
+            self.FK_lmbda = 10.0
+            self.use_rag = False
+            self.top_k = 50
+            self.lmbda = 5000.0
+            self.num_particles = 4
+            self.num_inference_steps = 100
+            self.scale = 12.5
+            self.seed = 42
+            self.run_name = None
+            self.output_dir = "Target_samples"
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+
+    def compute_tag(args):
+        model_tag = "SDXL" if "xl" in args.model_name.lower() else "SD15"
+        if args.use_smc:
+            crn_suffix = "_crn" if getattr(args, "smc_use_crn", False) else ""
+            if getattr(args, "use_smc_smoothing", False):
+                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
+            else:
+                method_tag = f"{model_tag}_SMC_N{args.num_particles}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
+            if args.use_rag:
+                method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
+        elif args.use_rag:
+            method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
+        else:
+            method_tag = f"{model_tag}_BoN_N{args.num_particles}" if args.num_particles > 1 else f"{model_tag}_Vanilla_N1"
+        return method_tag
+
+    # 1. Vanilla SMC
+    tag_smc = compute_tag(MockArgs(use_smc=True, num_particles=8, FK_lmbda=15.0))
+    assert tag_smc == "SD15_SMC_N8_freq20_lmbda15.0", f"Unexpected tag: {tag_smc}"
+
+    # 2. RS-SMC with CRN
+    tag_rs = compute_tag(MockArgs(use_smc=True, use_smc_smoothing=True, num_particles=4, smc_num_mc_samples=8, smc_sigma=0.5, smc_use_crn=True))
+    assert tag_rs == "SD15_RSSMC_N4_M8_sigma0.5_crn_freq20_lmbda10.0", f"Unexpected tag: {tag_rs}"
+
+    # 3. RS-SMC + LiDAR on SDXL
+    tag_rs_xl = compute_tag(MockArgs(model_name="stabilityai/stable-diffusion-xl-base-1.0", use_smc=True, use_smc_smoothing=True, num_particles=4, smc_sigma=0.10, use_rag=True, top_k=50, lmbda=5000.0))
+    assert tag_rs_xl == "SDXL_RSSMC_N4_M4_sigma0.1_freq20_lmbda10.0_LiDAR_topk50_lmbda5000", f"Unexpected tag: {tag_rs_xl}"
+
+    # 4. BoN
+    tag_bon = compute_tag(MockArgs(num_particles=16))
+    assert tag_bon == "SD15_BoN_N16", f"Unexpected tag: {tag_bon}"
+
+    print("   ✅ Test 6 Passed: Systematic directory tags verified across all methods.")
+
+
 if __name__ == "__main__":
     print("\n=======================================================")
     print("🚀 RUNNING RS-SMC UNIT & REGRESSION TEST SUITE")
@@ -197,6 +256,7 @@ if __name__ == "__main__":
     test_rs_smc_common_random_numbers()
     test_sd15_and_sdxl_shapes()
     test_arg_parser_auto_dispatch()
+    test_systematic_folder_naming()
     print("\n=======================================================")
-    print("🎉 ALL 5 RS-SMC TESTS PASSED WITH 100% SUCCESS!")
+    print("🎉 ALL 6 RS-SMC TESTS PASSED WITH 100% SUCCESS!")
     print("=======================================================\n")

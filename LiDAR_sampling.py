@@ -204,16 +204,17 @@ def main(args):
     else:
         model_tag = "SDXL" if "xl" in args.model_name.lower() else "SD15"
         if args.use_smc:
+            crn_suffix = "_crn" if getattr(args, "smc_use_crn", False) else ""
             if getattr(args, "use_smc_smoothing", False):
-                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}_freq{args.resample_frequency}"
+                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
             else:
-                method_tag = f"{model_tag}_SMC_N{args.num_particles}_freq{args.resample_frequency}"
+                method_tag = f"{model_tag}_SMC_N{args.num_particles}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
             if args.use_rag:
                 method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
         elif args.use_rag:
             method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
         else:
-            method_tag = f"{model_tag}_Vanilla_N{args.num_particles}"
+            method_tag = f"{model_tag}_BoN_N{args.num_particles}" if args.num_particles > 1 else f"{model_tag}_Vanilla_N1"
 
         prefix = f"{method_tag}_steps{args.num_inference_steps}_scale{args.scale}_seed{args.seed}"
         output_dir = os.path.join(args.output_dir, f"{prefix}_{cur_time}")
