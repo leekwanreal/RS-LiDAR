@@ -40,23 +40,29 @@ class FKD:
         self,
         *,
         potential_type: PotentialType,
-        lmbda: float,
-        num_particles: int,
-        adaptive_resampling: bool,
-        resample_frequency: int,
-        resampling_t_start: int,
-        resampling_t_end: int,
-        time_steps: int,
+        lmbda: float = 10.0,
+        num_particles: int = 4,
+        adaptive_resampling: bool = False,
+        resample_frequency: int = 20,
+        resampling_t_start: int = 20,
+        resampling_t_end: int = 80,
+        time_steps: int = 100,
         reward_fn: Callable[[torch.Tensor], torch.Tensor],
         reward_min_value: float = 0.0,
         latent_to_decode_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
-        device: torch.device = torch.device('cuda'),
+        device: Optional[torch.device] = None,
         **kwargs,
     ) -> None:
-        # Initialize hyperparameters and functions
+        # Support FK_ prefixed argument overrides from CLI
+        if "FK_lmbda" in kwargs and kwargs["FK_lmbda"] is not None:
+            lmbda = kwargs["FK_lmbda"]
+        if "FK_resample_t_start" in kwargs and kwargs["FK_resample_t_start"] is not None:
+            resampling_t_start = kwargs["FK_resample_t_start"]
+        if "FK_resample_t_end" in kwargs and kwargs["FK_resample_t_end"] is not None:
+            resampling_t_end = kwargs["FK_resample_t_end"]
 
-        # if kwargs:
-            # logging.warning(f"FKD Steering - Unused arguments: {kwargs}")
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.potential_type = PotentialType(potential_type)
         self.lmbda = lmbda
@@ -106,6 +112,12 @@ class FKD:
         # Decode latents to population images and compute rewards
         population_images = self.latent_to_decode_fn(x0_preds)
         rs_candidates = self.reward_fn(population_images)
+
+        # Ensure device and dtype alignment
+        if self.population_rs.device != rs_candidates.device or self.population_rs.dtype != rs_candidates.dtype:
+            self.population_rs = self.population_rs.to(device=rs_candidates.device, dtype=rs_candidates.dtype)
+        if self.product_of_potentials.device != rs_candidates.device:
+            self.product_of_potentials = self.product_of_potentials.to(device=rs_candidates.device)
 
         # Compute importance weights
         if self.potential_type == PotentialType.MAX:

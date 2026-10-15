@@ -296,6 +296,7 @@ def main(args):
             adaptive_resampling=args.adaptive_resampling,
             resample_frequency=args.resample_frequency,
             time_steps=args.num_inference_steps,
+            resampling_t_start=args.FK_resample_t_start,
             resampling_t_end=args.resample_t_end,
             guidance_reward_fn=args.guidance_reward_fn,
             potential_type=args.potential_type,
