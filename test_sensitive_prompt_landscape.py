@@ -740,46 +740,79 @@ def run_phase2_target_steering(
 # ======================================================================================
 # 📐 1D DIRECTIONAL LANDSCAPE SLICING (CẮT LÁT BỀ MẶT REWARD)
 # ======================================================================================
+def generate_full_span_grid(slicing_points: int = 1000, margin: float = 0.2) -> np.ndarray:
+    """
+    Sinh lưới tọa độ u in [-margin, 1.0 + margin] với số điểm slicing_points (K).
+    ĐẢM BẢO ĐẶC TẢ TOÁN HỌC BẤT BIẾN:
+    1. Điểm u = 0.0 (Vanilla LiDAR) LUÔN LUÔN là phần tử chính xác tuyệt đối trong mảng.
+    2. Điểm u = 1.0 (RS-LiDAR) LUÔN LUÔN là phần tử chính xác tuyệt đối trong mảng.
+    3. Không bao giờ nhảy qua (skip) 2 điểm mốc này với bất kỳ giá trị K nào (41, 61, 81, 100, 500, 1000, ...).
+    """
+    margin = float(margin)
+    total_span = 1.0 + 2.0 * margin
+    ratio_mid = 1.0 / total_span
+
+    n_mid_intervals = max(2, int(round(slicing_points * ratio_mid)))
+    n_side_intervals = max(1, (slicing_points - n_mid_intervals) // 2)
+
+    u_left = np.linspace(-margin, 0.0, n_side_intervals, endpoint=False)
+    u_mid = np.linspace(0.0, 1.0, n_mid_intervals + 1, endpoint=True)
+    u_mid[0] = 0.0
+    u_mid[-1] = 1.0
+    u_right = np.linspace(1.0, 1.0 + margin, n_side_intervals + 1, endpoint=True)[1:]
+
+    u_vals = np.concatenate([u_left, u_mid, u_right])
+    assert 0.0 in u_vals, "CRITICAL: u=0.0 (Vanilla LiDAR) không tồn tại trong lưới!"
+    assert 1.0 in u_vals, "CRITICAL: u=1.0 (RS-LiDAR) không tồn tại trong lưới!"
+    return u_vals
+
+
 @torch.inference_mode()
 def compute_1d_landscape_profile(
     img_vanilla: Any,
     img_rs: Any,
     prompt: str,
     ir_model: Any,
-    slicing_points: int = 41,
+    slicing_points: int = 1000,
     alpha_max: float = 0.2,
     slicing_sigma: float = 1.0,
     mc_samples: int = 4,
+    slicing_mode: str = "full_span",
+    slicing_margin: float = 0.2,
     device: str = "cuda"
 ) -> Dict[str, Any]:
     """
-    Cắt lát 1D không gian pixel dọc theo vector vi sai nối giữa Vanilla và RS-LiDAR:
-      v = (x_RS - x_vanilla) / ||x_RS - x_vanilla||_2
-      x(alpha) = clip(x_vanilla + alpha * v, -1, 1) với alpha in [-alpha_max, alpha_max]
+    Cắt lát 1D không gian pixel:
+    - Nếu slicing_mode == 'full_span': Quỹ đạo toàn phần từ Vanilla (u=0) đến RS-LiDAR (u=1) kèm lân cận 2 đầu:
+        x(u) = clip(x_vanilla + u * (x_RS - x_vanilla), -1, 1) với u in [-margin, 1 + margin]
+      Đảm bảo u=0.0 và u=1.0 luôn là điểm nút chính xác tuyệt đối, không bị nhảy qua.
+    - Nếu slicing_mode == 'local': Quét vi phân cục bộ quanh Vanilla:
+        x(alpha) = clip(x_vanilla + alpha * v, -1, 1) với alpha in [-alpha_max, alpha_max]
     Đo:
-      f_vanilla(alpha) = R(x(alpha))
-      f_RS(alpha)      = (1/M) sum R(clip(x(alpha) + sigma * u_m, -1, 1)) với CRN
-      Numerical Secant Derivative |Df(alpha)| = |f(alpha + da) - f(alpha)| / da
+      f_vanilla(u) = R(x(u))
+      f_RS(u)      = (1/M) sum R(clip(x(u) + sigma * u_m, -1, 1)) với CRN
+      Numerical Secant Derivative |Df(u)| = |f(u_{i+1}) - f(u_i)| / delta_x
     """
     img_vanilla = extract_single_pil_image(img_vanilla)
     img_rs = extract_single_pil_image(img_rs)
     t_v = pil_to_tensor_neg1_to_1(img_vanilla, device=device)
     t_rs = pil_to_tensor_neg1_to_1(img_rs, device=device)
 
-    # 1. Vector định hướng v
+    # 1. Vector vi sai giữa RS-LiDAR và Vanilla LiDAR
     diff = t_rs - t_v
     dist_l2 = float(torch.norm(diff.reshape(-1), p=2).item())
 
     if dist_l2 < 1e-6:
-        # Nếu 2 ảnh trùng nhau, tạo hướng ngẫu nhiên
         v_rand = torch.randn_like(t_v)
         v = v_rand / torch.norm(v_rand.reshape(-1), p=2)
     else:
         v = diff / dist_l2
 
-    # 2. Quét dải alpha in [-alpha_max, alpha_max]
-    alphas = np.linspace(-alpha_max, alpha_max, slicing_points)
-    delta_alpha = float(alphas[1] - alphas[0])
+    # 2. Sinh lưới tọa độ theo chế độ
+    if slicing_mode == "full_span":
+        alphas = generate_full_span_grid(slicing_points=slicing_points, margin=slicing_margin)
+    else:
+        alphas = np.linspace(-alpha_max, alpha_max, slicing_points)
 
     curve_vanilla = []
     curve_rs = []
@@ -793,7 +826,18 @@ def compute_1d_landscape_profile(
             crn_noise_list.append(n_m)
 
     for a in alphas:
-        t_a = (t_v + float(a) * v).clamp(-1.0, 1.0)
+        a_f = float(a)
+        if slicing_mode == "full_span":
+            # Khóa cứng tensor gốc tránh sai số trôi số học (floating point drift)
+            if abs(a_f - 0.0) < 1e-9:
+                t_a = t_v
+            elif abs(a_f - 1.0) < 1e-9:
+                t_a = t_rs
+            else:
+                t_a = (t_v + a_f * diff).clamp(-1.0, 1.0)
+        else:
+            t_a = (t_v + a_f * v).clamp(-1.0, 1.0)
+
         img_a = tensor_to_pil(t_a)
 
         # Vanilla score dọc đường cắt
@@ -815,10 +859,16 @@ def compute_1d_landscape_profile(
     curve_vanilla = np.array(curve_vanilla, dtype=np.float32)
     curve_rs = np.array(curve_rs, dtype=np.float32)
 
-    # 3. Tính đạo hàm số học vi phân (Numerical Derivatives)
-    # Secant slope: |f(a_{i+1}) - f(a_i)| / delta_alpha
-    deriv_vanilla = np.abs(np.diff(curve_vanilla) / delta_alpha)
-    deriv_rs = np.abs(np.diff(curve_rs) / delta_alpha)
+    # 3. Tính đạo hàm số học vi phân (Numerical Secant Derivatives)
+    if slicing_mode == "full_span":
+        delta_u = np.diff(alphas)
+        delta_x = delta_u * dist_l2 if dist_l2 > 1e-6 else delta_u
+        deriv_vanilla = np.abs(np.diff(curve_vanilla) / delta_x)
+        deriv_rs = np.abs(np.diff(curve_rs) / delta_x)
+    else:
+        delta_alpha = float(alphas[1] - alphas[0]) if len(alphas) > 1 else 1.0
+        deriv_vanilla = np.abs(np.diff(curve_vanilla) / delta_alpha)
+        deriv_rs = np.abs(np.diff(curve_rs) / delta_alpha)
 
     l_max_vanilla = float(np.max(deriv_vanilla)) if len(deriv_vanilla) > 0 else 0.0
     l_max_rs = float(np.max(deriv_rs)) if len(deriv_rs) > 0 else 0.0
@@ -826,13 +876,15 @@ def compute_1d_landscape_profile(
     l_mean_rs = float(np.mean(deriv_rs)) if len(deriv_rs) > 0 else 0.0
 
     # Chặn lý thuyết Theorem 1: Delta R / (sigma * sqrt(2*pi))
-    # Dùng range của reward quan sát được hoặc hằng số chuẩn
     reward_range = max(float(np.ptp(curve_vanilla)), 1.5)
     theoretical_bound = float(reward_range / (slicing_sigma * math.sqrt(2 * math.pi))) if slicing_sigma > 0 else 999.0
 
     return {
         "dist_l2": dist_l2,
         "alphas": alphas.tolist(),
+        "u_vals": alphas.tolist(),
+        "slicing_mode": slicing_mode,
+        "slicing_margin": float(slicing_margin) if slicing_mode == "full_span" else float(alpha_max),
         "curve_vanilla": curve_vanilla.tolist(),
         "curve_rs": curve_rs.tolist(),
         "deriv_vanilla": deriv_vanilla.tolist(),
@@ -926,131 +978,147 @@ def compute_prompt_divergence_score(
 def plot_topk_divergence_panel(
     topk_records: List[Dict[str, Any]],
     output_path: str,
-    panel_title: str = "RS-LiDAR ABLATION 1: TOP DIVERGENT PROMPTS"
+    panel_title: str = "RS-LiDAR vs. Vanilla LiDAR: Qualitative and 1D Landscape Comparison"
 ):
     """
     Xuất bảng ghép đồ họa chất lượng cao Side-by-Side gồm K hàng x 5 cột:
-    - Cột 1: Thông tin Prompt & Category (Category badge, Prompt text, Divergence score, Delta R, Ratio).
-    - Cột 2: Ảnh Unsteered (CFG=12.5, No LiDAR Guidance).
-    - Cột 3: Ảnh Vanilla LiDAR (CFG=12.5, s=12.5) kèm điểm R và độ dốc L.
-    - Cột 4: Ảnh RS-LiDAR (CFG=12.5, s=12.5, sigma=1.0) kèm điểm R và độ dốc L.
-    - Cột 5: Đồ thị 1D Slicing Curve Profile thu nhỏ đặt ngay cạnh ảnh!
+    - Cột 1: Ảnh Unsteered Baseline kèm điểm R.
+    - Cột 2: Ảnh Vanilla LiDAR kèm điểm R và độ dốc L_max (viền đỏ).
+    - Cột 3: Ảnh RS-LiDAR kèm điểm R và độ dốc L_max (viền xanh).
+    - Cột 4: Cột đệm khoảng trống (Spacer Gap, width_ratio=0.16) chống tràn đè chữ/ảnh.
+    - Cột 5: Đồ thị 1D Slicing Curve Profile (Full-Span 1000 điểm hoặc vi mô).
+    Khung viền, khoảng cách lề hspace=0.52 và wspace=0.15 được chuẩn hóa hoàn hảo khớp form comparison_selected_3_prompts_panel.png.
     """
     num_rows = len(topk_records)
     if num_rows == 0:
         return
 
-    fig, axes = plt.subplots(num_rows, 5, figsize=(22, 4.2 * num_rows), dpi=300)
-    if num_rows == 1:
-        axes = np.expand_dims(axes, 0)
-
-    plt.subplots_adjust(wspace=0.25, hspace=0.35)
+    fig = plt.figure(figsize=(20.5, 5.3 * num_rows), dpi=300)
+    gs = fig.add_gridspec(
+        num_rows, 5,
+        width_ratios=[1.0, 1.0, 1.0, 0.16, 1.12],
+        wspace=0.15, hspace=0.52,
+        top=0.94, bottom=0.06, left=0.04, right=0.97
+    )
 
     for i, rec in enumerate(topk_records):
         rank = i + 1
-        tag = rec.get("category", rec.get("tag", "general"))
-        prompt_text = rec.get("prompt", "")
-        score = rec.get("rescue_score", rec.get("divergence_score", 0.0))
+        idx = rec.get("original_idx", rec.get("prompt_idx", i))
+        p_str = rec.get("prompt", "")
         dr = rec.get("delta_r", 0.0)
         l_ratio = rec.get("l_reduction_ratio", 1.0)
+        r_u = rec.get("r_unsteered", 0.0)
         r_v = rec.get("r_vanilla", 0.0)
         r_rs = rec.get("r_rs", 0.0)
         lv = rec.get("l_max_vanilla", 0.0)
         lrs = rec.get("l_max_rs", 0.0)
 
         # ----------------------------------------------------------------------
-        # CỘT 1: THẺ THÔNG TIN PROMPT (TEXT CARD)
+        # CỘT 0: ẢNH UNSTEERED (BASELINE)
         # ----------------------------------------------------------------------
-        ax_info = axes[i, 0]
-        ax_info.axis("off")
-        # Khung viền thẻ thông tin
-        card_box = dict(boxstyle="round,pad=0.8", facecolor="#F8F9FA", edgecolor="#457B9D", lw=1.8)
-        info_lines = [
-            f"[RANK #{rank} SENSITIVE PROMPT]",
-            f"---------------------------------",
-            f"Category:     [{tag.upper()}]",
-            f"Prompt ID:    #{rec.get('original_idx', rec.get('prompt_idx', i))}",
-            f"Prompt Text:",
-            f"  \"{prompt_text[:75]}...\"" if len(prompt_text) > 75 else f"  \"{prompt_text}\"",
-            f"---------------------------------",
-            f"Rescue Score:      {score:.3f}",
-            f"Reward Gain dR:    {dr:+.3f}",
-            f"Lipschitz Ratio:   {l_ratio:.2f}x",
-        ]
-        info_str = "\n".join(info_lines)
-        ax_info.text(0.05, 0.5, info_str, fontsize=9.5, verticalalignment="center",
-                     family="monospace", bbox=card_box)
-
-        # ----------------------------------------------------------------------
-        # CỘT 2: ẢNH UNSTEERED (BASELINE)
-        # ----------------------------------------------------------------------
-        ax_un = axes[i, 1]
+        ax_un = fig.add_subplot(gs[i, 0])
         img_un = rec.get("img_unsteered_obj")
         if img_un is None and "img_unsteered_path" in rec and os.path.exists(rec["img_unsteered_path"]):
             img_un = Image.open(rec["img_unsteered_path"])
         if img_un is not None:
             ax_un.imshow(img_un)
-            ax_un.set_title(f"Unsteered (CFG=12.5, No LiDAR Guidance)\n$R = {rec.get('r_unsteered', 0.0):.3f}$", fontsize=9.5, fontweight="bold", color="#1D3557")
+            ax_un.set_title(f"Unsteered Baseline\n$R = {r_u:.3f}$", fontsize=11.5, fontweight="bold", color="#1D3557", pad=8)
         else:
             ax_un.text(0.5, 0.5, "Image N/A", ha="center", va="center")
         ax_un.axis("off")
 
         # ----------------------------------------------------------------------
-        # CỘT 3: ẢNH VANILLA LIDAR (s = 12.5)
+        # CỘT 1: ẢNH VANILLA LIDAR
         # ----------------------------------------------------------------------
-        ax_vl = axes[i, 2]
+        ax_vl = fig.add_subplot(gs[i, 1])
         img_vl = rec.get("img_vanilla_obj")
         if img_vl is None and "img_vanilla_path" in rec and os.path.exists(rec["img_vanilla_path"]):
             img_vl = Image.open(rec["img_vanilla_path"])
         if img_vl is not None:
             ax_vl.imshow(img_vl)
-            ax_vl.set_title(f"Vanilla LiDAR (CFG=12.5, $s=12.5, \\lambda=5000$)\n$R = {r_v:.3f}$ | $L_{{\\max}} = {lv:.1f}$", fontsize=9.5, fontweight="bold", color="#E63946")
+            ax_vl.set_title(f"Vanilla LiDAR\n$R = {r_v:.3f}$ | $L_{{\\max}} = {lv:.2f}$", fontsize=11.5, fontweight="bold", color="#E63946", pad=8)
             for spine in ax_vl.spines.values():
                 spine.set_edgecolor("#E63946")
-                spine.set_linewidth(2.0)
+                spine.set_linewidth(2.2)
         else:
             ax_vl.text(0.5, 0.5, "Image N/A", ha="center", va="center")
         ax_vl.axis("off")
 
         # ----------------------------------------------------------------------
-        # CỘT 4: ẢNH RS-LIDAR (s = 12.5, sigma = 1.0)
+        # CỘT 2: ẢNH RS-LIDAR
         # ----------------------------------------------------------------------
-        ax_rs = axes[i, 3]
+        ax_rs = fig.add_subplot(gs[i, 2])
         img_rs = rec.get("img_rs_obj")
         if img_rs is None and "img_rs_path" in rec and os.path.exists(rec["img_rs_path"]):
             img_rs = Image.open(rec["img_rs_path"])
         if img_rs is not None:
             ax_rs.imshow(img_rs)
-            ax_rs.set_title(f"RS-LiDAR (CFG=12.5, $s=12.5, \\sigma=1.0$)\n$R = {r_rs:.3f}$ | $L_{{\\max}} = {lrs:.1f}$", fontsize=9.5, fontweight="bold", color="#2A9D8F")
+            ax_rs.set_title(f"RS-LiDAR\n$R = {r_rs:.3f}$ | $L_{{\\max}} = {lrs:.2f}$", fontsize=11.5, fontweight="bold", color="#2A9D8F", pad=8)
             for spine in ax_rs.spines.values():
                 spine.set_edgecolor("#2A9D8F")
-                spine.set_linewidth(2.0)
+                spine.set_linewidth(2.2)
         else:
             ax_rs.text(0.5, 0.5, "Image N/A", ha="center", va="center")
         ax_rs.axis("off")
 
         # ----------------------------------------------------------------------
-        # CỘT 5: 1D LANDSCAPE SLICING CURVE PROFILE
+        # CAPTION DƯỚI ẢNH: PROMPT TEXT VÀ METRICS CHỦ ĐẠO
         # ----------------------------------------------------------------------
-        ax_sl = axes[i, 4]
+        caption_text = f"Prompt #{idx}: \"{p_str}\"  (\u0394R = {dr:+.3f}, Smoothness Gain: {l_ratio:.1f}\u00d7)"
+        ax_vl.text(
+            0.5, -0.16, caption_text, transform=ax_vl.transAxes,
+            fontsize=11.5, fontweight="bold", ha="center", va="top",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#F1F5F9", edgecolor="#64748B", linewidth=1.2)
+        )
+
+        # ----------------------------------------------------------------------
+        # CỘT 3: KHOẢNG ĐỆM SPACER GAP (CHỐNG TRÀN ĐÈ CHỮ VÀO ẢNH)
+        # ----------------------------------------------------------------------
+        ax_sp = fig.add_subplot(gs[i, 3])
+        ax_sp.axis("off")
+
+        # ----------------------------------------------------------------------
+        # CỘT 4: ĐỒ THỊ 1D LANDSCAPE SLICE (1000 ĐIỂM SIÊU MỊN)
+        # ----------------------------------------------------------------------
+        ax_sl = fig.add_subplot(gs[i, 4])
         slicing = rec.get("slicing", {})
         alphas = slicing.get("alphas", [])
-        cv = slicing.get("curve_vanilla", [])
-        crs = slicing.get("curve_rs", [])
+        cv = np.array(slicing.get("curve_vanilla", []))
+        crs = np.array(slicing.get("curve_rs", []))
+        s_mode = slicing.get("slicing_mode", "full_span")
 
         if len(alphas) > 0 and len(cv) > 0:
-            ax_sl.plot(alphas, cv, color="#E63946", lw=2.2, label="Vanilla $R(x)$ (Spiky)", linestyle="-")
-            ax_sl.plot(alphas, crs, color="#2A9D8F", lw=2.4, label="RS-LiDAR $R_\\sigma(x)$ (Smooth)", linestyle="-")
-            ax_sl.axvline(0.0, color="#1D3557", linestyle=":", alpha=0.6, label="Vanilla Point")
-            ax_sl.set_xlabel("Perturbation $\\alpha$", fontsize=9.5, fontweight="bold")
-            ax_sl.set_ylabel("Reward Score", fontsize=9.5, fontweight="bold")
-            ax_sl.set_title(f"1D Landscape Slice (Rank #{rank})\n$L_{{\\text{{ratio}}}} = {l_ratio:.2f}\\times$", fontsize=10, fontweight="bold")
+            is_full_span = (s_mode == "full_span") or (len(alphas) > 1 and max(alphas) > 0.5)
+
+            if is_full_span:
+                ax_sl.plot(alphas, cv, color="#E63946", lw=2.4, label="Vanilla $R(x)$", linestyle="-")
+                ax_sl.plot(alphas, crs, color="#2A9D8F", lw=2.6, label="RS-LiDAR $R_\\sigma(x)$", linestyle="-")
+                ax_sl.axvline(0.0, color="#E63946", linestyle="--", alpha=0.7, label="Vanilla Point ($u=0$)")
+                ax_sl.axvline(1.0, color="#2A9D8F", linestyle="--", alpha=0.7, label="RS-LiDAR Point ($u=1$)")
+                ax_sl.scatter([0.0], [r_v], color="#E63946", s=35, zorder=5)
+                ax_sl.scatter([1.0], [r_rs], color="#2A9D8F", s=35, zorder=5)
+                ax_sl.set_xlabel("Trajectory $u$ (Vanilla: $0 \\rightarrow$ RS: $1$)", fontsize=10.5, fontweight="bold")
+            else:
+                ax_sl.plot(alphas, cv, color="#E63946", lw=2.4, label="Vanilla $R(x)$", linestyle="-")
+                ax_sl.plot(alphas, crs, color="#2A9D8F", lw=2.6, label="RS-LiDAR $R_\\sigma(x)$", linestyle="-")
+                ax_sl.axvline(0.0, color="#1D3557", linestyle=":", alpha=0.6, label="Vanilla Point")
+                ax_sl.scatter([0.0], [r_v], color="#E63946", s=35, zorder=5)
+                ax_sl.set_xlabel("Perturbation $\\alpha$", fontsize=10.5, fontweight="bold")
+
+            # Dynamic auto-fit y-limits with padding
+            ptp = max(float(np.ptp(cv)), float(np.ptp(crs)), 0.5)
+            y_min = min(float(np.min(cv)), float(np.min(crs)), r_v, r_rs) - 0.08 * ptp
+            y_max = max(float(np.max(cv)), float(np.max(crs)), r_v, r_rs) + 0.08 * ptp
+            ax_sl.set_ylim(y_min, y_max)
+
+            ax_sl.set_ylabel("Reward Score", fontsize=10.5, fontweight="bold", labelpad=8)
+            ax_sl.set_title(f"1D Landscape Slice (Idx #{idx})\n$L_{{\\text{{ratio}}}} = {l_ratio:.1f}\\times$", fontsize=11, fontweight="bold")
             ax_sl.grid(True, linestyle="--", alpha=0.5)
-            ax_sl.legend(fontsize=7.5, loc="best", frameon=True)
+            ax_sl.legend(fontsize=8.5, loc="best", frameon=True)
         else:
             ax_sl.text(0.5, 0.5, "Profile N/A", ha="center", va="center")
 
-    plt.suptitle(panel_title, fontsize=15, fontweight="bold", y=0.995, color="#1D3557")
+    plt.suptitle(panel_title, fontsize=16, fontweight="bold", y=0.985, color="#1D3557")
     plt.savefig(output_path, bbox_inches="tight", dpi=300)
     plt.close()
     print(f"🖼️ Đã xuất biểu đồ so sánh Top {num_rows} Panel chất lượng cao: {output_path}")
@@ -1294,6 +1362,16 @@ def merge_shard_checkpoints(output_dir: str, top_k: int = 10):
     alias_smooth_panel = os.path.join(output_dir, "ablation1_top5_smoothness_panel.png")
     shutil.copyfile(panel_smooth_path, alias_smooth_panel)
 
+    # Tự động cập nhật comparison_selected_3_prompts_panel.png
+    panel_3prompts = os.path.join(output_dir, "comparison_selected_3_prompts_panel.png")
+    shutil.copyfile(panel_rescue_path, panel_3prompts)
+    tex_fig_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tex", "figures"))
+    if os.path.exists(tex_fig_dir):
+        try:
+            shutil.copyfile(panel_rescue_path, os.path.join(tex_fig_dir, "comparison_selected_3_prompts_panel.png"))
+        except Exception:
+            pass
+
     curves_path = os.path.join(output_dir, "ablation1_landscape_1d_curves.png")
     plot_summary_landscape_curves(merged_records, curves_path)
 
@@ -1419,6 +1497,8 @@ def run_ablation1_experiment(pipe, vae, ir_model, prompts_list, args, device="cu
             alpha_max=args.slicing_range,
             slicing_sigma=args.slicing_sigma,
             mc_samples=args.slicing_mc_samples,
+            slicing_mode=getattr(args, "slicing_mode", "full_span"),
+            slicing_margin=getattr(args, "slicing_margin", 0.2),
             device=device
         )
 
@@ -1514,8 +1594,10 @@ def main():
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward", help="Hàm reward lái chính")
 
     # Cấu hình Cắt lát 1D Landscape Slicing
-    parser.add_argument("--slicing_points", type=int, default=41, help="Số điểm trên lưới cắt lát 1D")
-    parser.add_argument("--slicing_range", type=float, default=0.2, help="Biên độ quét alpha [-range, +range]")
+    parser.add_argument("--slicing_points", type=int, default=1000, help="Số điểm trên lưới cắt lát 1D (mặc định 1000 cho độ phân giải siêu mịn)")
+    parser.add_argument("--slicing_mode", type=str, default="full_span", choices=["full_span", "local"], help="Chế độ cắt lát: 'full_span' nối Vanilla đến RS-LiDAR, hoặc 'local'")
+    parser.add_argument("--slicing_margin", type=float, default=0.2, help="Biên độ lân cận hai đầu cho chế độ full_span: u in [-margin, 1 + margin]")
+    parser.add_argument("--slicing_range", type=float, default=0.2, help="Biên độ quét alpha [-range, +range] cho chế độ local")
     parser.add_argument("--slicing_sigma", type=float, default=1.0, help="Bán kính làm mịn RS dọc đường cắt lát")
     parser.add_argument("--slicing_mc_samples", type=int, default=4, help="Số mẫu Monte Carlo dọc đường cắt")
 
