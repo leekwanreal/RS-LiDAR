@@ -1013,13 +1013,40 @@ def plot_topk_divergence_panel(
         lv = rec.get("l_max_vanilla", 0.0)
         lrs = rec.get("l_max_rs", 0.0)
 
+        # Lấy L_mean và tính L_ratio theo mean
+        slicing = rec.get("slicing", {})
+        l_mean_v = rec.get("l_mean_vanilla", slicing.get("l_mean_vanilla", 0.0))
+        l_mean_rs = rec.get("l_mean_rs", slicing.get("l_mean_rs", 0.0))
+        l_ratio_mean = float(l_mean_v / (l_mean_rs + 1e-6)) if l_mean_rs > 0 else l_ratio
+
+        # Helper load ảnh an toàn hỗ trợ cả Kaggle và Local
+        def _load_image_safe(p_rec, fname):
+            if p_rec and os.path.exists(p_rec):
+                try:
+                    return Image.open(p_rec)
+                except Exception:
+                    pass
+            # Tìm kiếm fallback trong workspace
+            local_candidates = [
+                os.path.join(os.path.dirname(__file__), "results", "ablation1_sensitive_landscape", "images", fname),
+                os.path.join(os.path.dirname(__file__), "..", "tex", "figures", "backup_prompts_98_138_80", fname),
+                os.path.join(os.path.dirname(__file__), "figures", "ablation1", "images", fname)
+            ]
+            for c in local_candidates:
+                if os.path.exists(c):
+                    try:
+                        return Image.open(c)
+                    except Exception:
+                        pass
+            return None
+
         # ----------------------------------------------------------------------
         # CỘT 0: ẢNH UNSTEERED (BASELINE)
         # ----------------------------------------------------------------------
         ax_un = fig.add_subplot(gs[i, 0])
         img_un = rec.get("img_unsteered_obj")
-        if img_un is None and "img_unsteered_path" in rec and os.path.exists(rec["img_unsteered_path"]):
-            img_un = Image.open(rec["img_unsteered_path"])
+        if img_un is None:
+            img_un = _load_image_safe(rec.get("img_unsteered_path"), f"{idx:05d}_unsteered.png")
         if img_un is not None:
             ax_un.imshow(img_un)
             ax_un.set_title(f"Unsteered Baseline\n$R = {r_u:.3f}$", fontsize=11.5, fontweight="bold", color="#1D3557", pad=8)
@@ -1032,11 +1059,11 @@ def plot_topk_divergence_panel(
         # ----------------------------------------------------------------------
         ax_vl = fig.add_subplot(gs[i, 1])
         img_vl = rec.get("img_vanilla_obj")
-        if img_vl is None and "img_vanilla_path" in rec and os.path.exists(rec["img_vanilla_path"]):
-            img_vl = Image.open(rec["img_vanilla_path"])
+        if img_vl is None:
+            img_vl = _load_image_safe(rec.get("img_vanilla_path"), f"{idx:05d}_vanilla.png")
         if img_vl is not None:
             ax_vl.imshow(img_vl)
-            ax_vl.set_title(f"Vanilla LiDAR\n$R = {r_v:.3f}$ | $L_{{\\max}} = {lv:.2f}$", fontsize=11.5, fontweight="bold", color="#E63946", pad=8)
+            ax_vl.set_title(f"Vanilla LiDAR\n$R = {r_v:.3f}$ | $L_{{\\text{{mean}}}} = {l_mean_v:.4f}$", fontsize=11.5, fontweight="bold", color="#E63946", pad=8)
             for spine in ax_vl.spines.values():
                 spine.set_edgecolor("#E63946")
                 spine.set_linewidth(2.2)
@@ -1049,11 +1076,11 @@ def plot_topk_divergence_panel(
         # ----------------------------------------------------------------------
         ax_rs = fig.add_subplot(gs[i, 2])
         img_rs = rec.get("img_rs_obj")
-        if img_rs is None and "img_rs_path" in rec and os.path.exists(rec["img_rs_path"]):
-            img_rs = Image.open(rec["img_rs_path"])
+        if img_rs is None:
+            img_rs = _load_image_safe(rec.get("img_rs_path"), f"{idx:05d}_rs.png")
         if img_rs is not None:
             ax_rs.imshow(img_rs)
-            ax_rs.set_title(f"RS-LiDAR\n$R = {r_rs:.3f}$ | $L_{{\\max}} = {lrs:.2f}$", fontsize=11.5, fontweight="bold", color="#2A9D8F", pad=8)
+            ax_rs.set_title(f"RS-LiDAR\n$R = {r_rs:.3f}$ | $L_{{\\text{{mean}}}} = {l_mean_rs:.4f}$ | $L_{{\\text{{ratio}}}} = {l_ratio_mean:.1f}\\times$", fontsize=11.5, fontweight="bold", color="#2A9D8F", pad=8)
             for spine in ax_rs.spines.values():
                 spine.set_edgecolor("#2A9D8F")
                 spine.set_linewidth(2.2)
@@ -1064,7 +1091,7 @@ def plot_topk_divergence_panel(
         # ----------------------------------------------------------------------
         # CAPTION DƯỚI ẢNH: PROMPT TEXT VÀ METRICS CHỦ ĐẠO
         # ----------------------------------------------------------------------
-        caption_text = f"Prompt #{idx}: \"{p_str}\"  (\u0394R = {dr:+.3f}, Smoothness Gain: {l_ratio:.1f}\u00d7)"
+        caption_text = f"Prompt #{idx}: \"{p_str}\"  (\u0394R = {dr:+.3f}, Mean Smoothness Gain: {l_ratio_mean:.1f}\u00d7)"
         ax_vl.text(
             0.5, -0.16, caption_text, transform=ax_vl.transAxes,
             fontsize=11.5, fontweight="bold", ha="center", va="top",
@@ -1112,7 +1139,7 @@ def plot_topk_divergence_panel(
             ax_sl.set_ylim(y_min, y_max)
 
             ax_sl.set_ylabel("Reward Score", fontsize=10.5, fontweight="bold", labelpad=8)
-            ax_sl.set_title(f"1D Landscape Slice (Idx #{idx})\n$L_{{\\text{{ratio}}}} = {l_ratio:.1f}\\times$", fontsize=11, fontweight="bold")
+            ax_sl.set_title(f"1D Landscape Slice (Idx #{idx})\n$L_{{\\text{{ratio}}}} = {l_ratio_mean:.1f}\\times$", fontsize=11, fontweight="bold")
             ax_sl.grid(True, linestyle="--", alpha=0.5)
             ax_sl.legend(fontsize=8.5, loc="best", frameon=True)
         else:
