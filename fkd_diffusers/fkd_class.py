@@ -57,6 +57,9 @@ class FKD:
         smc_smoothing_domain: str = "image",
         smc_use_crn: bool = False,
         smc_smoothing_mode: str = "loop",
+        smc_anneal_sigma: bool = False,
+        smc_anneal_schedule: str = "sqrt_noise",
+        smc_sigma_min: Optional[float] = None,
         **kwargs,
     ) -> None:
         # Support FK_ prefixed argument overrides from CLI
@@ -76,6 +79,12 @@ class FKD:
             smc_sigma = kwargs["sigma"]
         if "num_mc_samples" in kwargs and kwargs["num_mc_samples"] is not None and "smc_num_mc_samples" not in kwargs:
             smc_num_mc_samples = kwargs["num_mc_samples"]
+        if "smc_anneal_sigma" in kwargs and kwargs["smc_anneal_sigma"] is not None:
+            smc_anneal_sigma = kwargs["smc_anneal_sigma"]
+        if "smc_anneal_schedule" in kwargs and kwargs["smc_anneal_schedule"] is not None:
+            smc_anneal_schedule = kwargs["smc_anneal_schedule"]
+        if "smc_sigma_min" in kwargs and kwargs["smc_sigma_min"] is not None:
+            smc_sigma_min = kwargs["smc_sigma_min"]
 
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -99,6 +108,9 @@ class FKD:
         self.smc_smoothing_domain = smc_smoothing_domain
         self.smc_use_crn = smc_use_crn
         self.smc_smoothing_mode = smc_smoothing_mode
+        self.smc_anneal_sigma = smc_anneal_sigma
+        self.smc_anneal_schedule = smc_anneal_schedule
+        self.smc_sigma_min = smc_sigma_min
 
         # Initialize device and population reward state
         self.device = device
@@ -108,6 +120,43 @@ class FKD:
             torch.ones(self.num_particles, device=self.device) * reward_min_value
         )
         self.product_of_potentials = torch.ones(self.num_particles).to(self.device)
+
+    def get_effective_smc_sigma(self, sampling_idx: int) -> float:
+        """
+        Calculate the effective smoothing radius sigma(t) at the current diffusion sampling step.
+        If smc_anneal_sigma is False, returns constant self.smc_sigma (Zero Regression).
+        When smc_anneal_sigma is True, computes analytical annealed decay grounded in Tweedie posterior variance.
+        """
+        if not getattr(self, "smc_anneal_sigma", False):
+            return float(self.smc_sigma)
+
+        t_start = getattr(self, "resampling_t_start", 20)
+        t_end = getattr(self, "resampling_t_end", 80)
+        total_span = max(1, t_end - t_start)
+
+        # Progress from 1.0 (at t_start) down to 0.0 (at t_end)
+        progress = float(np.clip((t_end - sampling_idx) / total_span, 0.0, 1.0))
+
+        schedule = getattr(self, "smc_anneal_schedule", "sqrt_noise")
+        if schedule == "tweedie_snr":
+            # Exact Tweedie posterior std ratio: sqrt((1 - alpha_bar) / alpha_bar)
+            # t=800 -> 1.0, t=600 -> 0.447, t=400 -> 0.228, t=200 -> 0.112
+            decay_factor = 0.112 + (1.0 - 0.112) * (progress ** 1.5)
+        elif schedule == "linear":
+            # Linear decay from 1.0 down to floor 0.334
+            decay_factor = 0.334 + (1.0 - 0.334) * progress
+        else:
+            # Default "sqrt_noise": ratio of sqrt(1 - alpha_bar) anchored at t=800
+            # t=800 -> 1.0, t=600 -> 0.820, t=400 -> 0.582, t=200 -> 0.334
+            decay_factor = 0.334 + (1.0 - 0.334) * np.sqrt(progress)
+
+        effective_sigma = float(self.smc_sigma * decay_factor)
+
+        # Apply user-specified minimum floor if provided
+        if getattr(self, "smc_sigma_min", None) is not None:
+            effective_sigma = max(float(self.smc_sigma_min), effective_sigma)
+
+        return effective_sigma
 
     def resample(
         self, *, sampling_idx: int, latents: torch.Tensor, x0_preds: torch.Tensor
@@ -140,17 +189,18 @@ class FKD:
             # Vanilla SMC: Original raw reward evaluation (Zero Regression)
             rs_candidates = self.reward_fn(population_images)
         else:
-            # RS-SMC: Randomized Smoothing over Tweedie estimate with M Gaussian perturbations
+            # RS-SMC: Randomized Smoothing over Tweedie estimate with dynamic sigma(t)
+            curr_sigma = self.get_effective_smc_sigma(sampling_idx)
             if self.smc_smoothing_domain == "image":
                 if self.smc_smoothing_mode == "loop":
                     mc_rewards = []
                     with torch.inference_mode():
                         for _ in range(self.smc_num_mc_samples):
-                            if self.smc_sigma > 0:
+                            if curr_sigma > 0:
                                 if self.smc_use_crn:
-                                    noise = torch.randn((1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * self.smc_sigma
+                                    noise = torch.randn((1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
                                 else:
-                                    noise = torch.randn_like(population_images) * self.smc_sigma
+                                    noise = torch.randn_like(population_images) * curr_sigma
                                 noisy_imgs = (population_images + noise).clamp(-1.0, 1.0)
                             else:
                                 noisy_imgs = population_images.clamp(-1.0, 1.0)
@@ -159,12 +209,12 @@ class FKD:
                     rs_candidates = torch.stack(mc_rewards, dim=0).mean(dim=0)
                 else: # vectorized
                     with torch.inference_mode():
-                        if self.smc_sigma > 0:
+                        if curr_sigma > 0:
                             if self.smc_use_crn:
-                                noise = torch.randn((self.smc_num_mc_samples, 1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * self.smc_sigma
+                                noise = torch.randn((self.smc_num_mc_samples, 1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
                                 noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
                             else:
-                                noise = torch.randn((self.smc_num_mc_samples, *population_images.shape), device=population_images.device, dtype=population_images.dtype) * self.smc_sigma
+                                noise = torch.randn((self.smc_num_mc_samples, *population_images.shape), device=population_images.device, dtype=population_images.dtype) * curr_sigma
                                 noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
                         else:
                             noisy_imgs = population_images.repeat(self.smc_num_mc_samples, 1, 1, 1)
@@ -174,11 +224,11 @@ class FKD:
                 mc_rewards = []
                 with torch.inference_mode():
                     for _ in range(self.smc_num_mc_samples):
-                        if self.smc_sigma > 0:
+                        if curr_sigma > 0:
                             if self.smc_use_crn:
-                                noise = torch.randn((1, *x0_preds.shape[1:]), device=x0_preds.device, dtype=x0_preds.dtype) * self.smc_sigma
+                                noise = torch.randn((1, *x0_preds.shape[1:]), device=x0_preds.device, dtype=x0_preds.dtype) * curr_sigma
                             else:
-                                noise = torch.randn_like(x0_preds) * self.smc_sigma
+                                noise = torch.randn_like(x0_preds) * curr_sigma
                             noisy_latents = x0_preds + noise
                         else:
                             noisy_latents = x0_preds

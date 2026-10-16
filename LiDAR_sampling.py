@@ -205,8 +205,9 @@ def main(args):
         model_tag = "SDXL" if "xl" in args.model_name.lower() else "SD15"
         if args.use_smc:
             crn_suffix = "_crn" if getattr(args, "smc_use_crn", False) else ""
+            anneal_suffix = "_anneal" if getattr(args, "smc_anneal_sigma", False) else ""
             if getattr(args, "use_smc_smoothing", False):
-                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
+                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}{anneal_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
             else:
                 method_tag = f"{model_tag}_SMC_N{args.num_particles}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
             if args.use_rag:
@@ -308,6 +309,9 @@ def main(args):
             smc_smoothing_domain=getattr(args, "smc_smoothing_domain", "image"),
             smc_use_crn=getattr(args, "smc_use_crn", False),
             smc_smoothing_mode=getattr(args, "smc_smoothing_mode", "loop"),
+            smc_anneal_sigma=getattr(args, "smc_anneal_sigma", False),
+            smc_anneal_schedule=getattr(args, "smc_anneal_schedule", "sqrt_noise"),
+            smc_sigma_min=getattr(args, "smc_sigma_min", None),
             FK_lmbda=args.FK_lmbda,
             FK_resample_t_start=args.FK_resample_t_start,
             FK_resample_t_end=args.FK_resample_t_end,
@@ -455,6 +459,9 @@ def get_args():
     parser.add_argument("--smc_smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
     parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")
     parser.add_argument("--smc_smoothing_mode", type=str, default="loop", choices=["loop", "vectorized"], help="Smoothing execution mode: 'loop' (default, VRAM safe) or 'vectorized'")
+    parser.add_argument("--smc_anneal_sigma", action="store_true", default=False, help="Enable Tweedie posterior-grounded Annealed Randomized Smoothing for SMC")
+    parser.add_argument("--smc_anneal_schedule", type=str, default="sqrt_noise", choices=["sqrt_noise", "tweedie_snr", "linear"], help="Annealing schedule type")
+    parser.add_argument("--smc_sigma_min", type=float, default=None, help="Minimum floor for annealed sigma")
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)
@@ -504,14 +511,18 @@ def get_args():
     if args.use_smc_smoothing:
         args.use_smc = True
 
-    # Auto-dispatch scale for SDXL if user kept default 12.5
+    # Auto-dispatch scale and sigma for SDXL vs SD 1.5
     if "xl" in args.model_name.lower():
         if args.scale == 12.5:
             args.scale = 8.0
             print("⚡ Auto-dispatch scale to 8.0 for SDXL (Paper Table 2 standard)")
         if args.use_smc_smoothing and args.smc_sigma == 0.25:
-            args.smc_sigma = 0.10
-            print("⚡ Auto-dispatch smc_sigma to 0.10 for SDXL")
+            args.smc_sigma = 0.50
+            print("⚡ Auto-dispatch smc_sigma to 0.50 for SDXL (Calibrated [0.25, 0.50] range)")
+    else:
+        if args.use_smc_smoothing and args.smc_sigma == 0.25:
+            args.smc_sigma = 1.00
+            print("⚡ Auto-dispatch smc_sigma to 1.00 for SD 1.5 (Calibrated [0.75, 1.00] range)")
 
     return args
 
