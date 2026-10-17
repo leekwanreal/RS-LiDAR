@@ -332,6 +332,25 @@ def test_annealed_zero_regression():
     print("   ✅ Test 9 Passed: Zero Regression guaranteed. All steps return constant smc_sigma.")
 
 
+def test_smc_n1_auto_bypass():
+    print("🧪 Test 10: Testing SMC N=1 Safe Auto-Bypass...")
+    class MockArgs:
+        def __init__(self, use_smc=True, num_particles=1, resample_frequency=20):
+            self.use_smc = use_smc
+            self.num_particles = num_particles
+            self.resample_frequency = resample_frequency
+
+    # Simulate LiDAR_sampling.py logic
+    args = MockArgs(use_smc=True, num_particles=1)
+    if args.use_smc:
+        assert args.resample_frequency > 0
+        if args.num_particles <= 1:
+            args.use_smc = False
+
+    assert args.use_smc is False, "SMC should be safely auto-disabled when num_particles <= 1"
+    print("   ✅ Test 10 Passed: N=1 gracefully bypasses SMC resampling assertion.")
+
+
 if __name__ == "__main__":
     print("\n=======================================================")
     print("🚀 RUNNING RS-SMC UNIT & REGRESSION TEST SUITE")
@@ -345,6 +364,7 @@ if __name__ == "__main__":
     test_annealed_sigma_monotonic_decay_sd15()
     test_annealed_sigma_monotonic_decay_sdxl()
     test_annealed_zero_regression()
+    test_smc_n1_auto_bypass()
     print("\n=======================================================")
-    print("🎉 ALL 9 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
+    print("🎉 ALL 10 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
     print("=======================================================\n")

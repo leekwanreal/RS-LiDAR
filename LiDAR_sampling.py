@@ -156,7 +156,9 @@ def main(args):
 
     if args.use_smc:
         assert args.resample_frequency > 0
-        assert args.num_particles > 1
+        if args.num_particles <= 1:
+            print("⚠️ [CẢNH BÁO] args.num_particles <= 1: Tự động vô hiệu hóa SMC resampling (chuyển sang Vanilla unguided sampling vì N=1 không thể resample).")
+            args.use_smc = False
 
     # load prompt data # configure pipeline
     parsed_indices = parse_prompt_indices(getattr(args, "prompt_indices", None))
