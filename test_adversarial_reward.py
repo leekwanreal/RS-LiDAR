@@ -586,28 +586,28 @@ def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda")
         title = item["title"]
 
         generator = torch.Generator(device=device).manual_seed(42 + row_idx * 7)
-        latents = pipe(
-            [prompt],
-            num_inference_steps=25,
-            guidance_scale=7.5,
-            generator=generator,
-            output_type="latent"
-        ).images
-
-        scaled = (latents / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-        clean_tensor = pipe.vae.decode(scaled, return_dict=False)[0].clamp(-1.0, 1.0)
+        with torch.no_grad():
+            latents = pipe(
+                [prompt],
+                num_inference_steps=25,
+                guidance_scale=7.5,
+                generator=generator,
+                output_type="latent"
+            ).images
+            scaled = (latents / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
+            clean_tensor = pipe.vae.decode(scaled, return_dict=False)[0].detach().clamp(-1.0, 1.0)
 
         # 1. Vanilla Saliency
         grad_vanilla, _ = resnet_reward.compute_gradient(clean_tensor, target_class)
-        saliency_v = grad_vanilla[0].abs().max(dim=0)[0].cpu().numpy()
+        saliency_v = grad_vanilla[0].detach().abs().max(dim=0)[0].cpu().numpy()
         saliency_v = (saliency_v - saliency_v.min()) / (saliency_v.max() - saliency_v.min() + 1e-8)
 
         # 2. RS Smoothed Saliency
         grad_rs, _ = resnet_reward.compute_rs_gradient(clean_tensor, target_class, sigma2=0.5, num_mc_samples=8, use_crn=True)
-        saliency_rs = grad_rs[0].abs().max(dim=0)[0].cpu().numpy()
+        saliency_rs = grad_rs[0].detach().abs().max(dim=0)[0].cpu().numpy()
         saliency_rs = (saliency_rs - saliency_rs.min()) / (saliency_rs.max() - saliency_rs.min() + 1e-8)
 
-        clean_pil = pipe.image_processor.postprocess(clean_tensor, output_type="pil")[0]
+        clean_pil = pipe.image_processor.postprocess(clean_tensor.detach(), output_type="pil")[0]
 
         # Cột 1: Clean Image
         axes[row_idx][0].imshow(clean_pil)
@@ -628,8 +628,10 @@ def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda")
     plt.tight_layout(rect=[0, 0.02, 1, 0.97])
     out_path = os.path.join(output_dir, "adversarial_visual_saliency_grid.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    alt_path = os.path.join(output_dir, "adversarial_saliency_case_studies.png")
+    plt.savefig(alt_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"🖼️ Đã lưu ảnh Visual Saliency Grid tại: {out_path}")
+    print(f"🖼️ Đã lưu ảnh Visual Saliency Grid tại: {out_path} và {alt_path}")
 
 
 def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", primary_sigma2=0.5, primary_m=4):
@@ -686,8 +688,10 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
 
     out_path = os.path.join(output_dir, "adversarial_1d_landscape_slicing.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    alt_path = os.path.join(output_dir, "adversarial_1d_landscape_slice.png")
+    plt.savefig(alt_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing tại: {out_path}")
+    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing tại: {out_path} và {alt_path}")
 
 
 # ======================================================================================
@@ -1071,7 +1075,9 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     ax_tab = fig.add_subplot(gs[0, 0])
     ax_tab.axis('off')
     ax_tab.set_title("A. Lipschitz Benchmark Summary", fontsize=12, fontweight='bold', pad=8)
-    tab = ax_tab.table(cellText=table1_rows[:5], colLabels=table1_headers[:5], loc='center', cellLoc='center')
+    table_snippet_headers = table1_headers[:5]
+    table_snippet_rows = [r[:5] for r in table1_rows[:5]]
+    tab = ax_tab.table(cellText=table_snippet_rows, colLabels=table_snippet_headers, loc='center', cellLoc='center')
     tab.auto_set_font_size(False)
     tab.set_fontsize(8.5)
     tab.scale(1.0, 1.35)
