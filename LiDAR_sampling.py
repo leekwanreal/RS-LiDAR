@@ -208,10 +208,11 @@ def main(args):
         if args.use_smc:
             crn_suffix = "_crn" if getattr(args, "smc_use_crn", False) else ""
             anneal_suffix = "_anneal" if getattr(args, "smc_anneal_sigma", False) else ""
+            term_suffix = "" if getattr(args, "smc_terminal_resample", True) else "_noTerminal"
             if getattr(args, "use_smc_smoothing", False):
-                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}{anneal_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
+                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}{anneal_suffix}{term_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
             else:
-                method_tag = f"{model_tag}_SMC_N{args.num_particles}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
+                method_tag = f"{model_tag}_SMC_N{args.num_particles}{term_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
             if args.use_rag:
                 method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
         elif args.use_rag:
