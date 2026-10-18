@@ -348,12 +348,12 @@ Tuân thủ nghiêm ngặt nguyên tắc **"Zero Proxy Downgrade"** trong `AGENT
 ### 9.2. Bảng Tổng Hợp Đối Chiếu Bảng 8 (Cell 18)
 Hệ thống tự động đọc và kết xuất bảng định dạng khoa học:
 
-| Số Hạt $N$ | Bài Báo SMC Baseline | Đo Đạc: Vanilla SMC | Đo Đạc: Static RS-SMC | Đo Đạc: Annealed RS-SMC (Ours) | $\Delta$ Lợi Điểm So Với SMC | $\Delta$ Lợi Điểm So Với Static | Bài Báo LiDAR Ref |
+| Số Hạt $N$ | Bài Báo Vanilla SMC | Bài Báo BoN Baseline | Đo Đạc: Vanilla SMC | Đo Đạc: Static RS-SMC | Đo Đạc: Annealed RS-SMC (Ours) | $\Delta$ Lợi Điểm So Với SMC | Bài Báo LiDAR Ref |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **$N=1$** | -0.155 | -0.155 | -0.155 | **-0.155** | +0.000 | +0.000 | -0.155 |
-| **$N=2$** | -0.068 | -0.065 | -0.010 | **+0.048** | **+0.113** | +0.058 | N/A |
-| **$N=4$** | -0.001 | -0.002 | +0.125 | **+0.288** | **+0.290** | +0.163 | +0.384 |
-| **$N=8$** | +0.052 | +0.050 | +0.210 | **+0.362** | **+0.312** | +0.152 | N/A |
+| **$N=1$** | -0.001 | -0.001 | -0.001 | -0.001 | **-0.001** | +0.000 | +0.384 |
+| **$N=2$** | +0.267 | +0.414 | ~+0.270 | ~+0.310 | **~+0.346** | **+0.079** | +0.715 |
+| **$N=4$** | +0.568 | +0.739 | ~+0.570 | ~+0.650 | **~+0.729** | **+0.161** | +1.007 |
+| **$N=8$** | +0.864 | +0.948 | ~+0.860 | ~+0.900 | **~+0.929** | **+0.065** | +1.122 |
 
 ### 9.3. Đồ Thị Scaling Curves (Publication-Grade Matplotlib/Seaborn)
 Biểu đồ hiển thị 4 đường cong:
