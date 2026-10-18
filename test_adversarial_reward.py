@@ -886,6 +886,124 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     print(f"📊 Đã lưu ảnh Bảng Breakdown 10 classes tại: {table_cat_path}")
 
     # ==================================================================================
+    # 📊 BẢNG 3: KHẢO SÁT BÁN KÍNH VI NHIỄU SIGMA1 -> 0 (Spike Singularity & Bound)
+    # ==================================================================================
+    sigma1_stats = {}
+    table3_headers = ["Probe Radius σ1", "Mean ||Δx||", "Vanilla L_max → RS", "Max Contraction", "Vanilla L_mean → RS", "Mean Contraction"]
+    table3_rows = []
+    if available_sigma1s:
+        for s1 in available_sigma1s:
+            s1_key = str(s1)
+            v_slopes_s1 = []
+            rs_slopes_s1 = []
+            dx_s1_list = []
+            for p in merged_pairs:
+                m_data = p["models"]["ResNet50-Adversarial"]
+                if "sigma1_sweep" in m_data and s1_key in m_data["sigma1_sweep"]:
+                    entry = m_data["sigma1_sweep"][s1_key]
+                    v_slopes_s1.append(entry["slope_vanilla"])
+                    rs_slopes_s1.append(entry["slope_rs"])
+                    dx_s1_list.append(entry["delta_x"])
+
+            if v_slopes_s1:
+                v_slopes_s1 = np.array(v_slopes_s1)
+                rs_slopes_s1 = np.array(rs_slopes_s1)
+                mean_dx = float(np.mean(dx_s1_list))
+                l_max_v = float(np.max(v_slopes_s1))
+                l_max_rs = float(np.max(rs_slopes_s1))
+                l_mean_v = float(np.mean(v_slopes_s1))
+                l_mean_rs = float(np.mean(rs_slopes_s1))
+                r_max = l_max_v / max(l_max_rs, 1e-8)
+                r_mean = l_mean_v / max(l_mean_rs, 1e-8)
+
+                sigma1_stats[s1_key] = {
+                    "mean_dx": mean_dx,
+                    "l_max_vanilla": l_max_v, "l_max_rs": l_max_rs, "ratio_max": r_max,
+                    "l_mean_vanilla": l_mean_v, "l_mean_rs": l_mean_rs, "ratio_mean": r_mean
+                }
+                is_p = (s1 == primary_sigma1)
+                p_tag = " *(Primary)*" if is_p else ""
+                table3_rows.append([
+                    f"{s1}{p_tag}",
+                    f"{mean_dx:.3f}",
+                    f"{l_max_v:.4f} → {l_max_rs:.4f}",
+                    f"{r_max:.2f}×",
+                    f"{l_mean_v:.4f} → {l_mean_rs:.4f}",
+                    f"{r_mean:.2f}×"
+                ])
+
+        table3_img_path = os.path.join(output_dir, "adversarial_table_sigma1_sweep.png")
+        render_table_as_image(table3_rows, table3_headers, f"Adversarial Reward: Probe Radius σ1 Sweep (σ2 = {primary_sigma2}, M = {primary_m})", table3_img_path)
+        print(f"📊 Đã lưu ảnh Bảng 3 (sigma1 sweep) tại: {table3_img_path}")
+
+        # Vẽ đồ thị đường quét sigma1 ablation
+        if len(available_sigma1s) > 1:
+            plt.figure(figsize=(14, 5.5), dpi=300)
+            plt.subplot(1, 2, 1)
+            y_max_v = [sigma1_stats[str(s)]["l_max_vanilla"] for s in available_sigma1s]
+            y_max_rs = [sigma1_stats[str(s)]["l_max_rs"] for s in available_sigma1s]
+            plt.plot(available_sigma1s, y_max_v, 'r-o', lw=2.2, label='Vanilla ResNet-50 $L_{max}$')
+            plt.plot(available_sigma1s, y_max_rs, 'b-s', lw=2.2, label=f'RS-LiDAR $L_{{max}}$ (σ2={primary_sigma2}, M={primary_m})')
+            plt.xscale('log')
+            plt.xlabel('Probe Radius $\\sigma_1$ (Log Scale)', fontsize=11, fontweight='bold')
+            plt.ylabel('Lipschitz $L_{max}$', fontsize=11, fontweight='bold')
+            plt.title('Spike Explosion: $L_{max}$ vs. $\\sigma_1 \\to 0$', fontsize=12, fontweight='bold')
+            plt.grid(True, which='both', linestyle='--', alpha=0.5)
+            plt.legend(frameon=True)
+
+            plt.subplot(1, 2, 2)
+            y_mean_v = [sigma1_stats[str(s)]["l_mean_vanilla"] for s in available_sigma1s]
+            y_mean_rs = [sigma1_stats[str(s)]["l_mean_rs"] for s in available_sigma1s]
+            plt.plot(available_sigma1s, y_mean_v, 'r-o', lw=2.2, label='Vanilla $L_{mean}$')
+            plt.plot(available_sigma1s, y_mean_rs, 'b-s', lw=2.2, label=f'RS-LiDAR $L_{{mean}}$ (σ2={primary_sigma2}, M={primary_m})')
+            plt.xscale('log')
+            plt.xlabel('Probe Radius $\\sigma_1$ (Log Scale)', fontsize=11, fontweight='bold')
+            plt.ylabel('Lipschitz $L_{mean}$', fontsize=11, fontweight='bold')
+            plt.title('Mean Slope: Vanilla vs. RS-LiDAR Bounded', fontsize=12, fontweight='bold')
+            plt.grid(True, which='both', linestyle='--', alpha=0.5)
+            plt.legend(frameon=True)
+
+            plt.tight_layout()
+            sigma1_plot_path = os.path.join(output_dir, "adversarial_sigma1_ablation.png")
+            plt.savefig(sigma1_plot_path, dpi=300)
+            plt.close()
+            print(f"📈 Đã lưu đồ thị sigma1 ablation tại: {sigma1_plot_path}")
+
+    # ==================================================================================
+    # 📝 XUẤT CÁC BẢNG BÁO CÁO MARKDOWN
+    # ==================================================================================
+    tbl1_md_path = os.path.join(output_dir, "adversarial_lipschitz_benchmark_table.md")
+    with open(tbl1_md_path, "w", encoding="utf-8") as f:
+        f.write("# 🧪 Adversarial Reward Lipschitz & Gradient Benchmark (ResNet-50)\n\n")
+        f.write(f"### 1. Bảng 1: Benchmark Chính Tại Bán Kính Làm Mịn Chuẩn $\\sigma_2 = {primary_sigma2}$\n\n")
+        f.write("| " + " | ".join(table1_headers) + " |\n")
+        f.write("| " + " | ".join([":---" if i == 0 else ":---:" for i in range(len(table1_headers))]) + " |\n")
+        for row in table1_rows:
+            f.write("| " + " | ".join(row) + " |\n")
+        f.write("\n---\n\n")
+
+        if table3_rows:
+            f.write(f"### 2. Bảng 3: Khảo Sát Bán Kính Vi Nhiễu $\\sigma_1 \\to 0$ Tại $\\sigma_2 = {primary_sigma2}, M = {primary_m}$\n\n")
+            f.write("> *Khảo sát hiện tượng bùng nổ gai đối kháng: Khi $\\sigma_1 \\to 0$, khoảng cách vi phân $\\|\\Delta x\\|_2 \\to 0$, khiến độ dốc cục bộ của Vanilla tăng vọt do các gai nhọn đối kháng tần số cao. RS-LiDAR dập tắt triệt để các gai này, giữ độ dốc luôn bị chặn theo Theorem 1.*\n\n")
+            f.write("| " + " | ".join(table3_headers) + " |\n")
+            f.write("| " + " | ".join([":---" if i == 0 else ":---:" for i in range(len(table3_headers))]) + " |\n")
+            for row in table3_rows:
+                f.write("| " + " | ".join(row) + " |\n")
+            f.write("\n")
+    print(f"📝 Đã xuất Markdown Bảng 1 & 3 tại: {tbl1_md_path}")
+
+    tbl2_md_path = os.path.join(output_dir, "adversarial_class_breakdown_table.md")
+    with open(tbl2_md_path, "w", encoding="utf-8") as f:
+        f.write("# 📊 Adversarial Reward Breakdown: 10 ImageNet Super-Categories\n\n")
+        f.write(f"### Bảng 2: Phân Tích Độ Bền Vững & Tỷ Lệ Co Rút Trên 10 Nhóm Lớp Mục Tiêu ($\\sigma_2 = {primary_sigma2}, M = {primary_m}$)\n\n")
+        f.write("| " + " | ".join(table_cat_headers) + " |\n")
+        f.write("| " + " | ".join([":---" if i == 0 else ":---:" for i in range(len(table_cat_headers))]) + " |\n")
+        for row in table_cat_rows:
+            f.write("| " + " | ".join(row) + " |\n")
+        f.write("\n")
+    print(f"📝 Đã xuất Markdown Bảng 2 tại: {tbl2_md_path}")
+
+    # ==================================================================================
     # 📈 BIỂU ĐỒ LINE GRAPH ABLATION THEO SIGMA2 & CONVERGENCE M
     # ==================================================================================
     plt.figure(figsize=(14, 5.5), dpi=300)
@@ -1045,7 +1163,8 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
             "L_95_vanilla": L_95_vanilla,
             "grad_norm_mean_vanilla": G_mean_vanilla,
             "clip_score_mean": float(np.mean(clip_scores_all)) if clip_scores_all else 0.0,
-            "stats_matrix": stats_matrix
+            "stats_matrix": stats_matrix,
+            "sigma1_sweep": sigma1_stats
         }, f, indent=4)
     print(f"📁 Đã xuất summary metrics tại: {summary_path}")
 
@@ -1070,8 +1189,8 @@ def main():
     parser.add_argument("--m_list", type=str, default="1,2,4,8", help="Dải quét số mẫu Monte Carlo M")
     parser.add_argument("--primary_m", type=int, default=4, help="Mức M chuẩn làm mốc so sánh chính")
     parser.add_argument("--reward_mode", type=str, default="logit", choices=["logit", "softmax", "margin"])
-    parser.add_argument("--use_crn", action="store_true", default=True)
-    parser.add_argument("--no_crn", action="store_false", dest="use_crn")
+    parser.add_argument("--use_crn", action="store_true", default=True, help="Sử dụng Common Random Numbers (CRN) triệt tiêu phương sai Monte Carlo")
+    parser.add_argument("--no_crn", action="store_false", dest="use_crn", help="Tắt Common Random Numbers (dùng mẫu độc lập)")
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--shard_id", type=int, default=0)
     parser.add_argument("--gpu_id", type=int, default=0)
