@@ -185,6 +185,16 @@ def test_arg_parser_auto_dispatch():
     assert args_rs_custom.smc_sigma == 0.75, f"Custom smc_sigma should be preserved at 0.75, got {args_rs_custom.smc_sigma}"
     assert args_rs_custom.smc_anneal_sigma is True, "smc_anneal_sigma flag should be True"
 
+    # 3b. Test explicit --smc_anneal_sigma=True syntax
+    sys.argv = ["LiDAR_sampling.py", "--use_rs_smc", "--smc_anneal_sigma=True"]
+    args_rs_bool = get_args()
+    assert args_rs_bool.smc_anneal_sigma is True, "smc_anneal_sigma=True must parse as True"
+
+    # 3c. Test explicit --smc_anneal_sigma=False syntax
+    sys.argv = ["LiDAR_sampling.py", "--use_rs_smc", "--smc_anneal_sigma=False"]
+    args_rs_false = get_args()
+    assert args_rs_false.smc_anneal_sigma is False, "smc_anneal_sigma=False must parse as False"
+
     # 4. SDXL Auto-Dispatch (scale=8.0, smc_sigma=0.50 for calibrated [0.25, 0.50] range)
     sys.argv = ["LiDAR_sampling.py", "--model_name", "stabilityai/stable-diffusion-xl-base-1.0", "--use_rs_smc"]
     args_xl = get_args()
