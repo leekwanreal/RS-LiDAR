@@ -430,6 +430,54 @@ def test_dynamic_scheduler_alphas_integration():
     print("   ✅ Test 12 Passed: Dynamic scheduler integration computes exact Tweedie ratio without hardcoded numbers.")
 
 
+def test_smc_terminal_resample_flag():
+    print("🧪 Test 13: Testing smc_terminal_resample Flag (Step 99 Resampling Bypass)...")
+    call_count = [0]
+    def mock_reward_fn(x):
+        call_count[0] += 1
+        return torch.ones(x.shape[0])
+
+    dummy_latents = torch.randn(4, 4, 64, 64)
+    dummy_x0 = torch.clamp(torch.randn(4, 3, 512, 512), -1.0, 1.0)
+
+    # 1. When smc_terminal_resample=True (Default): Step 99 MUST trigger resample
+    fkd_with_term = FKD(
+        potential_type=PotentialType.DIFF,
+        lmbda=10.0,
+        num_particles=4,
+        resample_frequency=20,
+        resampling_t_start=20,
+        resampling_t_end=80,
+        time_steps=100,
+        reward_fn=mock_reward_fn,
+        device=torch.device("cpu"),
+        smc_terminal_resample=True,
+    )
+    call_count[0] = 0
+    fkd_with_term.resample(sampling_idx=99, latents=dummy_latents, x0_preds=dummy_x0)
+    assert call_count[0] == 1, f"Expected step 99 to trigger resample when smc_terminal_resample=True, got {call_count[0]}"
+
+    # 2. When smc_terminal_resample=False: Step 99 MUST NOT trigger resample (Zero particle collapse)
+    fkd_no_term = FKD(
+        potential_type=PotentialType.DIFF,
+        lmbda=10.0,
+        num_particles=4,
+        resample_frequency=20,
+        resampling_t_start=20,
+        resampling_t_end=80,
+        time_steps=100,
+        reward_fn=mock_reward_fn,
+        device=torch.device("cpu"),
+        smc_terminal_resample=False,
+    )
+    call_count[0] = 0
+    res_latents, res_imgs = fkd_no_term.resample(sampling_idx=99, latents=dummy_latents, x0_preds=dummy_x0)
+    assert call_count[0] == 0, f"Expected 0 calls at step 99 when smc_terminal_resample=False, got {call_count[0]}"
+    assert torch.equal(res_latents, dummy_latents), "Latents must remain untouched at step 99 when terminal resample is False"
+    assert res_imgs is None, "res_imgs must be None when resampling is skipped"
+    print("   ✅ Test 13 Passed: smc_terminal_resample=False successfully bypasses step 99 resampling.")
+
+
 if __name__ == "__main__":
     print("\n=======================================================")
     print("🚀 RUNNING RS-SMC UNIT & REGRESSION TEST SUITE")
@@ -446,6 +494,7 @@ if __name__ == "__main__":
     test_smc_n1_auto_bypass()
     test_terminal_clean_evaluation()
     test_dynamic_scheduler_alphas_integration()
+    test_smc_terminal_resample_flag()
     print("\n=======================================================")
-    print("🎉 ALL 12 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
+    print("🎉 ALL 13 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
     print("=======================================================\n")

@@ -60,6 +60,7 @@ class FKD:
         smc_anneal_sigma: bool = False,
         smc_anneal_schedule: str = "tweedie_analytical",
         smc_sigma_min: Optional[float] = None,
+        smc_terminal_resample: bool = True,
         scheduler: Optional[Any] = None,
         **kwargs,
     ) -> None:
@@ -113,6 +114,10 @@ class FKD:
         self.smc_anneal_sigma = smc_anneal_sigma
         self.smc_anneal_schedule = smc_anneal_schedule
         self.smc_sigma_min = smc_sigma_min
+        self.smc_terminal_resample = kwargs.get(
+            "smc_terminal_resample",
+            kwargs.get("terminal_resample", smc_terminal_resample),
+        )
 
         # Initialize device and population reward state
         self.device = device
@@ -211,7 +216,8 @@ class FKD:
         resampling_interval = np.arange(
             self.resampling_t_start, self.resampling_t_end + 1, self.resample_frequency
         )
-        resampling_interval = np.append(resampling_interval, self.time_steps - 1)
+        if getattr(self, "smc_terminal_resample", True):
+            resampling_interval = np.append(resampling_interval, self.time_steps - 1)
 
         if sampling_idx not in resampling_interval:
             return latents, None

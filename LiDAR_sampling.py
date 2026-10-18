@@ -314,6 +314,7 @@ def main(args):
             smc_anneal_sigma=getattr(args, "smc_anneal_sigma", False),
             smc_anneal_schedule=getattr(args, "smc_anneal_schedule", "sqrt_noise"),
             smc_sigma_min=getattr(args, "smc_sigma_min", None),
+            smc_terminal_resample=getattr(args, "smc_terminal_resample", True),
             FK_lmbda=args.FK_lmbda,
             FK_resample_t_start=args.FK_resample_t_start,
             FK_resample_t_end=args.FK_resample_t_end,
@@ -464,6 +465,8 @@ def get_args():
     parser.add_argument("--smc_anneal_sigma", type=str2bool, nargs="?", const=True, default=False, help="Enable Tweedie posterior-grounded Annealed Randomized Smoothing for SMC")
     parser.add_argument("--smc_anneal_schedule", type=str, default="tweedie_analytical", choices=["tweedie_analytical", "cosine", "linear", "sqrt_noise", "tweedie_snr"], help="Annealing schedule type: 'tweedie_analytical' (default, optimal), 'cosine', 'linear', or legacy 'sqrt_noise'")
     parser.add_argument("--smc_sigma_min", type=float, default=None, help="Minimum floor for annealed sigma")
+    parser.add_argument("--smc_terminal_resample", type=str2bool, nargs="?", const=True, default=True, help="Whether to perform resampling at terminal step (time_steps - 1). Default: True. Set False to preserve particle diversity.")
+    parser.add_argument("--terminal_resample", type=str2bool, nargs="?", const=True, default=None, help="Alias for --smc_terminal_resample")
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)
@@ -508,6 +511,8 @@ def get_args():
 
     if args.smc_M is not None:
         args.smc_num_mc_samples = args.smc_M
+    if args.terminal_resample is not None:
+        args.smc_terminal_resample = args.terminal_resample
     if args.use_rs_smc:
         args.use_smc_smoothing = True
     if args.use_smc_smoothing:

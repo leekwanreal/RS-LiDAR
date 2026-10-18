@@ -61,10 +61,12 @@ $$\sigma(t) = \sigma_{\text{init}} \cdot \frac{\psi(t) - \psi(t_{\text{end}})}{\
 
 ```bash
 # 1. Vanilla SMC (Table 8 Baseline, N=4)
+# Pass --smc_terminal_resample=False to avoid step 99 particle collapse and match Table 8 SMC unselected mean
 python LiDAR_sampling.py --model_name="runwayml/stable-diffusion-v1-5" \
   --num_particles=4 --num_inference_steps=100 --eta=1.0 --scale=12.5 \
   --use_smc --resample_frequency=20 --FK_lmbda=10.0 \
   --FK_resample_t_start=20 --FK_resample_t_end=80 \
+  --smc_terminal_resample=False \
   --output_dir=Target_samples --save_individual_images
 
 # 2. Annealed RS-SMC (Tweedie Analytical Schedule, N=4, M=4)
