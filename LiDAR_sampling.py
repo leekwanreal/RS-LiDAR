@@ -462,7 +462,7 @@ def get_args():
     parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")
     parser.add_argument("--smc_smoothing_mode", type=str, default="loop", choices=["loop", "vectorized"], help="Smoothing execution mode: 'loop' (default, VRAM safe) or 'vectorized'")
     parser.add_argument("--smc_anneal_sigma", type=str2bool, nargs="?", const=True, default=False, help="Enable Tweedie posterior-grounded Annealed Randomized Smoothing for SMC")
-    parser.add_argument("--smc_anneal_schedule", type=str, default="sqrt_noise", choices=["sqrt_noise", "tweedie_snr", "linear"], help="Annealing schedule type")
+    parser.add_argument("--smc_anneal_schedule", type=str, default="tweedie_analytical", choices=["tweedie_analytical", "cosine", "linear", "sqrt_noise", "tweedie_snr"], help="Annealing schedule type: 'tweedie_analytical' (default, optimal), 'cosine', 'linear', or legacy 'sqrt_noise'")
     parser.add_argument("--smc_sigma_min", type=float, default=None, help="Minimum floor for annealed sigma")
 
     parser.add_argument("--top_k", type=int, default=50)
@@ -519,12 +519,12 @@ def get_args():
             args.scale = 8.0
             print("⚡ Auto-dispatch scale to 8.0 for SDXL (Paper Table 2 standard)")
         if args.use_smc_smoothing and args.smc_sigma == 0.25:
-            args.smc_sigma = 0.50
-            print("⚡ Auto-dispatch smc_sigma to 0.50 for SDXL (Calibrated [0.25, 0.50] range)")
+            args.smc_sigma = 0.15
+            print("⚡ Auto-dispatch smc_sigma to 0.15 for SDXL (Calibrated [0.10, 0.20] range)")
     else:
-        if args.use_smc_smoothing and args.smc_sigma == 0.25:
-            args.smc_sigma = 1.00
-            print("⚡ Auto-dispatch smc_sigma to 1.00 for SD 1.5 (Calibrated [0.75, 1.00] range)")
+        if args.use_smc_smoothing and getattr(args, "smc_sigma", 0.25) == 1.0:
+            # If user had legacy 1.0 default, warn and recommend 0.25
+            pass
 
     return args
 

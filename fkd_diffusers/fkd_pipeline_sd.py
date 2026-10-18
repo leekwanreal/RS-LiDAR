@@ -630,6 +630,7 @@ class FKDStableDiffusion(
                     model=self, output_type=output_type, latents=x
                 ),
                 reward_fn=postprocess_and_apply_reward_fn,
+                scheduler=self.scheduler,
                 **fkd_args,
             )
 

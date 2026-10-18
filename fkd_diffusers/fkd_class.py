@@ -5,7 +5,7 @@ Feynman-Kac Diffusion (FKD) steering mechanism implementation.
 import torch
 from enum import Enum
 import numpy as np
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Tuple, Any
 import logging
 
 
@@ -58,8 +58,9 @@ class FKD:
         smc_use_crn: bool = False,
         smc_smoothing_mode: str = "loop",
         smc_anneal_sigma: bool = False,
-        smc_anneal_schedule: str = "sqrt_noise",
+        smc_anneal_schedule: str = "tweedie_analytical",
         smc_sigma_min: Optional[float] = None,
+        scheduler: Optional[Any] = None,
         **kwargs,
     ) -> None:
         # Support FK_ prefixed argument overrides from CLI
@@ -100,6 +101,7 @@ class FKD:
 
         self.reward_fn = reward_fn
         self.latent_to_decode_fn = latent_to_decode_fn
+        self.scheduler = scheduler or kwargs.get("scheduler", None)
 
         # RS-SMC Hyperparameters
         self.use_smc_smoothing = use_smc_smoothing
@@ -134,21 +136,53 @@ class FKD:
         t_end = getattr(self, "resampling_t_end", 80)
         total_span = max(1, t_end - t_start)
 
+        # Terminal step (sampling_idx == time_steps - 1) or beyond t_end must be clean (zero-noise)
+        # to ensure Best-of-N final selection and completed samples are never corrupted by artificial noise.
+        if sampling_idx >= self.time_steps - 1 or sampling_idx >= t_end:
+            min_floor = float(getattr(self, "smc_sigma_min", 0.0) or 0.0)
+            return min_floor
+
         # Progress from 1.0 (at t_start) down to 0.0 (at t_end)
         progress = float(np.clip((t_end - sampling_idx) / total_span, 0.0, 1.0))
 
-        schedule = getattr(self, "smc_anneal_schedule", "sqrt_noise")
-        if schedule == "tweedie_snr":
-            # Exact Tweedie posterior std ratio: sqrt((1 - alpha_bar) / alpha_bar)
-            # t=800 -> 1.0, t=600 -> 0.447, t=400 -> 0.228, t=200 -> 0.112
-            decay_factor = 0.112 + (1.0 - 0.112) * (progress ** 1.5)
+        schedule = getattr(self, "smc_anneal_schedule", "tweedie_analytical")
+
+        # Optimal Schedule 1: Analytical Tweedie posterior standard deviation ratio
+        # Computed directly from scheduler.alphas_cumprod without any hard-coded constants!
+        decay_factor = None
+        if schedule in ["tweedie_analytical", "tweedie_snr", "sqrt_noise"]:
+            scheduler = getattr(self, "scheduler", None)
+            if scheduler is not None and hasattr(scheduler, "alphas_cumprod") and hasattr(scheduler, "timesteps"):
+                try:
+                    timesteps = scheduler.timesteps
+                    if len(timesteps) > sampling_idx and len(timesteps) > t_start:
+                        curr_t = timesteps[sampling_idx]
+                        t_start_val = timesteps[t_start]
+                        t_end_val = timesteps[min(t_end, len(timesteps) - 1)]
+
+                        a_curr = float(scheduler.alphas_cumprod[curr_t])
+                        a_start = float(scheduler.alphas_cumprod[t_start_val])
+                        a_end = float(scheduler.alphas_cumprod[t_end_val])
+
+                        psi_curr = np.sqrt(max(0.0, 1.0 - a_curr) / max(1e-8, a_curr))
+                        psi_start = np.sqrt(max(0.0, 1.0 - a_start) / max(1e-8, a_start))
+                        psi_end = np.sqrt(max(0.0, 1.0 - a_end) / max(1e-8, a_end))
+
+                        decay_factor = float(np.clip((psi_curr - psi_end) / max(1e-6, psi_start - psi_end), 0.0, 1.0))
+                except Exception:
+                    decay_factor = None
+
+            if decay_factor is None:
+                # Closed-form power law progress^2 matches Tweedie posterior variance ratio (1.0 -> 0.44 -> 0.11 -> 0.0)
+                decay_factor = float(progress ** 2.0)
+        elif schedule == "cosine":
+            # Standard Cosine Annealing: smooth concave decay from 1.0 to 0.0 with zero derivatives at both ends
+            decay_factor = float(0.5 * (1.0 + np.cos(np.pi * (1.0 - progress))))
         elif schedule == "linear":
-            # Linear decay from 1.0 down to floor 0.334
-            decay_factor = 0.334 + (1.0 - 0.334) * progress
+            # Linear decay from 1.0 to 0.0
+            decay_factor = float(progress)
         else:
-            # Default "sqrt_noise": ratio of sqrt(1 - alpha_bar) anchored at t=800
-            # t=800 -> 1.0, t=600 -> 0.820, t=400 -> 0.582, t=200 -> 0.334
-            decay_factor = 0.334 + (1.0 - 0.334) * np.sqrt(progress)
+            decay_factor = float(progress ** 2.0)
 
         effective_sigma = float(self.smc_sigma * decay_factor)
 

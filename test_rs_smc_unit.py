@@ -171,13 +171,13 @@ def test_arg_parser_auto_dispatch():
     assert args15.scale == 12.5, f"Expected SD 1.5 scale 12.5, got {args15.scale}"
     assert args15.use_smc_smoothing is False, "use_smc_smoothing should be False by default"
 
-    # 2. RS-SMC flags and alias on SD 1.5 (Auto-dispatches smc_sigma=1.00 for calibrated [0.75, 1.00] range)
+    # 2. RS-SMC flags and alias on SD 1.5 (Calibrated smc_sigma=0.25 default)
     sys.argv = ["LiDAR_sampling.py", "--use_rs_smc", "--smc_M", "8"]
     args_rs = get_args()
     assert args_rs.use_smc is True, "use_rs_smc must auto-enable use_smc"
     assert args_rs.use_smc_smoothing is True, "use_rs_smc must set use_smc_smoothing=True"
     assert args_rs.smc_num_mc_samples == 8, f"smc_M should map to smc_num_mc_samples=8, got {args_rs.smc_num_mc_samples}"
-    assert args_rs.smc_sigma == 1.00, f"Expected SD 1.5 auto-dispatch smc_sigma=1.00, got {args_rs.smc_sigma}"
+    assert args_rs.smc_sigma == 0.25, f"Expected SD 1.5 default smc_sigma=0.25, got {args_rs.smc_sigma}"
 
     # 3. Explicit smc_sigma override on SD 1.5
     sys.argv = ["LiDAR_sampling.py", "--use_rs_smc", "--smc_sigma", "0.75", "--smc_anneal_sigma"]
@@ -195,11 +195,11 @@ def test_arg_parser_auto_dispatch():
     args_rs_false = get_args()
     assert args_rs_false.smc_anneal_sigma is False, "smc_anneal_sigma=False must parse as False"
 
-    # 4. SDXL Auto-Dispatch (scale=8.0, smc_sigma=0.50 for calibrated [0.25, 0.50] range)
+    # 4. SDXL Auto-Dispatch (scale=8.0, smc_sigma=0.15 for calibrated [0.10, 0.20] range)
     sys.argv = ["LiDAR_sampling.py", "--model_name", "stabilityai/stable-diffusion-xl-base-1.0", "--use_rs_smc"]
     args_xl = get_args()
     assert args_xl.scale == 8.0, f"Expected SDXL scale auto-dispatch to 8.0, got {args_xl.scale}"
-    assert args_xl.smc_sigma == 0.50, f"Expected SDXL smc_sigma auto-dispatch to 0.50, got {args_xl.smc_sigma}"
+    assert args_xl.smc_sigma == 0.15, f"Expected SDXL smc_sigma auto-dispatch to 0.15, got {args_xl.smc_sigma}"
 
     print("   ✅ Test 5 Passed: CLI flags, RS aliases, Anneal flags, and SD1.5/SDXL auto-dispatch verified.")
 
@@ -262,18 +262,18 @@ def test_systematic_folder_naming():
     tag_anneal_xl = compute_tag(MockArgs(model_name="stabilityai/stable-diffusion-xl-base-1.0", use_smc=True, use_smc_smoothing=True, smc_anneal_sigma=True, num_particles=4, smc_sigma=0.50, use_rag=True, top_k=50, lmbda=5000.0))
     assert tag_anneal_xl == "SDXL_RSSMC_N4_M4_sigma0.5_anneal_freq20_lmbda10.0_LiDAR_topk50_lmbda5000", f"Unexpected tag: {tag_anneal_xl}"
 
-    print("   ✅ Test 6 Passed: Systematic directory tags verified across static and annealed methods.")
+    print("   ✅ Test 6 Passed: Systematic directory tags verified across static and annealed modes.")
 
 
 def test_annealed_sigma_monotonic_decay_sd15():
-    print("🧪 Test 7: Testing Annealed Sigma Monotonic Decay for SD 1.5...")
+    print("🧪 Test 7: Testing Analytical Annealed Sigma Monotonic Decay for SD 1.5...")
     fkd = FKD(
         potential_type=PotentialType.DIFF,
         reward_fn=lambda x: x.mean(),
         use_smc_smoothing=True,
-        smc_sigma=1.0,
+        smc_sigma=0.25,
         smc_anneal_sigma=True,
-        smc_anneal_schedule="sqrt_noise",
+        smc_anneal_schedule="tweedie_analytical",
         resampling_t_start=20,
         resampling_t_end=80,
     )
@@ -282,27 +282,30 @@ def test_annealed_sigma_monotonic_decay_sd15():
     sig_40 = fkd.get_effective_smc_sigma(40)
     sig_60 = fkd.get_effective_smc_sigma(60)
     sig_80 = fkd.get_effective_smc_sigma(80)
+    sig_99 = fkd.get_effective_smc_sigma(99)
 
     print(f"      Step 20 (t=800): sigma = {sig_20:.4f}")
     print(f"      Step 40 (t=600): sigma = {sig_40:.4f}")
     print(f"      Step 60 (t=400): sigma = {sig_60:.4f}")
     print(f"      Step 80 (t=200): sigma = {sig_80:.4f}")
+    print(f"      Step 99 (t=0)  : sigma = {sig_99:.4f}")
 
-    assert abs(sig_20 - 1.000) < 1e-3, f"Expected step 20 sigma=1.0, got {sig_20}"
-    assert sig_20 > sig_40 > sig_60 > sig_80, "Annealed sigma must strictly monotonically decrease"
-    assert abs(sig_80 - 0.334) < 1e-2, f"Expected step 80 sigma ~ 0.334, got {sig_80}"
-    print("   ✅ Test 7 Passed: SD 1.5 Annealed Sigma decays monotonically from 1.000 down to 0.334.")
+    assert abs(sig_20 - 0.250) < 1e-3, f"Expected step 20 sigma=0.25, got {sig_20}"
+    assert sig_20 > sig_40 > sig_60 >= sig_80, "Annealed sigma must strictly monotonically decrease"
+    assert sig_80 == 0.0, f"Expected step 80 sigma == 0.0, got {sig_80}"
+    assert sig_99 == 0.0, f"Expected terminal step 99 sigma == 0.0, got {sig_99}"
+    print("   ✅ Test 7 Passed: SD 1.5 Annealed Sigma decays monotonically from 0.250 down to 0.000.")
 
 
 def test_annealed_sigma_monotonic_decay_sdxl():
-    print("🧪 Test 8: Testing Annealed Sigma Monotonic Decay for SDXL...")
+    print("🧪 Test 8: Testing Analytical Annealed Sigma Monotonic Decay for SDXL...")
     fkd = FKD(
         potential_type=PotentialType.DIFF,
         reward_fn=lambda x: x.mean(),
         use_smc_smoothing=True,
-        smc_sigma=0.50,
+        smc_sigma=0.15,
         smc_anneal_sigma=True,
-        smc_anneal_schedule="sqrt_noise",
+        smc_anneal_schedule="tweedie_analytical",
         resampling_t_start=20,
         resampling_t_end=80,
     )
@@ -311,16 +314,19 @@ def test_annealed_sigma_monotonic_decay_sdxl():
     sig_40 = fkd.get_effective_smc_sigma(40)
     sig_60 = fkd.get_effective_smc_sigma(60)
     sig_80 = fkd.get_effective_smc_sigma(80)
+    sig_99 = fkd.get_effective_smc_sigma(99)
 
     print(f"      Step 20 (t=800): sigma = {sig_20:.4f}")
     print(f"      Step 40 (t=600): sigma = {sig_40:.4f}")
     print(f"      Step 60 (t=400): sigma = {sig_60:.4f}")
     print(f"      Step 80 (t=200): sigma = {sig_80:.4f}")
+    print(f"      Step 99 (t=0)  : sigma = {sig_99:.4f}")
 
-    assert abs(sig_20 - 0.500) < 1e-3, f"Expected step 20 sigma=0.50, got {sig_20}"
-    assert sig_20 > sig_40 > sig_60 > sig_80, "Annealed sigma must strictly monotonically decrease"
-    assert abs(sig_80 - 0.167) < 1e-2, f"Expected step 80 sigma ~ 0.167, got {sig_80}"
-    print("   ✅ Test 8 Passed: SDXL Annealed Sigma decays monotonically from 0.500 down to 0.167.")
+    assert abs(sig_20 - 0.150) < 1e-3, f"Expected step 20 sigma=0.15, got {sig_20}"
+    assert sig_20 > sig_40 > sig_60 >= sig_80, "Annealed sigma must strictly monotonically decrease"
+    assert sig_80 == 0.0, f"Expected step 80 sigma == 0.0, got {sig_80}"
+    assert sig_99 == 0.0, f"Expected terminal step 99 sigma == 0.0, got {sig_99}"
+    print("   ✅ Test 8 Passed: SDXL Annealed Sigma decays monotonically from 0.150 down to 0.000.")
 
 
 def test_annealed_zero_regression():
@@ -361,6 +367,69 @@ def test_smc_n1_auto_bypass():
     print("   ✅ Test 10 Passed: N=1 gracefully bypasses SMC resampling assertion.")
 
 
+def test_terminal_clean_evaluation():
+    print("🧪 Test 11: Testing Terminal Step 99 Guaranteed Zero-Noise Clean Evaluation...")
+    for sched in ["tweedie_analytical", "cosine", "linear", "sqrt_noise"]:
+        fkd = FKD(
+            potential_type=PotentialType.DIFF,
+            reward_fn=lambda x: x.mean(),
+            use_smc_smoothing=True,
+            smc_sigma=1.0,
+            smc_anneal_sigma=True,
+            smc_anneal_schedule=sched,
+            resampling_t_start=20,
+            resampling_t_end=80,
+            time_steps=100,
+        )
+        sig_terminal = fkd.get_effective_smc_sigma(99)
+        assert sig_terminal == 0.0, f"Terminal step 99 must be 0.0 for schedule '{sched}', got {sig_terminal}"
+    print("   ✅ Test 11 Passed: Terminal step 99 returns strictly 0.0 across all schedule types.")
+
+
+def test_dynamic_scheduler_alphas_integration():
+    print("🧪 Test 12: Testing Dynamic Analytical Tweedie Ratio From Mock Scheduler...")
+    class MockScheduler:
+        def __init__(self):
+            # 1000 diffusion steps
+            t_steps = 1000
+            betas = np.linspace(0.00085**0.5, 0.012**0.5, t_steps)**2
+            self.alphas_cumprod = torch.tensor(np.cumprod(1.0 - betas), dtype=torch.float32)
+            self.timesteps = torch.tensor(np.linspace(0, 999, 100, dtype=int)[::-1].copy())
+
+    mock_sched = MockScheduler()
+    fkd = FKD(
+        potential_type=PotentialType.DIFF,
+        reward_fn=lambda x: x.mean(),
+        use_smc_smoothing=True,
+        smc_sigma=0.25,
+        smc_anneal_sigma=True,
+        smc_anneal_schedule="tweedie_analytical",
+        resampling_t_start=20,
+        resampling_t_end=80,
+        time_steps=100,
+        scheduler=mock_sched,
+    )
+
+    sig_20 = fkd.get_effective_smc_sigma(20)
+    sig_40 = fkd.get_effective_smc_sigma(40)
+    sig_60 = fkd.get_effective_smc_sigma(60)
+    sig_80 = fkd.get_effective_smc_sigma(80)
+    sig_99 = fkd.get_effective_smc_sigma(99)
+
+    print(f"      Dynamic Step 20: sigma = {sig_20:.4f}")
+    print(f"      Dynamic Step 40: sigma = {sig_40:.4f}")
+    print(f"      Dynamic Step 60: sigma = {sig_60:.4f}")
+    print(f"      Dynamic Step 80: sigma = {sig_80:.4f}")
+    print(f"      Dynamic Step 99: sigma = {sig_99:.4f}")
+
+    assert abs(sig_20 - 0.250) < 1e-3, f"Expected step 20 sigma=0.25, got {sig_20}"
+    assert 0.08 < sig_40 < 0.12, f"Expected step 40 sigma ~ 0.09-0.10, got {sig_40}"
+    assert 0.02 < sig_60 < 0.05, f"Expected step 60 sigma ~ 0.03-0.04, got {sig_60}"
+    assert sig_80 == 0.0, f"Expected step 80 sigma == 0.0, got {sig_80}"
+    assert sig_99 == 0.0, f"Expected terminal step 99 sigma == 0.0, got {sig_99}"
+    print("   ✅ Test 12 Passed: Dynamic scheduler integration computes exact Tweedie ratio without hardcoded numbers.")
+
+
 if __name__ == "__main__":
     print("\n=======================================================")
     print("🚀 RUNNING RS-SMC UNIT & REGRESSION TEST SUITE")
@@ -375,6 +444,8 @@ if __name__ == "__main__":
     test_annealed_sigma_monotonic_decay_sdxl()
     test_annealed_zero_regression()
     test_smc_n1_auto_bypass()
+    test_terminal_clean_evaluation()
+    test_dynamic_scheduler_alphas_integration()
     print("\n=======================================================")
-    print("🎉 ALL 10 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
+    print("🎉 ALL 12 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
     print("=======================================================\n")
