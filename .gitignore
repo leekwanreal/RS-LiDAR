@@ -26,6 +26,7 @@ venv/
 Lookahead_samples/
 Target_samples/
 Threshold_Rewards*/
+Adversarial_Rewards*/
 *.pt
 *.pth
 *.bin

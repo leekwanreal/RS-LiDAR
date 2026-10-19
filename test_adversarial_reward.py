@@ -64,12 +64,7 @@ except ImportError:
     DPMSolverMultistepScheduler = None
     StableDiffusionPipeline = None
 
-# Optional CLIP for semantic fidelity evaluation
-try:
-    from transformers import CLIPProcessor, CLIPModel
-    HAS_CLIP = True
-except Exception:
-    HAS_CLIP = False
+# (Đã loại bỏ CLIP theo yêu cầu để tập trung vào kiểm chứng toán học thuần túy của hàm phần thưởng)
 
 
 # ======================================================================================
@@ -178,6 +173,8 @@ class ResNet50AdversarialReward:
         # Map [-1, 1] -> [0, 1]
         x = (tensors + 1.0) * 0.5
         x = x.clamp(0.0, 1.0)
+        if x.dtype != torch.float32:
+            x = x.to(torch.float32)
         # Interpolate to 224x224
         if x.shape[-2:] != (224, 224):
             x = F.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False)
@@ -241,6 +238,89 @@ class ResNet50AdversarialReward:
         rs_grad_norms = rs_grads.view(tensors.size(0), -1).norm(p=2, dim=-1)
         return rs_grads, rs_grad_norms
 
+    def compute_gradcam(self, tensors, target_class_id):
+        """
+        Tính Grad-CAM heatmap tại layer4 của ResNet-50 cho target_class_id.
+        Layer4 cung cấp các đặc trưng ngữ nghĩa mức cao (high-level semantic features).
+        Trả về:
+            cam: Tensor kích thước [N, H, W] chuẩn hóa về [0.0, 1.0].
+        """
+        with torch.enable_grad():
+            x = self.preprocess(tensors)
+            x.requires_grad_(True)
+
+            # Forward từng block của ResNet-50 để trích xuất feature map tại layer4
+            feat = self.model.conv1(x)
+            feat = self.model.bn1(feat)
+            feat = self.model.relu(feat)
+            feat = self.model.maxpool(feat)
+            feat = self.model.layer1(feat)
+            feat = self.model.layer2(feat)
+            feat = self.model.layer3(feat)
+            feat = self.model.layer4(feat)  # [N, 2048, 7, 7]
+            feat.retain_grad()
+
+            pooled = self.model.avgpool(feat)
+            flattened = torch.flatten(pooled, 1)
+            logits = self.model.fc(flattened)
+
+            if self.reward_mode == "logit":
+                target_score = logits[:, target_class_id]
+            elif self.reward_mode == "softmax":
+                probs = F.softmax(logits, dim=-1)
+                target_score = probs[:, target_class_id]
+            elif self.reward_mode == "margin":
+                target_logit = logits[:, target_class_id]
+                mask = torch.ones_like(logits, dtype=torch.bool)
+                mask[:, target_class_id] = False
+                other_max = logits[mask].view(logits.size(0), -1).max(dim=-1)[0]
+                target_score = target_logit - other_max
+            else:
+                target_score = logits[:, target_class_id]
+
+            loss = target_score.sum()
+            self.model.zero_grad()
+            loss.backward(retain_graph=False)
+
+            gradients = feat.grad  # [N, 2048, 7, 7]
+            if gradients is None:
+                gradients = torch.ones_like(feat)
+            weights = gradients.mean(dim=(2, 3), keepdim=True)  # [N, 2048, 1, 1]
+            cam = F.relu((weights * feat).sum(dim=1, keepdim=True))  # [N, 1, 7, 7]
+
+            # Upsample về kích thước tensor gốc [N, 1, H, W]
+            cam = F.interpolate(cam, size=tensors.shape[-2:], mode="bilinear", align_corners=False).squeeze(1)
+
+            # Min-max normalization theo từng sample trong batch
+            cam_min = cam.view(cam.size(0), -1).min(dim=-1)[0].view(-1, 1, 1)
+            cam_max = cam.view(cam.size(0), -1).max(dim=-1)[0].view(-1, 1, 1)
+            cam = (cam - cam_min) / (cam_max - cam_min + 1e-8)
+            return cam.detach()
+
+    def compute_rs_gradcam(self, tensors, target_class_id, sigma2=0.5, num_mc_samples=8, use_crn=True):
+        """
+        Tính RS-LiDAR Smoothed Grad-CAM:
+        CAM_σ(x) = E_eps [ Grad-CAM(x + eps) ]
+        """
+        if sigma2 == 0.0 or num_mc_samples <= 0:
+            return self.compute_gradcam(tensors, target_class_id)
+
+        cams = []
+        for m in range(num_mc_samples):
+            if use_crn:
+                noise = torch.randn((1, *tensors.shape[1:]), device=tensors.device, dtype=tensors.dtype) * sigma2
+            else:
+                noise = torch.randn_like(tensors) * sigma2
+            noisy_t = (tensors + noise).clamp(-1.0, 1.0)
+            cam_m = self.compute_gradcam(noisy_t, target_class_id)
+            cams.append(cam_m)
+
+        rs_cam = torch.stack(cams, dim=0).mean(dim=0)
+        cam_min = rs_cam.view(rs_cam.size(0), -1).min(dim=-1)[0].view(-1, 1, 1)
+        cam_max = rs_cam.view(rs_cam.size(0), -1).max(dim=-1)[0].view(-1, 1, 1)
+        rs_cam = (rs_cam - cam_min) / (cam_max - cam_min + 1e-8)
+        return rs_cam
+
 
 # ======================================================================================
 # 🖼️ GENERATION & IMAGE PROCESSING
@@ -293,7 +373,7 @@ def generate_clean_and_perturbed_images(
 # 🔬 CORE EXPERIMENTAL PIPELINE: MEASURING EMPIRICAL LIPSCHITZ & GRADIENTS
 # ======================================================================================
 def run_empirical_lipschitz_test(
-    pipe, vae, resnet_reward, prompt_list, args, clip_model=None, clip_processor=None, device="cuda"
+    pipe, vae, resnet_reward, prompt_list, args, device="cuda"
 ):
     os.makedirs(args.output_dir, exist_ok=True)
     ckpt_path = os.path.join(args.output_dir, f"checkpoint_adversarial_shard_{args.shard_id}.json")
@@ -494,21 +574,7 @@ def run_empirical_lipschitz_test(
                     "r_clean_rs": r_clean_rs_s1
                 }
 
-        # 7. Tính CLIP Score đánh giá độ giữ ngữ nghĩa (Semantic Preservation)
-        clip_scores = [0.0] * args.num_particles
-        if clip_model is not None and clip_processor is not None:
-            try:
-                with torch.no_grad():
-                    inputs = clip_processor(text=[prompt] * len(clean_pils), images=clean_pils, return_tensors="pt", padding=True).to(device)
-                    outputs = clip_model(**inputs)
-                    img_emb = outputs.image_embeds / outputs.image_embeds.norm(dim=-1, keepdim=True)
-                    txt_emb = outputs.text_embeds / outputs.text_embeds.norm(dim=-1, keepdim=True)
-                    sims = (img_emb * txt_emb).sum(dim=-1).cpu().numpy()
-                    clip_scores = sims.tolist()
-            except Exception as e:
-                pass
-
-        # 8. Lưu trữ dữ liệu cho từng hạt particle
+        # 7. Lưu trữ dữ liệu cho từng hạt particle
         for p_idx in range(args.num_particles):
             pair_entry = {
                 "prompt_idx": global_idx,
@@ -517,7 +583,6 @@ def run_empirical_lipschitz_test(
                 "target_class": target_class,
                 "class_name": class_name,
                 "delta_x": float(delta_x[p_idx]),
-                "clip_score": float(clip_scores[p_idx]),
                 "models": {
                     "ResNet50-Adversarial": {
                         "r_clean_vanilla": float(r_clean_vanilla[p_idx]),
@@ -563,9 +628,9 @@ def run_empirical_lipschitz_test(
 # ======================================================================================
 def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda"):
     """
-    Sinh Saliency Map trực quan hóa:
-    So sánh Gradient raw của Vanilla (tập trung vào nhiễu hạt nền)
-    vs Gradient mượt của RS-LiDAR (tập trung vào cấu trúc ngữ nghĩa thực tế).
+    Sinh Saliency Map trực quan hóa qua Grad-CAM (Layer 4):
+    So sánh Grad-CAM của Vanilla (phân tán trên các mẫu hoa văn nền và artifact đối kháng)
+    vs Smoothed Grad-CAM của RS-LiDAR (tập trung sắc nét vào vùng đặc trưng thực thể ngữ nghĩa).
     """
     os.makedirs(output_dir, exist_ok=True)
     case_studies = [
@@ -574,11 +639,11 @@ def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda")
         {"prompt": "front view of a shiny black sports car", "target_class": 817, "title": "Sports Car (Class 817)"},
     ]
 
-    fig, axes = plt.subplots(len(case_studies), 3, figsize=(13.5, 4.2 * len(case_studies)), dpi=300)
+    fig, axes = plt.subplots(len(case_studies), 3, figsize=(14, 4.4 * len(case_studies)), dpi=300)
     if len(case_studies) == 1:
         axes = [axes]
 
-    print("\n🎨 Đang tạo biểu đồ Visual Saliency Maps cho các Case Studies...")
+    print("\n🎨 Đang tạo biểu đồ Grad-CAM Saliency Maps (Layer 4) cho các Case Studies...")
 
     for row_idx, item in enumerate(case_studies):
         prompt = item["prompt"]
@@ -597,20 +662,26 @@ def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda")
             scaled = (latents / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
             clean_tensor = pipe.vae.decode(scaled, return_dict=False)[0].detach().clamp(-1.0, 1.0)
 
-        # 1. Vanilla Saliency
-        grad_vanilla, _ = resnet_reward.compute_gradient(clean_tensor, target_class)
-        saliency_v = grad_vanilla[0].detach().abs().max(dim=0)[0].cpu().numpy()
-        saliency_v = (saliency_v - saliency_v.min()) / (saliency_v.max() - saliency_v.min() + 1e-8)
+        # 1. Vanilla Grad-CAM (Layer 4)
+        cam_v = resnet_reward.compute_gradcam(clean_tensor, target_class)[0].cpu().numpy()
 
-        # 2. RS Smoothed Saliency
-        grad_rs, _ = resnet_reward.compute_rs_gradient(clean_tensor, target_class, sigma2=0.5, num_mc_samples=8, use_crn=True)
-        saliency_rs = grad_rs[0].detach().abs().max(dim=0)[0].cpu().numpy()
-        saliency_rs = (saliency_rs - saliency_rs.min()) / (saliency_rs.max() - saliency_rs.min() + 1e-8)
+        # 2. RS Smoothed Grad-CAM (Layer 4)
+        cam_rs = resnet_reward.compute_rs_gradcam(clean_tensor, target_class, sigma2=0.5, num_mc_samples=8, use_crn=True)[0].cpu().numpy()
 
-        # Saliency Focus Ratio (Mục 4.1 trong Plan): % năng lượng gradient tập trung trong vùng trung tâm vật thể
-        H, W = saliency_v.shape
-        focus_v = float(saliency_v[H//4:3*H//4, W//4:3*W//4].sum() / (saliency_v.sum() + 1e-8) * 100.0)
-        focus_rs = float(saliency_rs[H//4:3*H//4, W//4:3*W//4].sum() / (saliency_rs.sum() + 1e-8) * 100.0)
+        # Saliency Focus Ratio Metrics:
+        # A. Central Energy Ratio (%) trong vùng [H/4:3H/4, W/4:3W/4]
+        H, W = cam_v.shape
+        focus_v = float(cam_v[H//4:3*H//4, W//4:3*W//4].sum() / (cam_v.sum() + 1e-8) * 100.0)
+        focus_rs = float(cam_rs[H//4:3*H//4, W//4:3*W//4].sum() / (cam_rs.sum() + 1e-8) * 100.0)
+
+        # B. Top-20% Energy Concentration (%)
+        flat_v = np.sort(cam_v.flatten())[::-1]
+        k_v = int(len(flat_v) * 0.20)
+        top20_v = float(flat_v[:k_v].sum() / (flat_v.sum() + 1e-8) * 100.0)
+
+        flat_rs = np.sort(cam_rs.flatten())[::-1]
+        k_rs = int(len(flat_rs) * 0.20)
+        top20_rs = float(flat_rs[:k_rs].sum() / (flat_rs.sum() + 1e-8) * 100.0)
 
         clean_pil = pipe.image_processor.postprocess(clean_tensor.detach(), output_type="pil")[0]
 
@@ -619,33 +690,45 @@ def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda")
         axes[row_idx][0].set_title(f"{title}\nClean Sample (SD 1.5)", fontsize=11, fontweight="bold")
         axes[row_idx][0].axis("off")
 
-        # Cột 2: Vanilla Saliency
-        im_v = axes[row_idx][1].imshow(saliency_v, cmap="hot")
-        axes[row_idx][1].set_title(f"Vanilla Saliency ||∇R||\n(Focus: {focus_v:.1f}% - Dispersed Noise)", fontsize=10.5, fontweight="bold", color="#dc2626")
+        # Cột 2: Vanilla Grad-CAM Overlay
+        axes[row_idx][1].imshow(clean_pil)
+        axes[row_idx][1].imshow(cam_v, cmap="jet", alpha=0.55)
+        axes[row_idx][1].set_title(
+            f"Vanilla Grad-CAM (Layer 4)\nCentral: {focus_v:.1f}% | Top-20%: {top20_v:.1f}%",
+            fontsize=10.5, fontweight="bold", color="#dc2626"
+        )
         axes[row_idx][1].axis("off")
 
-        # Cột 3: RS Smoothed Saliency
-        im_rs = axes[row_idx][2].imshow(saliency_rs, cmap="hot")
-        axes[row_idx][2].set_title(f"RS-LiDAR Smoothed ||∇R_σ||\n(Focus: {focus_rs:.1f}% - Robust Semantic)", fontsize=10.5, fontweight="bold", color="#1d4ed8")
+        # Cột 3: RS Smoothed Grad-CAM Overlay
+        axes[row_idx][2].imshow(clean_pil)
+        axes[row_idx][2].imshow(cam_rs, cmap="jet", alpha=0.55)
+        axes[row_idx][2].set_title(
+            f"RS-LiDAR Smoothed Grad-CAM (σ=0.5, M=8)\nCentral: {focus_rs:.1f}% | Top-20%: {top20_rs:.1f}%",
+            fontsize=10.5, fontweight="bold", color="#1d4ed8"
+        )
         axes[row_idx][2].axis("off")
 
-    fig.suptitle("Visual Comparison: Adversarial Saliency vs. Robust Semantic Focus", fontsize=15, fontweight="bold", y=0.99)
+    fig.suptitle("Visual Saliency via Grad-CAM (Layer 4): Vanilla vs. RS-LiDAR Smoothed Attribution", fontsize=15, fontweight="bold", y=0.99)
     plt.tight_layout(rect=[0, 0.02, 1, 0.97])
     out_path = os.path.join(output_dir, "adversarial_visual_saliency_grid.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     alt_path = os.path.join(output_dir, "adversarial_saliency_case_studies.png")
     plt.savefig(alt_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"🖼️ Đã lưu ảnh Visual Saliency Grid tại: {out_path} và {alt_path}")
+    print(f"🖼️ Đã lưu ảnh Visual Grad-CAM Saliency Grid tại: {out_path} và {alt_path}")
 
 
 def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", primary_sigma2=0.5, primary_m=4):
     """
-    Cắt lát cảnh quan 1D qua 200 điểm nội suy giữa hai điểm latent x_A và x_B:
-    Chứng minh đường cong Vanilla chằng chịt gai nhọn (spikes), còn RS lượn sóng mượt mà.
+    Cắt lát cảnh quan 1D qua 2 góc nhìn bổ trợ:
+    Panel A (Macro Interpolation): Cắt lát 200 điểm nội suy giữa 2 ảnh sạch x_A và x_B,
+            sử dụng Common Random Numbers (CRN) cố định tập mẫu nhiễu Monte Carlo dọc lát cắt
+            để đảm bảo không bị sai số lấy mẫu ngẫu nhiên (sampling jitter).
+    Panel B (Local Adversarial Direction): Cắt lát vi mô theo hướng gradient đối kháng sign(∇R)
+            quanh ảnh sạch x_A, chứng minh Vanilla có độ dốc biến thiên mạnh còn RS-LiDAR được san phẳng theo Theorem 1.
     """
     os.makedirs(output_dir, exist_ok=True)
-    print("\n📈 Đang thực hiện 1D Landscape Slicing qua 200 điểm nội suy...")
+    print("\n📈 Đang thực hiện 1D Landscape Slicing (Macro Interpolation + Local Adversarial Direction)...")
 
     prompt = "portrait of a giant panda looking forward"
     target_class = 388
@@ -663,32 +746,68 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
         img1 = pipe.vae.decode(scaled1, return_dict=False)[0].clamp(-1.0, 1.0)
         img2 = pipe.vae.decode(scaled2, return_dict=False)[0].clamp(-1.0, 1.0)
 
-    alphas = np.linspace(0.0, 1.0, 200) # 200 anchors interpolated
-    vanilla_rewards = []
-    rs_rewards = []
+    # Cố định tập vector nhiễu CRN dọc lát cắt để triệt tiêu sampling jitter
+    slice_m = max(primary_m, 16)
+    torch.manual_seed(42)
+    noise_bank = [torch.randn_like(img1) * primary_sigma2 for _ in range(slice_m)]
+
+    # 1. Panel A: Macro Interpolation x_A -> x_B
+    alphas = np.linspace(0.0, 1.0, 200)
+    vanilla_rewards_macro = []
+    rs_rewards_macro = []
 
     with torch.no_grad():
         for a in alphas:
             x_alpha = ((1.0 - a) * img1 + a * img2).clamp(-1.0, 1.0)
             r_vanilla = resnet_reward.compute_reward(x_alpha, target_class).item()
-            vanilla_rewards.append(r_vanilla)
+            vanilla_rewards_macro.append(r_vanilla)
 
             mc_r = []
-            for _ in range(primary_m):
-                u = torch.randn_like(x_alpha) * primary_sigma2
+            for u in noise_bank:
                 noisy = (x_alpha + u).clamp(-1.0, 1.0)
                 mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
-            rs_rewards.append(float(np.mean(mc_r)))
+            rs_rewards_macro.append(float(np.mean(mc_r)))
 
-    plt.figure(figsize=(10, 5), dpi=300)
-    plt.plot(alphas, vanilla_rewards, color="#dc2626", lw=1.8, label="Vanilla ResNet-50 Logit (Spiky & Adversarial)")
-    plt.plot(alphas, rs_rewards, color="#2563eb", lw=2.4, label=f"RS-LiDAR Smoothed Reward (σ={primary_sigma2}, M={primary_m})")
+    # 2. Panel B: Local Adversarial Perturbation Direction
+    grad_A, _ = resnet_reward.compute_gradient(img1, target_class)
+    adv_dir = torch.sign(grad_A) # Direction of fastest increase / spike
+    deltas = np.linspace(-0.05, 0.05, 100)
+    vanilla_rewards_adv = []
+    rs_rewards_adv = []
 
-    plt.xlabel("Interpolation Path α: x(α) = (1 - α) x_A + α x_B", fontsize=11, fontweight="bold")
-    plt.ylabel("Reward Value (Target Class Logit)", fontsize=11, fontweight="bold")
-    plt.title("1D Reward Landscape Slicing: Spike Suppression via Randomized Smoothing", fontsize=13, fontweight="bold")
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.legend(frameon=True, fontsize=10.5)
+    with torch.no_grad():
+        for d in deltas:
+            x_delta = (img1 + d * adv_dir).clamp(-1.0, 1.0)
+            r_vanilla = resnet_reward.compute_reward(x_delta, target_class).item()
+            vanilla_rewards_adv.append(r_vanilla)
+
+            mc_r = []
+            for u in noise_bank:
+                noisy = (x_delta + u).clamp(-1.0, 1.0)
+                mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
+            rs_rewards_adv.append(float(np.mean(mc_r)))
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5.2), dpi=300)
+
+    # Panel A plot
+    axes[0].plot(alphas, vanilla_rewards_macro, color="#dc2626", lw=1.8, label="Vanilla ResNet-50 Logit R(x)")
+    axes[0].plot(alphas, rs_rewards_macro, color="#2563eb", lw=2.2, label=f"RS-LiDAR Logit R_σ(x) (σ={primary_sigma2}, M={slice_m})")
+    axes[0].set_xlabel("Interpolation Path α: x(α) = (1 - α) x_A + α x_B", fontsize=10.5, fontweight="bold")
+    axes[0].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
+    axes[0].set_title("A. Macro Interpolation Path (CRN Stabilized)", fontsize=11.5, fontweight="bold")
+    axes[0].grid(True, linestyle="--", alpha=0.5)
+    axes[0].legend(frameon=True, fontsize=9.5)
+
+    # Panel B plot
+    axes[1].plot(deltas, vanilla_rewards_adv, color="#dc2626", lw=1.8, label="Vanilla ResNet-50 Logit R(x)")
+    axes[1].plot(deltas, rs_rewards_adv, color="#2563eb", lw=2.2, label=f"RS-LiDAR Logit R_σ(x) (σ={primary_sigma2}, M={slice_m})")
+    axes[1].set_xlabel("Adversarial Perturbation Step δ: x(δ) = x_A + δ · sign(∇R)", fontsize=10.5, fontweight="bold")
+    axes[1].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
+    axes[1].set_title("B. Local Slice along Adversarial Gradient Direction", fontsize=11.5, fontweight="bold")
+    axes[1].grid(True, linestyle="--", alpha=0.5)
+    axes[1].legend(frameon=True, fontsize=9.5)
+
+    fig.suptitle("1D Reward Landscape Slicing: Vanilla vs. RS-LiDAR Smoothed Landscape", fontsize=14, fontweight="bold", y=0.99)
     plt.tight_layout()
 
     out_path = os.path.join(output_dir, "adversarial_1d_landscape_slicing.png")
@@ -730,20 +849,26 @@ def generate_case_study_cohen_certificates(pipe, resnet_reward, output_dir, devi
             batch_size = 25
             for b_start in range(0, num_noise_samples, batch_size):
                 curr_b = min(batch_size, num_noise_samples - b_start)
-                noise = torch.randn((curr_b, *clean_tensor.shape[1:]), device=clean_tensor.device) * sigma2
+                noise = torch.randn((curr_b, *clean_tensor.shape[1:]), device=clean_tensor.device, dtype=clean_tensor.dtype) * sigma2
                 noisy_batch = (clean_tensor.expand(curr_b, -1, -1, -1) + noise).clamp(-1.0, 1.0)
                 prep = resnet_reward.preprocess(noisy_batch)
                 preds = resnet_reward.model(prep).argmax(dim=-1)
                 correct_count += (preds == target_class).sum().item()
 
             p_A = correct_count / num_noise_samples
-            if p_A > 0.5:
-                # Clopper-Pearson 99.9% lower bound (Cohen et al. 2019)
-                p_A_lower = float(scipy.stats.beta.ppf(0.001, correct_count, num_noise_samples - correct_count + 1)) if correct_count < num_noise_samples else (0.999 ** (1.0 / num_noise_samples))
-                r_cert = float(sigma2 * scipy.stats.norm.ppf(p_A))
-                r_cert_cp = float(sigma2 * scipy.stats.norm.ppf(p_A_lower)) if p_A_lower > 0.5 else 0.0
+            if correct_count >= num_noise_samples:
+                p_A_lower = float(0.001 ** (1.0 / num_noise_samples))
+            elif correct_count > 0:
+                p_A_lower = float(scipy.stats.beta.ppf(0.001, correct_count, num_noise_samples - correct_count + 1))
             else:
                 p_A_lower = 0.0
+
+            # Giới hạn p_A an toàn tránh inf từ scipy.stats.norm.ppf(1.0)
+            p_A_safe = min(max(p_A, 0.0), 1.0 - 1e-4)
+            if p_A > 0.5:
+                r_cert = float(sigma2 * scipy.stats.norm.ppf(p_A_safe))
+                r_cert_cp = float(sigma2 * scipy.stats.norm.ppf(p_A_lower)) if p_A_lower > 0.5 else 0.0
+            else:
                 r_cert = 0.0
                 r_cert_cp = 0.0
 
@@ -759,19 +884,22 @@ def generate_case_study_cohen_certificates(pipe, resnet_reward, output_dir, devi
     # Vẽ biểu đồ Bar Chart so sánh Cohen Certified Radius
     classes = [r["class_name"] for r in cohen_records]
     r_certs = [r["r_cert"] for r in cohen_records]
+    r_cert_cps = [r["r_cert_cp"] for r in cohen_records]
     p_As = [r["p_A"] * 100 for r in cohen_records]
 
-    fig, ax = plt.subplots(figsize=(8, 4.5), dpi=300)
-    bars = ax.bar(classes, r_certs, color='#2563eb', alpha=0.85, width=0.45, label=f'RS-LiDAR Certified Radius (σ={sigma2})')
+    fig, ax = plt.subplots(figsize=(8.5, 4.8), dpi=300)
+    bars = ax.bar(classes, r_certs, color='#2563eb', alpha=0.85, width=0.45, label=f'RS-LiDAR Empirical Radius (σ={sigma2})')
     ax.axhline(0.0, color='#dc2626', linestyle='--', lw=2.0, label='Vanilla Certified Radius = 0.0 (Uncertified)')
-    for bar, p_val in zip(bars, p_As):
+    for bar, p_val, r_cp in zip(bars, p_As, r_cert_cps):
         yval = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2.0, yval + 0.015, f"R = {yval:.3f}\n(Top-1 = {p_val:.0f}%)",
-                ha='center', va='bottom', fontsize=9.5, fontweight='bold')
+        ax.text(bar.get_x() + bar.get_width()/2.0, yval + 0.015,
+                f"R_emp = {yval:.3f}\nR_cert = {r_cp:.3f}\n(Top-1 = {p_val:.0f}%)",
+                ha='center', va='bottom', fontsize=9.0, fontweight='semibold')
 
     ax.set_ylabel("Cohen Certified $\\ell_2$ Radius", fontsize=11, fontweight="bold")
     ax.set_title(f"Cohen Certified Robustness Radius (Randomized Smoothing σ={sigma2})", fontsize=12, fontweight="bold")
-    ax.set_ylim(0, max(max(r_certs) * 1.35 if r_certs else 1.0, 0.6))
+    max_h = max([b.get_height() for b in bars] + [0.1])
+    ax.set_ylim(0, max(max_h * 1.45, 0.6))
     ax.grid(True, linestyle="--", alpha=0.4, axis="y")
     ax.legend(frameon=True, fontsize=10)
     plt.tight_layout()
@@ -792,82 +920,6 @@ def generate_case_study_cohen_certificates(pipe, resnet_reward, output_dir, devi
             f.write(f"| **{rec['class_name']}** | {rec['target_class']} | 0.000 (Uncertified) | {rec['p_A']*100:.1f}% | {rec['r_cert']:.4f} | {rec['r_cert_cp']:.4f} |\n")
         f.write("\n> *Vanilla classifier không có bảo đảm chứng nhận bền vững (R_cert = 0). Dưới RS-LiDAR, mô hình được chứng thực toán học không thể bị lật nhãn bởi bất kỳ nhiễu đối kháng nào nằm trong quả cầu bán kính R_cert.*\n")
     print(f"📝 Đã xuất Markdown Cohen Certificates tại: {md_cohen_path}")
-
-
-def plot_clip_logit_correlation(
-    vanilla_logits, rs_logits, clip_scores, output_dir,
-    primary_sigma2=0.5, primary_m=4,
-    r_v=0.0, p_v=1.0, rho_v=0.0, sp_p_v=1.0,
-    r_rs=0.0, p_rs=1.0, rho_rs=0.0, sp_p_rs=1.0
-):
-    """
-    Thực nghiệm D (Mục 4.4 trong Plan): Semantic Quality Alignment (CLIP Score vs Logit Gain).
-    Vẽ biểu đồ tương quan 2-panel so sánh:
-    Panel A: Vanilla ResNet-50 Logits vs. CLIP Score
-    Panel B: RS-LiDAR Smoothed Logits vs. CLIP Score
-    Kèm đường hồi quy tuyến tính (trendline) và hệ số tương quan Pearson r, Spearman rho, p-value.
-    """
-    if len(clip_scores) == 0 or np.std(clip_scores) < 1e-5:
-        print("⚠️ Không có biến thiên CLIP Score, bỏ qua vẽ biểu đồ tương quan ngữ nghĩa.")
-        return
-
-    plt.figure(figsize=(14, 5.8), dpi=300)
-
-    # Panel A: Vanilla ResNet-50
-    plt.subplot(1, 2, 1)
-    plt.scatter(vanilla_logits, clip_scores, color="#dc2626", alpha=0.45, s=22, edgecolors="none", label="Vanilla Samples")
-    # Linear trendline
-    slope_v, intercept_v, _, _, _ = scipy.stats.linregress(vanilla_logits, clip_scores)
-    x_grid_v = np.linspace(np.percentile(vanilla_logits, 1), np.percentile(vanilla_logits, 99), 100)
-    plt.plot(x_grid_v, slope_v * x_grid_v + intercept_v, color="#991b1b", lw=2.4, linestyle="--",
-             label=f"Trendline (slope={slope_v:+.4f})")
-
-    stats_text_v = (
-        f"Pearson r = {r_v:+.3f} (p = {p_v:.1e})\n"
-        f"Spearman ρ = {rho_v:+.3f} (p = {sp_p_v:.1e})\n"
-        "Interpretation: Weak / Negative\n(Adversarial noise trap)"
-    )
-    plt.gca().text(0.04, 0.95, stats_text_v, transform=plt.gca().transAxes,
-                   fontsize=9.5, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#fee2e2', edgecolor='#ef4444', alpha=0.9))
-
-    plt.xlabel("Vanilla ResNet-50 Target Logit $R(x)$", fontsize=11, fontweight="bold")
-    plt.ylabel("Prompt-Image Semantic Alignment (CLIP Score)", fontsize=11, fontweight="bold")
-    plt.title("A. Vanilla: Target Logit vs. CLIP Score\n(High Reward Driven by Non-Semantic Noise)", fontsize=11.5, fontweight="bold", color="#991b1b")
-    plt.grid(True, linestyle="--", alpha=0.45)
-    plt.legend(loc="lower right", frameon=True, fontsize=9.5)
-
-    # Panel B: RS-LiDAR Smoothed
-    plt.subplot(1, 2, 2)
-    plt.scatter(rs_logits, clip_scores, color="#2563eb", alpha=0.45, s=22, edgecolors="none", label=f"RS Samples (σ={primary_sigma2}, M={primary_m})")
-    # Linear trendline
-    slope_rs, intercept_rs, _, _, _ = scipy.stats.linregress(rs_logits, clip_scores)
-    x_grid_rs = np.linspace(np.percentile(rs_logits, 1), np.percentile(rs_logits, 99), 100)
-    plt.plot(x_grid_rs, slope_rs * x_grid_rs + intercept_rs, color="#1e40af", lw=2.4, linestyle="-",
-             label=f"Trendline (slope={slope_rs:+.4f})")
-
-    stats_text_rs = (
-        f"Pearson r = {r_rs:+.3f} (p = {p_rs:.1e})\n"
-        f"Spearman ρ = {rho_rs:+.3f} (p = {sp_p_rs:.1e})\n"
-        "Interpretation: Strong Positive\n(Enforces robust semantic features)"
-    )
-    plt.gca().text(0.04, 0.95, stats_text_rs, transform=plt.gca().transAxes,
-                   fontsize=9.5, verticalalignment='top',
-                   bbox=dict(boxstyle='round,pad=0.5', facecolor='#dbeafe', edgecolor='#3b82f6', alpha=0.9))
-
-    plt.xlabel(f"RS-LiDAR Smoothed Logit $\\tilde{{R}}_{{\\sigma_2}}(x)$ (σ={primary_sigma2}, M={primary_m})", fontsize=11, fontweight="bold")
-    plt.ylabel("Prompt-Image Semantic Alignment (CLIP Score)", fontsize=11, fontweight="bold")
-    plt.title(f"B. RS-LiDAR: Smoothed Logit vs. CLIP Score\n(Reward Aligns with Human/Semantic Quality)", fontsize=11.5, fontweight="bold", color="#1e40af")
-    plt.grid(True, linestyle="--", alpha=0.45)
-    plt.legend(loc="lower right", frameon=True, fontsize=9.5)
-
-    plt.tight_layout()
-    corr_img_path = os.path.join(output_dir, "adversarial_clip_logit_correlation.png")
-    plt.savefig(corr_img_path, dpi=300, bbox_inches="tight")
-    alt_corr_path = os.path.join(output_dir, "adversarial_semantic_alignment.png")
-    plt.savefig(alt_corr_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"📈 Đã lưu đồ thị tương quan ngữ nghĩa (CLIP vs Logit) tại: {corr_img_path} và {alt_corr_path}")
 
 
 
@@ -963,7 +1015,6 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     vanilla_slopes = []
     vanilla_grad_norms = []
     vanilla_clean_rewards = []
-    clip_scores_all = []
     rs_clean_primary = []
     rs_slopes_primary = []
 
@@ -972,7 +1023,6 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
         vanilla_slopes.append(m_data["slope_vanilla"])
         vanilla_grad_norms.append(m_data.get("grad_norm_vanilla", 0.0))
         vanilla_clean_rewards.append(m_data["r_clean_vanilla"])
-        clip_scores_all.append(p.get("clip_score", 0.0))
         rs_clean_primary.append(m_data["rs_by_m"][str(primary_m)][str(primary_sigma2)]["r_clean_rs"])
         rs_slopes_primary.append(m_data["rs_by_m"][str(primary_m)][str(primary_sigma2)]["slope_rs"])
 
@@ -981,43 +1031,12 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     vanilla_clean_rewards = np.array(vanilla_clean_rewards)
     rs_clean_primary = np.array(rs_clean_primary)
     rs_slopes_primary = np.array(rs_slopes_primary)
-    clip_scores_arr = np.array(clip_scores_all)
 
     L_mean_vanilla = float(np.mean(vanilla_slopes))
     L_max_vanilla = float(np.max(vanilla_slopes))
     L_95_vanilla = float(np.percentile(vanilla_slopes, 95))
     G_mean_vanilla = float(np.mean(vanilla_grad_norms))
     G_max_vanilla = float(np.max(vanilla_grad_norms))
-
-    # Tính toán tương quan Semantic Alignment: Logit vs CLIP Score (Mục 4.4 Thực nghiệm D)
-    has_clip = (len(clip_scores_arr) > 0 and float(np.std(clip_scores_arr)) > 1e-5)
-    r_v, p_v, rho_v, sp_p_v = 0.0, 1.0, 0.0, 1.0
-    r_rs_primary, p_rs_primary, rho_rs_primary, sp_p_rs_primary = 0.0, 1.0, 0.0, 1.0
-    clip_corr_stats = {}
-
-    if has_clip:
-        r_v, p_v = scipy.stats.pearsonr(vanilla_clean_rewards, clip_scores_arr)
-        rho_v, sp_p_v = scipy.stats.spearmanr(vanilla_clean_rewards, clip_scores_arr)
-        r_rs_primary, p_rs_primary = scipy.stats.pearsonr(rs_clean_primary, clip_scores_arr)
-        rho_rs_primary, sp_p_rs_primary = scipy.stats.spearmanr(rs_clean_primary, clip_scores_arr)
-        clip_corr_stats = {
-            "has_clip": True,
-            "vanilla": {
-                "pearson_r": float(r_v), "pearson_p": float(p_v),
-                "spearman_rho": float(rho_v), "spearman_p": float(sp_p_v)
-            },
-            f"rs_lidar_M{primary_m}_sigma{primary_sigma2}": {
-                "pearson_r": float(r_rs_primary), "pearson_p": float(p_rs_primary),
-                "spearman_rho": float(rho_rs_primary), "spearman_p": float(sp_p_rs_primary)
-            }
-        }
-        # Vẽ biểu đồ tương quan 2-panel
-        plot_clip_logit_correlation(
-            vanilla_clean_rewards, rs_clean_primary, clip_scores_arr, output_dir,
-            primary_sigma2=primary_sigma2, primary_m=primary_m,
-            r_v=r_v, p_v=p_v, rho_v=rho_v, sp_p_v=sp_p_v,
-            r_rs=r_rs_primary, p_rs=p_rs_primary, rho_rs=rho_rs_primary, sp_p_rs=sp_p_rs_primary
-        )
 
     # Tính toán ma trận stats theo M và sigma2
     stats_matrix = {M: {} for M in available_ms}
@@ -1046,40 +1065,28 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     # ==================================================================================
     # 📊 BẢNG 1: LIPSCHITZ & GRADIENT NORM BENCHMARK (Table 1 Main Text)
     # ==================================================================================
-    table1_headers = ["Method / Setting", "L_mean", "L_max", "L_95%", "||∇R||_mean", "Contraction", "CLIP Score", "Logit-CLIP Corr (r)"]
+    table1_headers = ["Method / Setting", "L_mean", "L_max", "L_95%", "||∇R||_mean", "Contraction"]
     table1_rows = []
 
     # Row 1: Vanilla
-    corr_v_str = f"{r_v:+.3f}" if has_clip else "N/A"
     table1_rows.append([
         "Vanilla ResNet-50",
         f"{L_mean_vanilla:.6f}",
         f"{L_max_vanilla:.6f}",
         f"{L_95_vanilla:.6f}",
         f"{G_mean_vanilla:.2f}",
-        "1.00× (Baseline)",
-        f"{np.mean(clip_scores_arr):.4f}" if has_clip else "N/A",
-        corr_v_str
+        "1.00× (Baseline)"
     ])
 
     for M in available_ms:
         s_info = stats_matrix[M][primary_sigma2]
-        if has_clip:
-            rs_clean_M = [p["models"]["ResNet50-Adversarial"]["rs_by_m"][str(M)][str(primary_sigma2)]["r_clean_rs"] for p in merged_pairs]
-            r_M, _ = scipy.stats.pearsonr(rs_clean_M, clip_scores_arr)
-            corr_M_str = f"{r_M:+.3f}"
-        else:
-            corr_M_str = "N/A"
-
         table1_rows.append([
             f"RS-LiDAR (σ={primary_sigma2}, M={M})",
             f"{s_info['L_mean']:.6f}",
             f"{s_info['L_max']:.6f}",
             f"{s_info['L_95']:.6f}",
             f"{s_info['G_mean']:.2f}",
-            f"{s_info['contraction']:.2f}×",
-            f"{np.mean(clip_scores_arr):.4f}" if has_clip else "N/A",
-            corr_M_str
+            f"{s_info['contraction']:.2f}×"
         ])
 
     table1_img_path = os.path.join(output_dir, "adversarial_table_benchmark.png")
@@ -1220,16 +1227,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
             for row in table3_rows:
                 f.write("| " + " | ".join(row) + " |\n")
             f.write("\n")
-
-        if has_clip:
-            f.write("\n---\n\n")
-            f.write("### 3. Thực Nghiệm D: Độ Tương Quan Ngữ Nghĩa (Logit Gain vs. CLIP Score Alignment)\n\n")
-            f.write("| Phương Pháp / Thiết Lập | Pearson $r$ | $p$-value (Pearson) | Spearman $\\rho$ | $p$-value (Spearman) | Đánh Giá Ngữ Nghĩa |\n")
-            f.write("|:---|:---:|:---:|:---:|:---:|:---|\n")
-            f.write(f"| **Vanilla ResNet-50** | `{r_v:+.4f}` | `{p_v:.2e}` | `{rho_v:+.4f}` | `{sp_p_v:.2e}` | Bẫy đối kháng (Nhiễu tần số cao) |\n")
-            f.write(f"| **RS-LiDAR ($\\sigma_2={primary_sigma2}, M={primary_m}$)** | `{r_rs_primary:+.4f}` | `{p_rs_primary:.2e}` | `{rho_rs_primary:+.4f}` | `{sp_p_rs_primary:.2e}` | Bảo toàn đặc trưng ngữ nghĩa thực tế |\n\n")
-            f.write("> *Ý nghĩa khoa học*: Đối với Vanilla ResNet-50, độ tương quan giữa reward logit và CLIP score thấp hoặc nghịch biến, chứng minh Vanilla tối ưu bằng cách khai thác các điểm mù vi mô tần số cao (nhiễu đối kháng không nhìn thấy) mà không thực sự cải thiện hình thái ngữ nghĩa của đối tượng. Ngược lại, RS-LiDAR dập tắt nhiễu tần số cao, buộc hàm thưởng chỉ tăng khi hình ảnh sở hữu đặc trưng ngữ nghĩa bền vững thực sự, dẫn đến hệ số tương quan dương vượt trội có ý nghĩa thống kê ($p < 0.001$).\n\n")
-    print(f"📝 Đã xuất Markdown Bảng 1, 2, 3 & CLIP Correlation tại: {tbl1_md_path}")
+    print(f"📝 Đã xuất Markdown Bảng 1 & 3 tại: {tbl1_md_path}")
 
     tbl2_md_path = os.path.join(output_dir, "adversarial_class_breakdown_table.md")
     with open(tbl2_md_path, "w", encoding="utf-8") as f:
@@ -1310,8 +1308,8 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     ax_tab = fig.add_subplot(gs[0, 0])
     ax_tab.axis('off')
     ax_tab.set_title("A. Lipschitz Benchmark Summary", fontsize=12, fontweight='bold', pad=8)
-    table_snippet_headers = table1_headers[:5]
-    table_snippet_rows = [r[:5] for r in table1_rows[:5]]
+    table_snippet_headers = table1_headers
+    table_snippet_rows = table1_rows[:5]
     tab = ax_tab.table(cellText=table_snippet_rows, colLabels=table_snippet_headers, loc='center', cellLoc='center')
     tab.auto_set_font_size(False)
     tab.set_fontsize(8.5)
@@ -1378,7 +1376,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     ax_cat.set_title('F. Contraction Across Classes', fontsize=12, fontweight='bold')
     ax_cat.grid(True, linestyle='--', alpha=0.4)
 
-    fig.suptitle(f"Adversarial Reward Comprehensive Analysis Dashboard (RS-LiDAR σ={primary_sigma2}, M={primary_m})", fontsize=15, fontweight='bold', y=0.98)
+    fig.suptitle(f"Adversarial Reward Analysis Dashboard (ResNet-50 | RS-LiDAR σ={primary_sigma2}, M={primary_m})", fontsize=15, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     dash_path = os.path.join(output_dir, "adversarial_lipschitz_combined_dashboard.png")
     plt.savefig(dash_path, dpi=300)
@@ -1394,8 +1392,6 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
             "L_max_vanilla": L_max_vanilla,
             "L_95_vanilla": L_95_vanilla,
             "grad_norm_mean_vanilla": G_mean_vanilla,
-            "clip_score_mean": float(np.mean(clip_scores_arr)) if has_clip else 0.0,
-            "semantic_alignment_clip_correlation": clip_corr_stats,
             "stats_matrix": stats_matrix,
             "sigma1_sweep": sigma1_stats
         }, f, indent=4)
@@ -1463,22 +1459,9 @@ def main():
     print("📥 Đang nạp mô hình ResNet-50 (ImageNet Pretrained)...")
     resnet_reward = ResNet50AdversarialReward(device=device, reward_mode=args.reward_mode)
 
-    # 3. Khởi tạo CLIP (tùy chọn đánh giá ngữ nghĩa)
-    clip_model = None
-    clip_processor = None
-    if HAS_CLIP:
-        try:
-            print("📥 Đang nạp CLIP (openai/clip-vit-base-patch32) để đánh giá Semantic Preservation...")
-            clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-            clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-            clip_model.eval()
-        except Exception as e:
-            print(f"⚠️ Không thể nạp CLIP: {e}. Tiếp tục mà không có CLIP Score.")
-
-    # 4. Chạy thực nghiệm đo đạc chính
+    # 3. Chạy thực nghiệm đo đạc chính
     run_empirical_lipschitz_test(
-        pipe, vae, resnet_reward, ADVERSARIAL_REWARD_PROMPTS, args,
-        clip_model=clip_model, clip_processor=clip_processor, device=device
+        pipe, vae, resnet_reward, ADVERSARIAL_REWARD_PROMPTS, args, device=device
     )
 
     # 5. Chạy Case Studies trực quan hóa (nếu được yêu cầu hoặc shard 0 hoàn thành)

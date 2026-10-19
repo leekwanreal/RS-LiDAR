@@ -42,11 +42,11 @@ $$\|x - x'\|_2 < \frac{\sigma}{2}\left(\Phi^{-1}(p_A) - \Phi^{-1}(p_B)\right)$$
 
 | # | Mục tiêu | Metric đo | Kỳ vọng |
 |:---:|:---|:---|:---|
-| 1 | Chứng minh Vanilla LiDAR hoạt động như **Adversarial Attacker** | Visual comparison + FID/LPIPS | Ảnh Vanilla: nhiễu adversarial rõ ràng |
+| 1 | Chứng minh Vanilla LiDAR hoạt động như **Adversarial Attacker** | Visual comparison + Saliency maps | Ảnh Vanilla: nhiễu adversarial rõ ràng |
 | 2 | Chứng minh RS-LiDAR kế thừa **Certified Robustness** | Cohen certificate radius | RS output nằm trong vùng certified |
 | 3 | Đo hằng số Lipschitz cục bộ bị san phẳng | $L_{\text{local}}, L_{\text{mean}}, L_{\text{max}}$ | RS giảm $L$ hàng chục lần |
-| 4 | So sánh gradient norm trong quá trình sampling | $\|\nabla_x R\|_2$ trajectory | Vanilla: spikes; RS: smooth |
-| 5 | Đánh giá chất lượng semantic | CLIP Score + Human eval | RS >> Vanilla |
+| 4 | So sánh gradient norm trong quá trình sampling | $\|\nabla_x R\|_2$ distribution | Vanilla: spikes; RS: smooth |
+| 5 | Trực quan hóa đặc trưng ngữ nghĩa vững chắc | Grad-CAM Saliency Focus Ratio | RS tập trung vào vật thể thay vì nhiễu |
 
 ---
 
@@ -368,37 +368,35 @@ def run_adversarial_lipschitz_test(pipe, vae, resnet_reward, prompt_list, args):
 2. Với mỗi prompt, sinh các mẫu ảnh bằng SD-v1.5 (`StableDiffusionPipeline`).
 3. So sánh 3 góc nhìn trực quan:
    - **Ảnh gốc (Clean Sample - No Guidance)**: Ảnh SD sinh ra tự nhiên.
-   - **Vanilla Adversarial Sensitivity**:
-     - Tính gradient raw $\nabla_x R(x)$ của target class logit theo điểm ảnh bằng `torch.autograd.grad`.
-     - Vẽ **Saliency Map / Gradient Heatmap**: Gradient của Vanilla phân tán rải rác ở nhiễu nền, biên tần số cao vô nghĩa (adversarial vulnerability).
-     - Đánh giá Best-of-N cục bộ theo raw logit $R(x)$: Vanilla dễ chọn nhầm ảnh có artifact/nhiễu vi mô nhưng logit lại cao ảo.
-   - **RS-LiDAR Robust Features**:
-     - Tính gradient mượt $\nabla_x \tilde{R}_{\sigma_2}(x)$ (qua Score Function / Stein's identity với $M$ mẫu nhiễu Gaussian).
-     - Saliency Map của RS tập trung rõ rệt vào các vùng đặc trưng ngữ nghĩa lớn (mắt, mõm chó, tai mèo, nhụy hoa).
-     - Đánh giá Best-of-N theo smoothed logit $\tilde{R}_{\sigma_2}(x)$: Buộc ảnh phải chứa đặc trưng bền vững mới đạt điểm trung bình cao.
+   - **Vanilla Adversarial Sensitivity (Grad-CAM Layer 4)**:
+     - Trích xuất activation map $A$ tại tầng tích chập sâu nhất `resnet50.layer4` ($7 \times 7$, 2048 channels) và tính trọng số gradient $\alpha_k = \frac{1}{Z} \sum_{i,j} \frac{\partial R}{\partial A_{i,j}^k}$.
+     - Bản đồ Grad-CAM của Vanilla bị phân tán rải rác trên nền cỏ, góc ảnh và các hoa văn giả mạo (do các đòn bẩy đối kháng kích hoạt sai lệch).
+   - **RS-LiDAR Robust Features (Smoothed Grad-CAM Layer 4)**:
+     - Tính Smoothed Grad-CAM qua kỳ vọng Monte Carlo: $\text{CAM}_{\sigma_2}(x) = \mathbb{E}_{\epsilon}[\text{Grad-CAM}(x + \epsilon)]$ với $M$ mẫu nhiễu Gaussian.
+     - Lọc bỏ các xung kích hoạt nhiễu tần số cao, hội tụ sắc nét vào đúng cấu trúc thực thể (khuôn mặt gấu trúc, mõm chó, thân xe thể thao).
 
 **Kỳ vọng visual:**
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│ Prompt: "a golden retriever sitting in a park" (ImageNet Class 207)    │
+│ Case Study: "portrait of a giant panda" (ImageNet Class 388)           │
 ├────────────────────┬──────────────────────────┬────────────────────────┤
-│ Clean Image (SD)   │ Vanilla Saliency Map     │ RS-LiDAR Saliency Map  │
-│                    │ (Raw Gradient ||∇R||)    │ (Smoothed Gradient)    │
+│ Clean Image (SD)   │ Vanilla Grad-CAM (L4)    │ RS-LiDAR Smoothed CAM  │
+│                    │ (Spurious Background)    │ (Robust Object Focus)  │
 │                    │                          │                        │
-│ 🖼️ Con chó sạch     │ 🗺️ Đốm nhiễu hạt rác,     │ 🗺️ Tập trung nét vào:   │
-│ chuẩn (logit ~2-5) │ rải rác toàn bộ nền cỏ   │ khuôn mặt chó, tai,    │
-│                    │ (Adversarial noise trap) │ mõm, dáng thân (Robust)│
+│ 🖼️ Ảnh gấu trúc      │ 🗺️ Kích hoạt phân tán     │ 🗺️ Tập trung sắc nét:   │
+│ chuẩn (SD 1.5)     │ rải rác ngoài viền nền   │ khuôn mặt gấu trúc,    │
+│                    │ (Adversarial artifacts)  │ mắt, tai, mũi (Robust) │
 └────────────────────┴──────────────────────────┴────────────────────────┘
 ```
 
-**Metrics định lượng:**
+**Metrics định lượng khách quan:**
 
-| Tiêu chí | Clean Image (No Guidance) | Vanilla Selection / Gradient | RS-LiDAR Selection / Gradient |
+| Tiêu chí | Clean Image (No Guidance) | Vanilla Grad-CAM (Layer 4) | RS-LiDAR Smoothed Grad-CAM |
 |:---|:---:|:---:|:---:|
 | **Mean Target Logit** | ~2 – 5 | **15 – 30** (cao bất thường/ảo) | 8 – 15 (hợp lý, vững chắc) |
-| **CLIP Score (vs prompt)** | 0.28 – 0.31 | 0.18 – 0.23 (bị suy giảm do artifact) | **0.29 – 0.33** (bảo toàn ngữ nghĩa) |
-| **Saliency Focus Ratio** | — | < 25% (nhiễu rải rác khắp ảnh) | **> 70%** (tập trung vùng vật thể) |
+| **Central Focus Ratio** | — | Phân tán (~25 – 40%) | **Tập trung cao (~60 – 85%)** |
+| **Top-20% Concentration** | — | Thấp (~30 – 45%) | **Tập trung cao (~65 – 85%)** |
 
 ---
 
@@ -433,13 +431,6 @@ Khác với Exp 1 (Threshold) không khả vi ($L=\infty$), ResNet50 có gradien
    - Vùng ảnh chịu ảnh hưởng của Vanilla gradient: $p_A \approx 0.5$ (dễ bị lật nhãn khi rung nhẹ) $\to R_{\text{cert}} \approx 0$.
    - Vùng ảnh qua RS smoothing: $p_A \ge 0.85 \sim 0.95 \to R_{\text{cert}} > 0.4 \sim 0.8$ (được bảo vệ toán học).
 
----
-
-### 4.4. Thực Nghiệm D: Đánh Giá Chất Lượng Ngữ Nghĩa (CLIP Score Evaluation)
-
-So sánh tương quan giữa độ tăng phần thưởng (Logit Gain) và độ giữ ngữ nghĩa (CLIP Score):
-- Vanilla tối ưu hóa bằng cách khai thác điểm mù của ResNet $\to$ Logit tăng vọt nhưng CLIP Score giảm mạnh.
-- RS-LiDAR chỉ tăng Logit khi hình ảnh thực sự cải thiện đặc trưng ngữ nghĩa $\to$ Logit tăng song hành cùng CLIP Score.
 
 ---
 
@@ -471,7 +462,7 @@ So sánh tương quan giữa độ tăng phần thưởng (Logit Gain) và độ
 
 ### 5.3. Figure Chủ Đạo Cho Paper
 
-1. **Figure chính**: Saliency / Gradient Focus Grid (3 config × 3 class) — trực quan hóa robust features vs adversarial noise
+1. **Figure chính**: Grad-CAM Saliency Grid (Layer 4) — trực quan hóa robust semantic attribution vs adversarial spurious activation
 2. **Figure phụ**: 1D Landscape Slicing — chứng minh dập tắt các gai nhọn (spikes) cục bộ
 3. **Table**: Lipschitz Benchmark Table + Contraction Ratio ($L_{\text{RS}} / L_{\text{Vanilla}}$)
 
@@ -542,7 +533,7 @@ RS-LiDAR/
 - [ ] Kiểm tra cơ chế checkpointing resume an toàn
 
 ### Phase 3: Thực Thi Thí Nghiệm & Thu Thập Kết Quả
-- [ ] Chạy sweep $\sigma_1 \in \{0.01, 0.05, 0.1\}$ và $\sigma_2 \in \{0.0, 0.1, 0.25, 0.5, 1.0\}$ với $M \in \{1, 2, 4, 8\}$
+- [ ] Chạy sweep $\sigma_1 \in \{0.001, 0.005, 0.01, 0.02, 0.05, 0.1\}$ và $\sigma_2 \in \{0.0, 0.1, 0.25, 0.5, 1.0\}$ với $M \in \{1, 2, 4, 8\}$
 - [ ] Xuất số liệu Lipschitz contraction ratio, phân phối Gradient Norm, đồ thị 1D Slicing, và Saliency Maps
 
 ### Phase 4: Tổng Hợp Báo Cáo
