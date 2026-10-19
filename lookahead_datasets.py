@@ -45,12 +45,33 @@ def init_tokenizer():
 class gen_lookahead_samples(Dataset):
     def __init__(self, directory, top_k):
         print("top_k:", top_k)
-        if os.path.isabs(directory) or os.path.exists(directory):
-            self.dataset_path = directory
-        elif os.path.exists(f"Lookahead_samples/{directory}"):
-            self.dataset_path = f"Lookahead_samples/{directory}"
+        clean_dir = directory.rstrip("/\\")
+        basename = os.path.basename(clean_dir)
+        candidates = [
+            clean_dir,
+            f"Lookahead_samples/{clean_dir}",
+            f"Lookahead_samples/{basename}",
+            f"Lookahead_samples/{basename}_100p",
+            f"/content/drive/MyDrive/RS-LiDAR/Lookahead_samples/{basename}",
+            f"/content/drive/MyDrive/RS-LiDAR/Lookahead_samples/{basename}_100p",
+            f"/content/drive/MyDrive/RS_LiDAR/Lookahead_samples/{basename}",
+            f"/content/drive/MyDrive/RS_LiDAR/Lookahead_samples/{basename}_100p",
+        ]
+        chosen_path = None
+        for cand in candidates:
+            if cand and os.path.exists(cand):
+                p_dirs = [d for d in os.listdir(cand) if os.path.isdir(os.path.join(cand, d)) and d.isdigit()]
+                if len(p_dirs) > 0:
+                    chosen_path = cand
+                    break
+                elif chosen_path is None:
+                    chosen_path = cand
+        if chosen_path is not None:
+            self.dataset_path = chosen_path
+            print(f"📁 Lookahead dataset found at: {self.dataset_path}")
         else:
-            self.dataset_path = f"Lookahead_samples/{directory}"
+            self.dataset_path = f"Lookahead_samples/{basename}"
+            print(f"⚠️ Lookahead dataset candidate '{directory}' not found. Defaulting to: {self.dataset_path}")
         data = {}
         if os.path.exists(self.dataset_path):
             prompt_dirs = sorted([d for d in os.listdir(self.dataset_path) if os.path.isdir(os.path.join(self.dataset_path, d)) and d.isdigit()])
