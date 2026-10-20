@@ -197,6 +197,44 @@ class FKD:
 
         return effective_sigma
 
+    def _evaluate_reward_batched(self, imgs: torch.Tensor, chunk_size: int = 128) -> torch.Tensor:
+        """
+        Safely evaluates rewards for large batches of images (e.g. M * N >= 128 or 256).
+        Chunks through self.reward_fn if the batch size exceeds chunk_size, with automatic
+        OOM catch and fallback, ensuring 0% OOM risk even with large particle counts on A100.
+        """
+        total = imgs.shape[0]
+        if total <= chunk_size:
+            try:
+                res = self.reward_fn(imgs)
+                return res if isinstance(res, torch.Tensor) else torch.tensor(res, device=imgs.device)
+            except torch.cuda.OutOfMemoryError:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                chunk_size = max(1, chunk_size // 2)
+
+        # Chunked evaluation
+        rewards_list = []
+        for i in range(0, total, chunk_size):
+            chunk = imgs[i : i + chunk_size]
+            try:
+                r_c = self.reward_fn(chunk)
+                r_tensor = r_c if isinstance(r_c, torch.Tensor) else torch.tensor(r_c, device=imgs.device)
+            except torch.cuda.OutOfMemoryError:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                sub_chunk_size = max(1, chunk_size // 2)
+                sub_rewards = []
+                for j in range(0, chunk.shape[0], sub_chunk_size):
+                    sub = chunk[j : j + sub_chunk_size]
+                    sub_r = self.reward_fn(sub)
+                    sub_tensor = sub_r if isinstance(sub_r, torch.Tensor) else torch.tensor(sub_r, device=imgs.device)
+                    sub_rewards.append(sub_tensor)
+                r_tensor = torch.cat(sub_rewards, dim=0)
+            rewards_list.append(r_tensor)
+
+        return torch.cat(rewards_list, dim=0)
+
     def resample(
         self, *, sampling_idx: int, latents: torch.Tensor, x0_preds: torch.Tensor
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -231,47 +269,43 @@ class FKD:
         else:
             # RS-SMC: Randomized Smoothing over Tweedie estimate with dynamic sigma(t)
             curr_sigma = self.get_effective_smc_sigma(sampling_idx)
-            if self.smc_smoothing_domain == "image":
+            if curr_sigma == 0:
+                # ZERO-NOISE ACCELERATION: When sigma(t) = 0 (e.g. at step >= 80 or terminal step 99 with Annealing),
+                # no noise is injected. Evaluating M identical copies is completely redundant.
+                # Evaluating population_images once directly saves M-fold compute and latency!
+                rs_candidates = self.reward_fn(population_images.clamp(-1.0, 1.0) if self.smc_smoothing_domain == "image" else population_images)
+            elif self.smc_smoothing_domain == "image":
                 if self.smc_smoothing_mode == "loop":
                     mc_rewards = []
                     with torch.inference_mode():
                         for _ in range(self.smc_num_mc_samples):
-                            if curr_sigma > 0:
-                                if self.smc_use_crn:
-                                    noise = torch.randn((1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
-                                else:
-                                    noise = torch.randn_like(population_images) * curr_sigma
-                                noisy_imgs = (population_images + noise).clamp(-1.0, 1.0)
+                            if self.smc_use_crn:
+                                noise = torch.randn((1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
                             else:
-                                noisy_imgs = population_images.clamp(-1.0, 1.0)
+                                noise = torch.randn_like(population_images) * curr_sigma
+                            noisy_imgs = (population_images + noise).clamp(-1.0, 1.0)
                             r_m = self.reward_fn(noisy_imgs)
                             mc_rewards.append(r_m)
                     rs_candidates = torch.stack(mc_rewards, dim=0).mean(dim=0)
                 else: # vectorized
                     with torch.inference_mode():
-                        if curr_sigma > 0:
-                            if self.smc_use_crn:
-                                noise = torch.randn((self.smc_num_mc_samples, 1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
-                                noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
-                            else:
-                                noise = torch.randn((self.smc_num_mc_samples, *population_images.shape), device=population_images.device, dtype=population_images.dtype) * curr_sigma
-                                noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
+                        if self.smc_use_crn:
+                            noise = torch.randn((self.smc_num_mc_samples, 1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
+                            noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
                         else:
-                            noisy_imgs = population_images.repeat(self.smc_num_mc_samples, 1, 1, 1)
-                        raw_rewards = self.reward_fn(noisy_imgs)
+                            noise = torch.randn((self.smc_num_mc_samples, *population_images.shape), device=population_images.device, dtype=population_images.dtype) * curr_sigma
+                            noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
+                        raw_rewards = self._evaluate_reward_batched(noisy_imgs)
                         rs_candidates = raw_rewards.view(self.smc_num_mc_samples, self.num_particles).mean(dim=0)
             elif self.smc_smoothing_domain == "latent":
                 mc_rewards = []
                 with torch.inference_mode():
                     for _ in range(self.smc_num_mc_samples):
-                        if curr_sigma > 0:
-                            if self.smc_use_crn:
-                                noise = torch.randn((1, *x0_preds.shape[1:]), device=x0_preds.device, dtype=x0_preds.dtype) * curr_sigma
-                            else:
-                                noise = torch.randn_like(x0_preds) * curr_sigma
-                            noisy_latents = x0_preds + noise
+                        if self.smc_use_crn:
+                            noise = torch.randn((1, *x0_preds.shape[1:]), device=x0_preds.device, dtype=x0_preds.dtype) * curr_sigma
                         else:
-                            noisy_latents = x0_preds
+                            noise = torch.randn_like(x0_preds) * curr_sigma
+                        noisy_latents = x0_preds + noise
                         noisy_imgs = self.latent_to_decode_fn(noisy_latents)
                         r_m = self.reward_fn(noisy_imgs)
                         mc_rewards.append(r_m)

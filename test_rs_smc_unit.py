@@ -478,6 +478,96 @@ def test_smc_terminal_resample_flag():
     print("   ✅ Test 13 Passed: smc_terminal_resample=False successfully bypasses step 99 resampling.")
 
 
+def test_vectorized_mode_and_zero_noise_acceleration():
+    print("🧪 Test 14: Testing Vectorized Mode & Zero-Noise Acceleration...")
+    recorded_calls = []
+    def mock_reward_fn(x):
+        recorded_calls.append(x.clone())
+        return x.mean(dim=[1, 2, 3])
+
+    M = 4
+    num_particles = 4
+    sigma = 0.25
+
+    # 1. Vectorized mode with sigma > 0: Should call reward_fn once with batch M * N = 16
+    fkd_vec = FKD(
+        potential_type=PotentialType.DIFF,
+        lmbda=10.0,
+        num_particles=num_particles,
+        resample_frequency=20,
+        resampling_t_start=20,
+        resampling_t_end=80,
+        time_steps=100,
+        reward_fn=mock_reward_fn,
+        latent_to_decode_fn=lambda x: x,
+        device=torch.device("cpu"),
+        use_smc_smoothing=True,
+        smc_sigma=sigma,
+        smc_num_mc_samples=M,
+        smc_smoothing_mode="vectorized",
+    )
+
+    dummy_latents = torch.randn(num_particles, 4, 64, 64)
+    dummy_x0 = torch.clamp(torch.randn(num_particles, 3, 512, 512), -1.0, 1.0)
+
+    recorded_calls.clear()
+    res_latents, _ = fkd_vec.resample(sampling_idx=20, latents=dummy_latents, x0_preds=dummy_x0)
+    assert len(recorded_calls) == 1, f"Expected 1 vectorized reward_fn call, got {len(recorded_calls)}"
+    assert recorded_calls[0].shape[0] == M * num_particles, f"Expected batch {M * num_particles}, got {recorded_calls[0].shape[0]}"
+    assert res_latents.shape == dummy_latents.shape, "Resampled latents shape must match"
+
+    # 2. Zero-Noise acceleration: when effective sigma = 0 (e.g. step >= 80 or terminal with annealing),
+    # reward_fn must be called ONCE with batch num_particles = 4, NOT M * N = 16
+    fkd_anneal = FKD(
+        potential_type=PotentialType.DIFF,
+        lmbda=10.0,
+        num_particles=num_particles,
+        resample_frequency=20,
+        resampling_t_start=20,
+        resampling_t_end=80,
+        time_steps=100,
+        reward_fn=mock_reward_fn,
+        latent_to_decode_fn=lambda x: x,
+        device=torch.device("cpu"),
+        use_smc_smoothing=True,
+        smc_sigma=sigma,
+        smc_num_mc_samples=M,
+        smc_smoothing_mode="vectorized",
+        smc_anneal_sigma=True,
+        smc_anneal_schedule="linear",
+        smc_terminal_resample=True,
+    )
+
+    recorded_calls.clear()
+    # At step 80 (t_end), linear anneal gives sigma = 0
+    res_latents_80, _ = fkd_anneal.resample(sampling_idx=80, latents=dummy_latents, x0_preds=dummy_x0)
+    assert len(recorded_calls) == 1, f"Expected 1 call at zero noise, got {len(recorded_calls)}"
+    assert recorded_calls[0].shape[0] == num_particles, f"Expected batch size {num_particles} at sigma=0, got {recorded_calls[0].shape[0]}"
+
+    # 3. Test _evaluate_reward_batched chunking safeguard
+    fkd_chunk = FKD(
+        potential_type=PotentialType.DIFF,
+        lmbda=10.0,
+        num_particles=8,
+        resample_frequency=20,
+        resampling_t_start=20,
+        resampling_t_end=80,
+        time_steps=100,
+        reward_fn=mock_reward_fn,
+        latent_to_decode_fn=lambda x: x,
+        device=torch.device("cpu"),
+        use_smc_smoothing=True,
+        smc_sigma=sigma,
+        smc_num_mc_samples=M,
+        smc_smoothing_mode="vectorized",
+    )
+    test_tensor = torch.randn(32, 3, 64, 64)
+    res_chunked = fkd_chunk._evaluate_reward_batched(test_tensor, chunk_size=8)
+    assert res_chunked.shape[0] == 32, f"Chunked evaluation must return all 32 rewards, got {res_chunked.shape[0]}"
+
+    print("   ✅ Test 14 Passed: Vectorized mode (1-batch parallel), Zero-Noise bypass (4x compute reduction), and chunked evaluation verified.")
+
+
 if __name__ == "__main__":
     print("\n=======================================================")
     print("🚀 RUNNING RS-SMC UNIT & REGRESSION TEST SUITE")
@@ -495,6 +585,7 @@ if __name__ == "__main__":
     test_terminal_clean_evaluation()
     test_dynamic_scheduler_alphas_integration()
     test_smc_terminal_resample_flag()
+    test_vectorized_mode_and_zero_noise_acceleration()
     print("\n=======================================================")
-    print("🎉 ALL 13 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
+    print("🎉 ALL 14 RS-SMC & ANNEALED RS-SMC TESTS PASSED WITH 100% SUCCESS!")
     print("=======================================================\n")
