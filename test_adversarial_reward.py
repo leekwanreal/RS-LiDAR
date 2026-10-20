@@ -712,10 +712,8 @@ def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda")
     plt.tight_layout(rect=[0, 0.02, 1, 0.97])
     out_path = os.path.join(output_dir, "adversarial_visual_saliency_grid.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    alt_path = os.path.join(output_dir, "adversarial_saliency_case_studies.png")
-    plt.savefig(alt_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"🖼️ Đã lưu ảnh Visual Grad-CAM Saliency Grid tại: {out_path} và {alt_path}")
+    print(f"🖼️ Đã lưu ảnh Visual Grad-CAM Saliency Grid tại: {out_path}")
 
 
 def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", primary_sigma2=0.5, primary_m=4):
@@ -810,12 +808,10 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
     fig.suptitle("1D Reward Landscape Slicing: Vanilla vs. RS-LiDAR Smoothed Landscape", fontsize=14, fontweight="bold", y=0.99)
     plt.tight_layout()
 
-    out_path = os.path.join(output_dir, "adversarial_1d_landscape_slicing.png")
+    out_path = os.path.join(output_dir, "adversarial_1d_landscape_slice.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    alt_path = os.path.join(output_dir, "adversarial_1d_landscape_slice.png")
-    plt.savefig(alt_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing tại: {out_path} và {alt_path}")
+    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing tại: {out_path}")
 
 
 def generate_case_study_cohen_certificates(pipe, resnet_reward, output_dir, device="cuda", sigma2=0.5, num_noise_samples=100):
@@ -1310,10 +1306,10 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     ax_tab.set_title("A. Lipschitz Benchmark Summary", fontsize=12, fontweight='bold', pad=8)
     table_snippet_headers = table1_headers
     table_snippet_rows = table1_rows[:5]
-    tab = ax_tab.table(cellText=table_snippet_rows, colLabels=table_snippet_headers, loc='center', cellLoc='center')
+    col_widths = [0.26, 0.14, 0.14, 0.14, 0.15, 0.17]
+    tab = ax_tab.table(cellText=table_snippet_rows, colLabels=table_snippet_headers, colWidths=col_widths, loc='center', cellLoc='center', bbox=[-0.02, 0.05, 1.04, 0.88])
     tab.auto_set_font_size(False)
-    tab.set_fontsize(8.5)
-    tab.scale(1.0, 1.35)
+    tab.set_fontsize(7.8)
     for (r, c), cell in tab.get_celld().items():
         cell.set_edgecolor('#d1d5db')
         if r == 0:
