@@ -12,7 +12,7 @@
 Hàm Threshold Reward là dạng reward **"bất lợi nhất" (most pathological)** cho diffusion guidance:
 $$R_{\text{step}}(x) = \mathbb{I}\left(\operatorname{Count}(x) = c^*\right) \in \{0, 1\}$$
 
-Tính gián đoạn nhị phân gây hai bệnh lý nghiêm trọng:
+Tính gián đoạn nhị phân gây hai vấn đề nghiêm trọng:
 1. **Gradient Starvation**: Đạo hàm bằng 0 ở hầu mọi nơi — bộ tối ưu bị "mù hoàn toàn".
 2. **Lipschitz Exploding**: Tại ranh giới quyết định, đạo hàm suy rộng bộc phát vô cực ($\|\nabla R\| \to \infty$), tạo xung lực gradient văng hạt khuếch tán.
 
@@ -43,7 +43,7 @@ Thực nghiệm trên 500 cặp mẫu với **OWL-ViT** đã chứng minh địn
 
 ## 2. CƠ SỞ LÝ THUYẾT
 
-### 2.1. Bệnh Lý Toán Học Của Hàm Bước Nhảy
+### 2.1. Thách Thức Toán Học Của Hàm Bước Nhảy
 
 Hàm reward đếm vật thể zero-shot (OWL-ViT):
 $$R(x) = \begin{cases} 1.0 & \text{nếu } \sum_{b} \mathbb{I}\left(\text{score}(b) > \tau\right) = c^* \\ 0.0 & \text{ngược lại} \end{cases}$$
@@ -295,3 +295,105 @@ RS-LiDAR: Trong quả cầu $\sigma_2$, một tỷ lệ biến thể ngẫu nhi�
 
 - **Main Text**: Bảng 1B (Boundary Samples) + Dashboard 4-Panel + $\sigma_1$-Ablation chart.
 - **Appendix**: Bảng 1A, Bảng 2/2B, Bảng 3 ($\sigma_1$ Singularity Sweep), $M$-Convergence chart.
+
+---
+
+## 8. KỊCH BẢN SLIDE BÁO CÁO TIẾN ĐỘ THÁNG VỚI MENTOR (SLIDE OUTLINE)
+
+> **Mục tiêu**: Kịch bản cô đọng phục vụ partner thiết kế slide báo cáo tháng với Lab Mentor.  
+> **Quy mô**: **6 slide tinh gọn**, tập trung tối đa vào trực quan hóa (bảng số liệu & biểu đồ), cắt giảm text để slide thoáng đạt.  
+> **Nguyên tắc**: Bỏ qua phần nhắc lại lý thuyết (đã báo cáo tháng trước); tích hợp toàn bộ số liệu backup vào các slide kết quả; không kèm lời thoại; nội dung trên các slide có hình ảnh được tinh giản tối đa.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              CẤU TRÚC 6 SLIDE TRÌNH BÀY                                │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ Slide 1: Thách thức toán học (Pathological Case)                                       │
+│ Slide 2: Thiết kế thực nghiệm & Hiện tượng pha loãng (Bảng 1A: 500 mẫu)                │
+│ Slide 3: Kết quả 1 — Triệt tiêu xung lực Lipschitz ranh giới (Bảng 1B & Scatter Plot)   │
+│ Slide 4: Kết quả 2 — Khảo sát Ablation σ₂ × M & Động học hội tụ Monte Carlo           │
+│ Slide 5: Kết quả 3 — Giải quyết Gradient Starvation & Phân phối liên tục (Reward Dist) │
+│ Slide 6: Kết quả 4 — Khảo sát kỳ dị σ₁ ──► 0: Minh chứng giải tích Theorem 1          │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### SLIDE 1: Đặt Vấn Đề — Thách Thức Toán Học Của Threshold Reward
+
+* **Tiêu đề**: *Threshold Reward Guidance: Hai Thách Thức Cốt Lõi*
+* **Visual / Diagram**:
+  * Sơ đồ so sánh 1D: Hàm bước nhảy nhị phân Vanilla (dốc $\infty$ tại bước nhảy, $0$ ở hai bên) vs Đường cong Sigmoid mượt mà của RS-LiDAR (độ dốc hữu hạn, liên tục).
+* **Text trên slide** (ngắn gọn):
+  * **Hàm mục tiêu đếm vật thể (OWL-ViT)**: $R(x) = \mathbb{I}(\operatorname{Count}(x) = c^*) \in \{0, 1\}$.
+  * **Thách thức 1 — Gradient Starvation**: $89.2\%$ không gian mẫu có $\nabla R = 0$ $\implies$ Bộ tối ưu diffusion bị mất hoàn toàn hướng dẫn.
+  * **Thách thức 2 — Exploding Lipschitz ($L = \infty$)**: Tại ranh giới quyết định, đạo hàm suy rộng vô cực $\implies$ Xung lực gradient giật văng quỹ đạo sampling.
+
+---
+
+### SLIDE 2: Thiết Kế Thực Nghiệm — Bóc Tách 54 Mẫu Ranh Giới
+
+* **Tiêu đề**: *Thiết Kế Thực Nghiệm: Bóc Tách 54 Mẫu Ranh Giới Khỏi Vùng Pha Loãng*
+* **Bảng biểu / Visual**:
+  * **Bảng 1A (Toàn bộ 500 mẫu)**: [`figures/threshold_table_primary_sigma.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_table_primary_sigma.png)
+* **Text trên slide** (ngắn gọn):
+  * **Cấu hình**: SD v1.5 + OWL-ViT, 50 prompts $\times 10$ seeds = **500 cặp mẫu vi phân** ($x_{\text{clean}}, x_{\text{pert}}$).
+  * **Hiện tượng pha loãng thống kê**:
+    * $446 / 500$ cặp ($89.2\%$): Cùng đếm đúng/sai $\implies \Delta R = 0$, kéo tụt $L_{\text{mean}}$ toàn cục xuống chỉ $0.0025$.
+    * $54 / 500$ cặp ($10.8\%$): Ranh giới nhảy bậc $\implies$ Độ dốc bộc phát thực tế $L = \mathbf{0.0229}$ (gấp $190\times$ CLIP, $380\times$ HPS).
+  * **Quyết định phương pháp luận**: Cô lập riêng 54 mẫu ranh giới để đánh giá đúng bản chất triệt tiêu xung lực.
+
+---
+
+### SLIDE 3: Kết Quả 1 — Triệt Tiêu Xung Lực Lipschitz Trên 54 Mẫu Ranh Giới
+
+* **Tiêu đề**: *Kết Quả 1: Giảm Kỷ Lục 19.72× Hệ Số Lipschitz Trên 54 Mẫu Ranh Giới*
+* **Bảng biểu / Visual** *(chiếm 75% diện tích slide)*:
+  * Trái: **Bảng 1B (Boundary Samples)** [`figures/threshold_table_boundary.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_table_boundary.png)
+  * Phải: **Đồ thị Slope Scatter** [`figures/threshold_slope_scatter_sigma_0.5_primary.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_slope_scatter_sigma_0.5_primary.png) *(toàn bộ điểm rơi sâu dưới đường $y=x$)*
+* **Text trên slide** (tối giản, chỉ nêu số liệu chính):
+  * $L_{\text{boundary}}$ Vanilla: $0.022897$ $\implies$ RS-LiDAR ($M=8$): **$0.001161$** (**Giảm KỶ LỤC 19.72×**).
+  * Giảm đơn điệu theo $M$: $M=1$ ($9.03\times$) $\to$ $M=2$ ($10.87\times$) $\to$ $M=4$ ($13.57\times$) $\to$ $M=8$ ($19.72\times$).
+  * Khống chế đuôi phân phối cực đoan: $L_{95\%}$ giảm **$8.07\times$**, $L_{\max}$ giảm **$2.80\times$**.
+
+---
+
+### SLIDE 4: Kết Quả 2 — Khảo Sát Ablation $\sigma_2 \times M$ & Động Học Hội Tụ Monte Carlo
+
+* **Tiêu đề**: *Kết Quả 2: Ma Trận Quét $\sigma_2 \times M$ & Động Học Hội Tụ Monte Carlo*
+* **Bảng biểu / Visual** *(chiếm 75% diện tích slide)*:
+  * Trái: **Bảng Ma trận Quét $\sigma_2 \times M$** [`figures/threshold_table_sweep_matrix.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_table_sweep_matrix.png)
+  * Phải: **Đường cong hội tụ $M$** [`figures/threshold_m_ablation_curves.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_m_ablation_curves.png)
+* **Text trên slide** (tối giản):
+  * $L$ suy giảm đơn điệu theo cả hai chiều bán kính $\sigma_2$ ($0.1 \to 1.0$) và số mẫu $M$ ($1 \to 8$).
+  * $L_{\max}$ giảm dốc đứng khi tăng từ $M=2 \to M=8$.
+  * **Cấu hình tối ưu**: $M=4, \sigma_2=0.5$ (giảm $13.57\times$ ranh giới, tiết kiệm $50\%$ compute so với $M=8$).
+
+---
+
+### SLIDE 5: Kết Quả 3 — Giải Quyết Gradient Starvation & Phân Phối Liên Tục
+
+* **Tiêu đề**: *Kết Quả 3: Hồi Sinh Gradient Starvation & Chuyển Đổi Phân Phối Liên Tục*
+* **Bảng biểu / Visual** *(chiếm 70% diện tích slide)*:
+  * **Đồ thị phân phối Reward**: [`figures/threshold_reward_dist_sigma_0.5_primary.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_reward_dist_sigma_0.5_primary.png)
+* **Text trên slide** (ngắn gọn):
+  * **Hồi sinh tín hiệu (Gradient Beacon)**: Vùng mang gradient hữu ích tăng từ **$10.8\% \to 28.2\%$ (tăng $2.61\times$)** tại $M=8, \sigma_2=0.1$ ($22.0\%$ tại $\sigma_2=0.5$).
+  * **Cơ chế**: Biến thể Gaussian ngẫu nhiên chạm vùng đếm đúng $\implies$ tạo sườn dốc dẫn đường từ con số 0.
+  * **Chuyển đổi bản chất**: Rời rạc 2 mức $\{0, 1\} \to$ Lượng tử hóa mịn 9 mức ($M=8$) $\to$ Xấp xỉ liên tục $C^\infty$.
+
+---
+
+### SLIDE 6: Kết Quả 4 — Khảo Sát Kỳ Dị $\sigma_1 \to 0$: Minh Chứng Giải Tích Theorem 1
+
+* **Tiêu đề**: *Kết Quả 4: Khảo Sát Kỳ Dị $\sigma_1 \to 0$ — Minh Chứng Giải Tích Theorem 1*
+* **Bảng biểu / Visual** *(chiếm 75% diện tích slide)*:
+  * Trái: **Đồ thị $\sigma_1$-Ablation (Figure 2)** [`figures/threshold_sigma1_ablation.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_sigma1_ablation.png)
+  * Phải: **Bảng 3 Singularity Sweep** [`figures/threshold_table_sigma1_sweep.png`](file:///c:/HUST/Projects/Lab/RS-LiDAR/figures/threshold_table_sigma1_sweep.png)
+* **Text trên slide** (tối giản):
+  * Khi $\sigma_1 \to 0.001$ (mẫu số vi phân tiến về 0):
+    * **Vanilla bùng nổ vô cực**: $L_{\max}$ dựng đứng vút lên **$1.135$** (tăng ~$100\times$, phân kỳ).
+    * **RS-LiDAR bị chặn an toàn**: $L_{\max} \le 0.299$ (giảm $3.80\times$), tuân thủ hoàn hảo chặn trên lý thuyết $\frac{0.7979}{\sigma_2}$.
+    * **Triệt tiêu ranh giới**: $L_{\text{boundary}}$ của RS-LiDAR bị dập tắt về **$0.000$ tuyệt đối**.
+
+---
+
