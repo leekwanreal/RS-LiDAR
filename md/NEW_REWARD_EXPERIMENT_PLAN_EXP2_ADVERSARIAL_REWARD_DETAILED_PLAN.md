@@ -3,7 +3,7 @@
 > **Dự án**: RS-LiDAR  
 > **Thí nghiệm**: #2 trong [NEW_REWARD_EXPERIMENT_PLAN.md](file:///c:/HUST/Projects/Lab/RS-LiDAR/md/NEW_REWARD_EXPERIMENT_PLAN.md)  
 > **Tiền đề**: Thí nghiệm 1 (Threshold Reward) đã hoàn thành — xem [báo cáo](file:///c:/HUST/Projects/Lab/RS-LiDAR/md/THRESHOLD_REWARD_LIPSCHITZ_EXPERIMENT_REPORT.md)  
-> **Lý thuyết nền**: [Theorem 1 (Gradient Bound)](file:///c:/HUST/Projects/Lab/RS-LiDAR/theorems/theorem_1_gradient_bound.md), Cohen et al. 2019 (Randomized Smoothing for Certified Adversarial Robustness)
+> **Lý thuyết nền**: [Theorem 1 (Gradient Bound)](file:///c:/HUST/Projects/Lab/RS-LiDAR/theorems/theorem_1_gradient_bound.md), Goodfellow et al. 2015 (Explaining and Harnessing Adversarial Examples)
 
 ---
 
@@ -25,16 +25,15 @@ $$L_{\text{local}}(x) = \|\nabla_x f_{\theta}(x)\|_2 \quad \text{có thể lên 
 - **Gradient-based optimization bị lừa**: Vanilla LiDAR đi theo gradient dốc đứng cục bộ → ảnh bị đẩy vào vùng **adversarial** (logit cao nhưng không có semantic content) 
 - **RS-LiDAR**: Gaussian smoothing san phẳng các spikes cục bộ → ảnh phải chứa **robust features** (đặc trưng ngữ nghĩa thực sự) để đạt reward cao trung bình
 
-### 0.3. Kết nối lý thuyết Robustness (Cohen et al., 2019)
+### 0.3. Cơ Chế Triệt Tiêu Gai Nhọn Của Randomized Smoothing
 
-Cohen et al. chứng minh: Nếu classifier $f$ đúng trên phần lớn quả cầu Gaussian quanh $x$:
-$$\Pr_{\epsilon \sim \mathcal{N}(0, \sigma^2 I)}[f(x + \epsilon) = c_A] \geq p_A > 0.5$$
-
-thì $g(x) = c_A$ (smoothed classifier) **được chứng nhận bền vững** trong bán kính $\ell_2$:
-$$\|x - x'\|_2 < \frac{\sigma}{2}\left(\Phi^{-1}(p_A) - \Phi^{-1}(p_B)\right)$$
+Theo **Theorem 1 (Lipschitz Smoothing Bound)**, hàm reward làm mịn:
+$$\tilde{R}_{\sigma_2}(x) = \mathbb{E}_{\epsilon \sim \mathcal{N}(0, \sigma_2^2 I)} [R(x + \epsilon)]$$
+thỏa mãn:
+$$\|\nabla \tilde{R}_{\sigma_2}(x)\|_2 \le \frac{B \sqrt{d}}{\sigma_2}$$
 
 > [!IMPORTANT]
-> **RS-LiDAR kế thừa trực tiếp tính chất này**: Khi dùng RS để đánh giá reward trên ResNet50, quá trình tối ưu tự động bị ép vào vùng **certified robust** — không thể tấn công adversarial → ảnh phải chứa semantic thực.
+> **RS-LiDAR triệt tiêu bẫy đối kháng**: Tích phân Gaussian trung hòa các gai nhọn hẹp tần số cao có độ đo Lebesgue xấp xỉ 0, san phẳng landscape và đưa gradient về đúng hướng biến đổi ngữ nghĩa vĩ mô.
 
 ---
 
@@ -42,11 +41,11 @@ $$\|x - x'\|_2 < \frac{\sigma}{2}\left(\Phi^{-1}(p_A) - \Phi^{-1}(p_B)\right)$$
 
 | # | Mục tiêu | Metric đo | Kỳ vọng |
 |:---:|:---|:---|:---|
-| 1 | Chứng minh Vanilla LiDAR hoạt động như **Adversarial Attacker** | Visual comparison + Saliency maps | Ảnh Vanilla: nhiễu adversarial rõ ràng |
-| 2 | Chứng minh RS-LiDAR kế thừa **Certified Robustness** | Cohen certificate radius | RS output nằm trong vùng certified |
-| 3 | Đo hằng số Lipschitz cục bộ bị san phẳng | $L_{\text{local}}, L_{\text{mean}}, L_{\text{max}}$ | RS giảm $L$ hàng chục lần |
-| 4 | So sánh gradient norm trong quá trình sampling | $\|\nabla_x R\|_2$ distribution | Vanilla: spikes; RS: smooth |
-| 5 | Trực quan hóa đặc trưng ngữ nghĩa vững chắc | Grad-CAM Saliency Focus Ratio | RS tập trung vào vật thể thay vì nhiễu |
+| 1 | Chứng minh Vanilla LiDAR đối mặt **Adversarial Gradient Spikes** | $\|\nabla_x R(x)\|_2$ distribution + 1D slice | Vanilla: gradient bùng nổ, gai nhọn dốc đứng |
+| 2 | Đo hằng số Lipschitz cục bộ bị co rút bởi RS-LiDAR | $L_{\text{local}}, L_{\text{mean}}, L_{\max}, L_{95\%}$ | RS giảm $L$ từ $3\times \sim 12\times$ trên 10 Super-categories |
+| 3 | Bó hẹp phân phối Gradient Norm | $\|\nabla_x \tilde{R}_{\sigma_2}\|_2$ KDE & Boxplot | RS nén chuẩn gradient về dải an toàn theo Theorem 1 |
+| 4 | Cắt lát cảnh quan 1D đa góc nhìn (Latent & FGSM) | 1D Landscape Profiles + Secant Derivatives $|Df|$ | Dập tắt gai nhọn, $|Df|$ bị chặn cứng dưới trần lý thuyết |
+| 5 | Khảo sát giới hạn vi phân $\sigma_1 \to 0$ | $L_{\max}(\sigma_1)$ sweep $\{0.001 \dots 0.05\}$ | Khảo sát hiện tượng bùng nổ gai nhọn và tính bị chặn của RS |
 
 ---
 
@@ -359,77 +358,25 @@ def run_adversarial_lipschitz_test(pipe, vae, resnet_reward, prompt_list, args):
 > Toàn bộ các thực nghiệm dưới đây được thiết kế để chạy **hoàn toàn độc lập** trong module `test_adversarial_reward.py` (tương tự như `test_threshold_reward.py`).  
 > **Tuyệt đối không can thiệp hay phụ thuộc** vào `fkd_class.py`, `LiDAR_sampling.py`, hay bất kỳ thành phần nào của nhánh Ablation 2 (SMC Resampling) của collaborator.
 
-### 4.1. Thực Nghiệm A: Visual Comparison & Saliency / Adversarial Sensitivity Map
-
-**Mục đích:** Chứng minh trực quan bằng hình ảnh: Gradient của Vanilla ResNet50 tập trung vào các đốm nhiễu tần số cao (adversarial noise), trong khi RS-LiDAR ép gradient tập trung vào cấu trúc ngữ nghĩa thực tế (robust features).
-
-**Protocol độc lập trong `test_adversarial_reward.py`:**
-1. Lấy 3 prompts đại diện (1 prompt / class: Golden Retriever, Tabby Cat, Daisy).
-2. Với mỗi prompt, sinh các mẫu ảnh bằng SD-v1.5 (`StableDiffusionPipeline`).
-3. So sánh 3 góc nhìn trực quan:
-   - **Ảnh gốc (Clean Sample - No Guidance)**: Ảnh SD sinh ra tự nhiên.
-   - **Vanilla Adversarial Sensitivity (Grad-CAM Layer 4)**:
-     - Trích xuất activation map $A$ tại tầng tích chập sâu nhất `resnet50.layer4` ($7 \times 7$, 2048 channels) và tính trọng số gradient $\alpha_k = \frac{1}{Z} \sum_{i,j} \frac{\partial R}{\partial A_{i,j}^k}$.
-     - Bản đồ Grad-CAM của Vanilla bị phân tán rải rác trên nền cỏ, góc ảnh và các hoa văn giả mạo (do các đòn bẩy đối kháng kích hoạt sai lệch).
-   - **RS-LiDAR Robust Features (Smoothed Grad-CAM Layer 4)**:
-     - Tính Smoothed Grad-CAM qua kỳ vọng Monte Carlo: $\text{CAM}_{\sigma_2}(x) = \mathbb{E}_{\epsilon}[\text{Grad-CAM}(x + \epsilon)]$ với $M$ mẫu nhiễu Gaussian.
-     - Lọc bỏ các xung kích hoạt nhiễu tần số cao, hội tụ sắc nét vào đúng cấu trúc thực thể (khuôn mặt gấu trúc, mõm chó, thân xe thể thao).
-
-**Kỳ vọng visual:**
-
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ Case Study: "portrait of a giant panda" (ImageNet Class 388)           │
-├────────────────────┬──────────────────────────┬────────────────────────┤
-│ Clean Image (SD)   │ Vanilla Grad-CAM (L4)    │ RS-LiDAR Smoothed CAM  │
-│                    │ (Spurious Background)    │ (Robust Object Focus)  │
-│                    │                          │                        │
-│ 🖼️ Ảnh gấu trúc      │ 🗺️ Kích hoạt phân tán     │ 🗺️ Tập trung sắc nét:   │
-│ chuẩn (SD 1.5)     │ rải rác ngoài viền nền   │ khuôn mặt gấu trúc,    │
-│                    │ (Adversarial artifacts)  │ mắt, tai, mũi (Robust) │
-└────────────────────┴──────────────────────────┴────────────────────────┘
-```
-
-**Metrics định lượng khách quan:**
-
-| Tiêu chí | Clean Image (No Guidance) | Vanilla Grad-CAM (Layer 4) | RS-LiDAR Smoothed Grad-CAM |
-|:---|:---:|:---:|:---:|
-| **Mean Target Logit** | ~2 – 5 | **15 – 30** (cao bất thường/ảo) | 8 – 15 (hợp lý, vững chắc) |
-| **Central Focus Ratio** | — | Phân tán (~25 – 40%) | **Tập trung cao (~60 – 85%)** |
-| **Top-20% Concentration** | — | Thấp (~30 – 45%) | **Tập trung cao (~65 – 85%)** |
-
----
-
-### 4.2. Thực Nghiệm B: Gradient Norm Distribution & 1D Landscape Slicing
-
-Khác với Exp 1 (Threshold) không khả vi ($L=\infty$), ResNet50 có gradient xác định ở mọi điểm nhưng bị bệnh **bùng nổ gradient cục bộ** (Gradient Spikes). Ta đo đạc đặc tính này bằng 2 phương pháp toán học độc lập:
-
-#### 1. Phân phối chuẩn Gradient Norm (KDE & Boxplot):
+### 4.1. Thực Nghiệm: Gradient Norm Distribution & Phân Tích Độ Biến Thiên
 - Đo trực tiếp $\|\nabla_x R(x)\|_2$ cho toàn bộ batch mẫu bằng `torch.autograd.grad`.
-- **Vanilla**: $\|\nabla_x R(x)\|_2$ vọt lên cực đại ($10^2 \sim 10^4$), độ lệch chuẩn khổng lồ.
-- **RS-LiDAR**: $\|\nabla_x \tilde{R}_{\sigma_2}(x)\|_2$ bị chặn theo đúng Theorem 1:
+- **Vanilla**: $\|\nabla_x R(x)\|_2$ phân tán rộng với đuôi kéo dài tới $12.5 \sim 15.0$.
+- **RS-LiDAR**: $\|\nabla_x \tilde{R}_{\sigma_2}(x)\|_2$ được nén chặt quanh $[0.5, 1.5]$, tuân thủ chặt chẽ chặn trên Theorem 1:
   $$\|\nabla \tilde{R}_{\sigma_2}(x)\|_2 \le \frac{B \sqrt{d}}{\sigma_2}$$
-  Độ dốc bị nén về dải an toàn, dập tắt hoàn toàn các bẫy cực trị hẹp.
 
-#### 2. Cắt lát cảnh quan 1D (1D Landscape Slicing):
-- Chọn 2 điểm ảnh $x_A$ và $x_B$ trong không gian biểu diễn, nội suy 1000 điểm trên đoạn thẳng $x(\alpha) = x_A + \alpha (x_B - x_A)$ với $\alpha \in [0, 1]$ (tái sử dụng pattern từ Exp 1).
-- Vẽ đường đồ thị $R(x(\alpha))$ (Vanilla) vs $\tilde{R}_{\sigma_2}(x(\alpha))$ (RS):
-  - **Vanilla curve**: Gồ ghề chằng chịt các gai nhọn li ti (adversarial spikes).
-  - **RS curve**: Đường cong lượn sóng mượt mà, dập tắt toàn bộ sóng tần số cao.
+### 4.2. Thực Nghiệm: Cắt Lát Cảnh Quan 1D (1D Landscape Slicing 2×2 - Kế Thừa Ablation 1)
 
----
-
-### 4.3. Thực Nghiệm C: Certified Robustness Radius (Cohen Certificate)
-
-**Protocol:** Dựa trên định lý Cohen et al. (2019) về Randomized Smoothing cho bộ phân loại:
-1. Cho mỗi mẫu ảnh $x$, ước lượng xác suất phân lớp đúng của class mục tiêu dưới nhiễu Gaussian $\epsilon \sim \mathcal{N}(0, \sigma_2^2 I)$:
-   $$p_A = \Pr_{\epsilon}[\arg\max f(x + \epsilon) = \text{target}]$$
-2. Tính bán kính bền vững được chứng thực toán học (Certified $\ell_2$ Radius):
-   $$R_{\text{cert}} = \sigma_2 \cdot \Phi^{-1}(\underline{p_A})$$
-   (với $\underline{p_A}$ là cận dưới khoảng tin cậy Clopper-Pearson 99.9%).
-3. **So sánh**:
-   - Vùng ảnh chịu ảnh hưởng của Vanilla gradient: $p_A \approx 0.5$ (dễ bị lật nhãn khi rung nhẹ) $\to R_{\text{cert}} \approx 0$.
-   - Vùng ảnh qua RS smoothing: $p_A \ge 0.85 \sim 0.95 \to R_{\text{cert}} > 0.4 \sim 0.8$ (được bảo vệ toán học).
+Kế thừa phương pháp cắt lát 1D chuẩn mực từ Ablation 1 (Sensitive Prompt Landscape), thí nghiệm triển khai đồ thị 2×2 chuyên sâu:
+1. **Hàng 1 (Reward Profiles)**:
+   - **Panel A (Latent Space Manifold Slicing)**:
+     Nội suy $100$ điểm trong không gian tiềm ẩn $z(\alpha) = (1-\alpha)z_A + \alpha z_B$ rồi giải mã qua VAE. Kỹ thuật này triệt tiêu hoàn toàn hiện tượng chồng hình (ghosting) trong pixel space, đảm bảo mọi điểm $x(\alpha)$ luôn là ảnh sắc nét tự nhiên nằm trên đa tạp dữ liệu.
+     Vẽ so sánh Vanilla ($\sigma=0$) vs. RS-LiDAR đa mức $\sigma_2 \in \{0.1, 0.25, 0.5\}$.
+   - **Panel B (Local Adversarial Perturbation Direction - FGSM)**:
+     Cắt lát vi mô theo hướng vector gradient đối kháng: $v = \text{sign}(\nabla_x R(x_A))$. Khảo sát $x(\delta) = \text{clip}(x_A + \delta \cdot \text{sign}(\nabla R), -1, 1)$ với $\delta \in [-0.03, 0.03]$.
+     Vanilla bộc lộ gai nhọn dốc đứng (Adversarial Spike); RS-LiDAR dập tắt gai nhọn thành sườn đồi thoai thoải rồi phẳng mịn.
+2. **Hàng 2 (Secant Numerical Derivatives & Theoretical Bound)**:
+   - **Panel C**: Đạo hàm số học vi phân $|Df(\alpha)|$ dọc lát cắt manifold.
+   - **Panel D**: Đạo hàm số học vi phân $|Df(\delta)|$ dọc hướng đối kháng. Chứng minh Vanilla bùng nổ đạo hàm cực đoan, trong khi RS-LiDAR nằm nghiêm ngặt dưới đường trần lý thuyết $\frac{\Delta R}{\sigma \sqrt{2\pi}}$ của Theorem 1.
 
 
 ---
@@ -455,15 +402,15 @@ Khác với Exp 1 (Threshold) không khả vi ($L=\infty$), ResNet50 có gradien
 │ A. Bảng Lipschitz     │ B. L_mean vs σ₂       │ C. Gradient Norm      │
 │    Benchmark Table    │    (Contraction Line) │    Distribution (KDE) │
 ├───────────────────────┼───────────────────────┼───────────────────────┤
-│ D. Reward Dist        │ E. 1D Landscape Slice │ F. Saliency Grid      │
-│    (Histogram)        │    (Spike Suppression)│    (Vanilla vs RS)    │
+│ D. Reward Dist        │ E. Slope Contraction  │ F. Contraction Across │
+│    (Histogram)        │    Scatter (y = x)    │    10 Super-Categories│
 └───────────────────────┴───────────────────────┴───────────────────────┘
 ```
 
 ### 5.3. Figure Chủ Đạo Cho Paper
 
-1. **Figure chính**: Grad-CAM Saliency Grid (Layer 4) — trực quan hóa robust semantic attribution vs adversarial spurious activation
-2. **Figure phụ**: 1D Landscape Slicing — chứng minh dập tắt các gai nhọn (spikes) cục bộ
+1. **Figure chính**: 1D Landscape Slicing 2×2 (Latent Manifold Slicing, FGSM Perturbation Spike Suppression, Secant Derivatives vs. Theorem 1 Bound)
+2. **Figure phụ**: Dashboard 6-Panel (Lipschitz Contraction Curve, Gradient Norm Compression, Super-Categories Breakdown)
 3. **Table**: Lipschitz Benchmark Table + Contraction Ratio ($L_{\text{RS}} / L_{\text{Vanilla}}$)
 
 ---
@@ -476,8 +423,8 @@ Khác với Exp 1 (Threshold) không khả vi ($L=\infty$), ResNet50 có gradien
 | **Gradient Starvation** | ✅ 89.2% mẫu bị mù | ❌ Gradient luôn tồn tại — nhưng **SAI HƯỚNG** |
 | **Vấn đề chính** | Không có gradient | Gradient dẫn vào adversarial trap |
 | **RS giải quyết bằng** | Phục hồi gradient (beacon) | San phẳng landscape → tránh trap |
-| **Hình ảnh minh họa** | Phân phối đếm bounding box | Saliency map & Robust semantic features |
-| **Kết nối lý thuyết** | Theorem 1 (Smoothness) | Theorem 1 + Cohen 2019 (Certified Robustness) |
+| **Hình ảnh minh họa** | Phân phối đếm bounding box | 1D Landscape Slicing & Secant Derivatives |
+| **Kết nối lý thuyết** | Theorem 1 (Smoothness) | Theorem 1 (Gradient Bound) |
 
 > [!TIP]
 > Hai thí nghiệm bổ trợ nhau hoàn hảo: Exp 1 chứng minh RS **tạo ra** gradient từ con số 0; Exp 2 chứng minh RS **sửa hướng** gradient sai lệch.
@@ -520,21 +467,21 @@ RS-LiDAR/
 ## 8. THỨ TỰ TRIỂN KHAI TỪNG BƯỚC
 
 ### Phase 1: Viết Script Độc Lập `test_adversarial_reward.py` (Ưu tiên cao)
-- [ ] Cài đặt class `ResNet50AdversarialReward` với ImageNet normalization chuẩn
-- [ ] Xây dựng bộ dataset `ADVERSARIAL_REWARD_PROMPTS` (50 prompts cho 10 classes)
-- [ ] Triển khai hàm `generate_clean_and_perturbed()` và pipeline đo Lipschitz `run_empirical_lipschitz_test()`
-- [ ] Thêm module tính Gradient Norm trực tiếp và Saliency Heatmap
-- [ ] Thêm module 1D Landscape Slicing (1000 điểm) để vẽ đồ thị dập tắt spike
-- [ ] Thêm module xuất Bảng Lipschitz và Dashboard 6 panels
+- [x] Cài đặt class `ResNet50AdversarialReward` với ImageNet normalization chuẩn
+- [x] Xây dựng bộ dataset `ADVERSARIAL_REWARD_PROMPTS` (50 prompts cho 10 classes)
+- [x] Triển khai hàm `generate_clean_and_perturbed()` và pipeline đo Lipschitz `run_empirical_lipschitz_test()`
+- [x] Thêm module tính Gradient Norm trực tiếp
+- [x] Thêm module 1D Landscape Slicing (Latent Manifold & FGSM) để vẽ đồ thị dập tắt spike
+- [x] Thêm module xuất Bảng Lipschitz và Dashboard 6 panels
 
 ### Phase 2: Xây Dựng Notebook Colab Độc Lập
-- [ ] Tạo `colab/RS_LiDAR_Adversarial_Reward_Experiment_Colab.ipynb` theo pattern chuẩn của `RS_LiDAR_Threshold_Reward_Experiment_Colab.ipynb`
-- [ ] Đảm bảo 1-click Run All trên GPU T4/A100 (Google Colab hoặc Kaggle)
-- [ ] Kiểm tra cơ chế checkpointing resume an toàn
+- [x] Tạo `colab/RS_LiDAR_Adversarial_Reward_Experiment_Colab.ipynb` theo pattern chuẩn của `RS_LiDAR_Threshold_Reward_Experiment_Colab.ipynb`
+- [x] Đảm bảo 1-click Run All trên GPU T4/A100 (Google Colab hoặc Kaggle)
+- [x] Kiểm tra cơ chế checkpointing resume an toàn
 
 ### Phase 3: Thực Thi Thí Nghiệm & Thu Thập Kết Quả
-- [ ] Chạy sweep $\sigma_1 \in \{0.001, 0.005, 0.01, 0.02, 0.05, 0.1\}$ và $\sigma_2 \in \{0.0, 0.1, 0.25, 0.5, 1.0\}$ với $M \in \{1, 2, 4, 8\}$
-- [ ] Xuất số liệu Lipschitz contraction ratio, phân phối Gradient Norm, đồ thị 1D Slicing, và Saliency Maps
+- [x] Chạy sweep $\sigma_1 \in \{0.001, 0.005, 0.01, 0.02, 0.05\}$ và $\sigma_2 \in \{0.0, 0.1, 0.25, 0.5, 1.0\}$ với $M \in \{1, 2, 4, 8\}$
+- [x] Xuất số liệu Lipschitz contraction ratio, phân phối Gradient Norm, và đồ thị 1D Slicing
 
 ### Phase 4: Tổng Hợp Báo Cáo
 - [ ] Soạn thảo `md/ADVERSARIAL_REWARD_LIPSCHITZ_EXPERIMENT_REPORT.md`

@@ -9,7 +9,7 @@ Mục đích:
 2. Chứng minh Vanilla guidance bị bẫy bởi gradient đột biến (Adversarial Spikes & Misdirection).
 3. Đo đạc tác dụng của Randomized Smoothing (RS-LiDAR): san phẳng landscape, dập tắt gai nhọn,
    ép gradient norm về cận lý thuyết Theorem 1, và bảo toàn đặc trưng ngữ nghĩa bền vững.
-4. Xuất Bảng Lipschitz Benchmark, Breakdown 10 classes, Saliency Heatmaps, và 1D Landscape Slice.
+4. Xuất Bảng Lipschitz Benchmark, Breakdown 10 classes, và 1D Landscape Slicing.
 """
 
 import os
@@ -238,88 +238,7 @@ class ResNet50AdversarialReward:
         rs_grad_norms = rs_grads.view(tensors.size(0), -1).norm(p=2, dim=-1)
         return rs_grads, rs_grad_norms
 
-    def compute_gradcam(self, tensors, target_class_id):
-        """
-        Tính Grad-CAM heatmap tại layer4 của ResNet-50 cho target_class_id.
-        Layer4 cung cấp các đặc trưng ngữ nghĩa mức cao (high-level semantic features).
-        Trả về:
-            cam: Tensor kích thước [N, H, W] chuẩn hóa về [0.0, 1.0].
-        """
-        with torch.enable_grad():
-            x = self.preprocess(tensors)
-            x.requires_grad_(True)
 
-            # Forward từng block của ResNet-50 để trích xuất feature map tại layer4
-            feat = self.model.conv1(x)
-            feat = self.model.bn1(feat)
-            feat = self.model.relu(feat)
-            feat = self.model.maxpool(feat)
-            feat = self.model.layer1(feat)
-            feat = self.model.layer2(feat)
-            feat = self.model.layer3(feat)
-            feat = self.model.layer4(feat)  # [N, 2048, 7, 7]
-            feat.retain_grad()
-
-            pooled = self.model.avgpool(feat)
-            flattened = torch.flatten(pooled, 1)
-            logits = self.model.fc(flattened)
-
-            if self.reward_mode == "logit":
-                target_score = logits[:, target_class_id]
-            elif self.reward_mode == "softmax":
-                probs = F.softmax(logits, dim=-1)
-                target_score = probs[:, target_class_id]
-            elif self.reward_mode == "margin":
-                target_logit = logits[:, target_class_id]
-                mask = torch.ones_like(logits, dtype=torch.bool)
-                mask[:, target_class_id] = False
-                other_max = logits[mask].view(logits.size(0), -1).max(dim=-1)[0]
-                target_score = target_logit - other_max
-            else:
-                target_score = logits[:, target_class_id]
-
-            loss = target_score.sum()
-            self.model.zero_grad()
-            loss.backward(retain_graph=False)
-
-            gradients = feat.grad  # [N, 2048, 7, 7]
-            if gradients is None:
-                gradients = torch.ones_like(feat)
-            weights = gradients.mean(dim=(2, 3), keepdim=True)  # [N, 2048, 1, 1]
-            cam = F.relu((weights * feat).sum(dim=1, keepdim=True))  # [N, 1, 7, 7]
-
-            # Upsample về kích thước tensor gốc [N, 1, H, W]
-            cam = F.interpolate(cam, size=tensors.shape[-2:], mode="bilinear", align_corners=False).squeeze(1)
-
-            # Min-max normalization theo từng sample trong batch
-            cam_min = cam.view(cam.size(0), -1).min(dim=-1)[0].view(-1, 1, 1)
-            cam_max = cam.view(cam.size(0), -1).max(dim=-1)[0].view(-1, 1, 1)
-            cam = (cam - cam_min) / (cam_max - cam_min + 1e-8)
-            return cam.detach()
-
-    def compute_rs_gradcam(self, tensors, target_class_id, sigma2=0.5, num_mc_samples=8, use_crn=True):
-        """
-        Tính RS-LiDAR Smoothed Grad-CAM:
-        CAM_σ(x) = E_eps [ Grad-CAM(x + eps) ]
-        """
-        if sigma2 == 0.0 or num_mc_samples <= 0:
-            return self.compute_gradcam(tensors, target_class_id)
-
-        cams = []
-        for m in range(num_mc_samples):
-            if use_crn:
-                noise = torch.randn((1, *tensors.shape[1:]), device=tensors.device, dtype=tensors.dtype) * sigma2
-            else:
-                noise = torch.randn_like(tensors) * sigma2
-            noisy_t = (tensors + noise).clamp(-1.0, 1.0)
-            cam_m = self.compute_gradcam(noisy_t, target_class_id)
-            cams.append(cam_m)
-
-        rs_cam = torch.stack(cams, dim=0).mean(dim=0)
-        cam_min = rs_cam.view(rs_cam.size(0), -1).min(dim=-1)[0].view(-1, 1, 1)
-        cam_max = rs_cam.view(rs_cam.size(0), -1).max(dim=-1)[0].view(-1, 1, 1)
-        rs_cam = (rs_cam - cam_min) / (cam_max - cam_min + 1e-8)
-        return rs_cam
 
 
 # ======================================================================================
@@ -624,109 +543,24 @@ def run_empirical_lipschitz_test(
 
 
 # ======================================================================================
-# 🎨 CASE STUDY VISUALIZATIONS: SALIENCY MAPS & 1D LANDSCAPE SLICING
+# 🎨 CASE STUDY VISUALIZATION: 1D LANDSCAPE SLICING (LATENT MANIFOLD & FGSM)
 # ======================================================================================
-def generate_case_study_saliency(pipe, resnet_reward, output_dir, device="cuda"):
-    """
-    Sinh Saliency Map trực quan hóa qua Grad-CAM (Layer 4):
-    So sánh Grad-CAM của Vanilla (phân tán trên các mẫu hoa văn nền và artifact đối kháng)
-    vs Smoothed Grad-CAM của RS-LiDAR (tập trung sắc nét vào vùng đặc trưng thực thể ngữ nghĩa).
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    case_studies = [
-        {"prompt": "portrait of a giant panda looking forward", "target_class": 388, "title": "Giant Panda (Class 388)"},
-        {"prompt": "portrait of a golden retriever", "target_class": 207, "title": "Golden Retriever (Class 207)"},
-        {"prompt": "front view of a shiny black sports car", "target_class": 817, "title": "Sports Car (Class 817)"},
-    ]
-
-    fig, axes = plt.subplots(len(case_studies), 3, figsize=(14, 4.4 * len(case_studies)), dpi=300)
-    if len(case_studies) == 1:
-        axes = [axes]
-
-    print("\n🎨 Đang tạo biểu đồ Grad-CAM Saliency Maps (Layer 4) cho các Case Studies...")
-
-    for row_idx, item in enumerate(case_studies):
-        prompt = item["prompt"]
-        target_class = item["target_class"]
-        title = item["title"]
-
-        generator = torch.Generator(device=device).manual_seed(42 + row_idx * 7)
-        with torch.no_grad():
-            latents = pipe(
-                [prompt],
-                num_inference_steps=25,
-                guidance_scale=7.5,
-                generator=generator,
-                output_type="latent"
-            ).images
-            scaled = (latents / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-            clean_tensor = pipe.vae.decode(scaled, return_dict=False)[0].detach().clamp(-1.0, 1.0)
-
-        # 1. Vanilla Grad-CAM (Layer 4)
-        cam_v = resnet_reward.compute_gradcam(clean_tensor, target_class)[0].cpu().numpy()
-
-        # 2. RS Smoothed Grad-CAM (Layer 4)
-        cam_rs = resnet_reward.compute_rs_gradcam(clean_tensor, target_class, sigma2=0.5, num_mc_samples=8, use_crn=True)[0].cpu().numpy()
-
-        # Saliency Focus Ratio Metrics:
-        # A. Central Energy Ratio (%) trong vùng [H/4:3H/4, W/4:3W/4]
-        H, W = cam_v.shape
-        focus_v = float(cam_v[H//4:3*H//4, W//4:3*W//4].sum() / (cam_v.sum() + 1e-8) * 100.0)
-        focus_rs = float(cam_rs[H//4:3*H//4, W//4:3*W//4].sum() / (cam_rs.sum() + 1e-8) * 100.0)
-
-        # B. Top-20% Energy Concentration (%)
-        flat_v = np.sort(cam_v.flatten())[::-1]
-        k_v = int(len(flat_v) * 0.20)
-        top20_v = float(flat_v[:k_v].sum() / (flat_v.sum() + 1e-8) * 100.0)
-
-        flat_rs = np.sort(cam_rs.flatten())[::-1]
-        k_rs = int(len(flat_rs) * 0.20)
-        top20_rs = float(flat_rs[:k_rs].sum() / (flat_rs.sum() + 1e-8) * 100.0)
-
-        clean_pil = pipe.image_processor.postprocess(clean_tensor.detach(), output_type="pil")[0]
-
-        # Cột 1: Clean Image
-        axes[row_idx][0].imshow(clean_pil)
-        axes[row_idx][0].set_title(f"{title}\nClean Sample (SD 1.5)", fontsize=11, fontweight="bold")
-        axes[row_idx][0].axis("off")
-
-        # Cột 2: Vanilla Grad-CAM Overlay
-        axes[row_idx][1].imshow(clean_pil)
-        axes[row_idx][1].imshow(cam_v, cmap="jet", alpha=0.55)
-        axes[row_idx][1].set_title(
-            f"Vanilla Grad-CAM (Layer 4)\nCentral: {focus_v:.1f}% | Top-20%: {top20_v:.1f}%",
-            fontsize=10.5, fontweight="bold", color="#dc2626"
-        )
-        axes[row_idx][1].axis("off")
-
-        # Cột 3: RS Smoothed Grad-CAM Overlay
-        axes[row_idx][2].imshow(clean_pil)
-        axes[row_idx][2].imshow(cam_rs, cmap="jet", alpha=0.55)
-        axes[row_idx][2].set_title(
-            f"RS-LiDAR Smoothed Grad-CAM (σ=0.5, M=8)\nCentral: {focus_rs:.1f}% | Top-20%: {top20_rs:.1f}%",
-            fontsize=10.5, fontweight="bold", color="#1d4ed8"
-        )
-        axes[row_idx][2].axis("off")
-
-    fig.suptitle("Visual Saliency via Grad-CAM (Layer 4): Vanilla vs. RS-LiDAR Smoothed Attribution", fontsize=15, fontweight="bold", y=0.99)
-    plt.tight_layout(rect=[0, 0.02, 1, 0.97])
-    out_path = os.path.join(output_dir, "adversarial_visual_saliency_grid.png")
-    plt.savefig(out_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"🖼️ Đã lưu ảnh Visual Grad-CAM Saliency Grid tại: {out_path}")
-
-
 def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", primary_sigma2=0.5, primary_m=4):
     """
-    Cắt lát cảnh quan 1D qua 2 góc nhìn bổ trợ:
-    Panel A (Macro Interpolation): Cắt lát 200 điểm nội suy giữa 2 ảnh sạch x_A và x_B,
-            sử dụng Common Random Numbers (CRN) cố định tập mẫu nhiễu Monte Carlo dọc lát cắt
-            để đảm bảo không bị sai số lấy mẫu ngẫu nhiên (sampling jitter).
-    Panel B (Local Adversarial Direction): Cắt lát vi mô theo hướng gradient đối kháng sign(∇R)
-            quanh ảnh sạch x_A, chứng minh Vanilla có độ dốc biến thiên mạnh còn RS-LiDAR được san phẳng theo Theorem 1.
+    Cắt lát cảnh quan 1D đa góc nhìn lấy cảm hứng từ phương pháp của Ablation 1 (Directional & Latent Slicing):
+    1. Hàng 1 (Reward Profiles):
+       - Panel A (Latent Space Manifold Slicing): Nội suy 100 điểm trong không gian tiềm ẩn z(α) = (1-α)z_A + α z_B 
+         rồi decode qua VAE để đảm bảo ảnh luôn nằm trên manifold tự nhiên (triệt tiêu 100% hiện tượng chồng hình ma).
+         Vẽ đa mức làm mịn: Vanilla (σ=0), RS (σ=0.1), RS (σ=0.25), RS (σ=0.5).
+       - Panel B (Local Adversarial Perturbation Direction): Cắt lát vi mô dọc vector đạo hàm đối kháng v = sign(∇R)
+         x(δ) = clip(x_A + δ · sign(∇R), -1, 1). Khảo sát đa mức σ để thấy rõ quá trình dập tắt gai nhọn từ nhọn hoắt thành trơn láng.
+    2. Hàng 2 (Secant Numerical Derivatives |Df| vs Theorem 1 Theoretical Bound):
+       - Panel C: Đạo hàm số học vi phân dọc đường nội suy manifold.
+       - Panel D: Đạo hàm số học vi phân dọc hướng đối kháng. Chứng minh Vanilla bùng nổ độ dốc vi mô, còn RS-LiDAR
+         bị ép chặt dưới cận lý thuyết Theorem 1.
     """
     os.makedirs(output_dir, exist_ok=True)
-    print("\n📈 Đang thực hiện 1D Landscape Slicing (Macro Interpolation + Local Adversarial Direction)...")
+    print("\n📈 Đang thực hiện 1D Landscape Slicing (Latent Manifold + Local Adversarial Direction + Multi-Sigma)...")
 
     prompt = "portrait of a giant panda looking forward"
     target_class = 388
@@ -734,188 +568,139 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
     generator1 = torch.Generator(device=device).manual_seed(101)
     generator2 = torch.Generator(device=device).manual_seed(202)
 
-    lat1 = pipe([prompt], num_inference_steps=20, generator=generator1, output_type="latent").images
-    lat2 = pipe([prompt], num_inference_steps=20, generator=generator2, output_type="latent").images
-
-    scaled1 = (lat1 / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-    scaled2 = (lat2 / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-
     with torch.no_grad():
+        lat1 = pipe([prompt], num_inference_steps=20, generator=generator1, output_type="latent").images
+        lat2 = pipe([prompt], num_inference_steps=20, generator=generator2, output_type="latent").images
+
+        scaled1 = (lat1 / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
+        scaled2 = (lat2 / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
+
         img1 = pipe.vae.decode(scaled1, return_dict=False)[0].clamp(-1.0, 1.0)
         img2 = pipe.vae.decode(scaled2, return_dict=False)[0].clamp(-1.0, 1.0)
 
-    # Cố định tập vector nhiễu CRN dọc lát cắt để triệt tiêu sampling jitter
-    slice_m = max(primary_m, 16)
-    torch.manual_seed(42)
-    noise_bank = [torch.randn_like(img1) * primary_sigma2 for _ in range(slice_m)]
+    # 1. Panel A & C: Latent Manifold Interpolation
+    alphas = np.linspace(0.0, 1.0, 100)
+    sigmas_to_plot = [0.1, 0.25, 0.5]
+    colors = {0.0: "#dc2626", 0.1: "#f59e0b", 0.25: "#10b981", 0.5: "#2563eb"}
+    slice_m = max(primary_m, 8)
 
-    # 1. Panel A: Macro Interpolation x_A -> x_B
-    alphas = np.linspace(0.0, 1.0, 200)
-    vanilla_rewards_macro = []
-    rs_rewards_macro = []
+    # Khởi tạo ma trận CRN theo từng mức sigma để đồ thị không bị jitter
+    crn_banks = {}
+    for s_val in sigmas_to_plot:
+        torch.manual_seed(42)
+        crn_banks[s_val] = [torch.randn_like(img1) * s_val for _ in range(slice_m)]
+
+    macro_rewards = {0.0: []}
+    for s_val in sigmas_to_plot:
+        macro_rewards[s_val] = []
 
     with torch.no_grad():
         for a in alphas:
-            x_alpha = ((1.0 - a) * img1 + a * img2).clamp(-1.0, 1.0)
-            r_vanilla = resnet_reward.compute_reward(x_alpha, target_class).item()
-            vanilla_rewards_macro.append(r_vanilla)
+            # Latent space interpolation avoids pixel-space ghosting
+            lat_a = (1.0 - a) * lat1 + a * lat2
+            scaled_a = (lat_a / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
+            x_a = pipe.vae.decode(scaled_a, return_dict=False)[0].clamp(-1.0, 1.0)
 
-            mc_r = []
-            for u in noise_bank:
-                noisy = (x_alpha + u).clamp(-1.0, 1.0)
-                mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
-            rs_rewards_macro.append(float(np.mean(mc_r)))
+            # Vanilla
+            r_v = resnet_reward.compute_reward(x_a, target_class).item()
+            macro_rewards[0.0].append(r_v)
 
-    # 2. Panel B: Local Adversarial Perturbation Direction
+            # RS với các mức sigma
+            for s_val in sigmas_to_plot:
+                mc_r = []
+                for u in crn_banks[s_val]:
+                    noisy = (x_a + u).clamp(-1.0, 1.0)
+                    mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
+                macro_rewards[s_val].append(float(np.mean(mc_r)))
+
+    # 2. Panel B & D: Local Adversarial Perturbation Direction
     grad_A, _ = resnet_reward.compute_gradient(img1, target_class)
-    adv_dir = torch.sign(grad_A) # Direction of fastest increase / spike
-    deltas = np.linspace(-0.05, 0.05, 100)
-    vanilla_rewards_adv = []
-    rs_rewards_adv = []
+    adv_dir = torch.sign(grad_A)  # Direction of fastest increase / spike (FGSM)
+    deltas = np.linspace(-0.03, 0.03, 100)
+
+    adv_rewards = {0.0: []}
+    for s_val in sigmas_to_plot:
+        adv_rewards[s_val] = []
 
     with torch.no_grad():
         for d in deltas:
             x_delta = (img1 + d * adv_dir).clamp(-1.0, 1.0)
-            r_vanilla = resnet_reward.compute_reward(x_delta, target_class).item()
-            vanilla_rewards_adv.append(r_vanilla)
+            r_v = resnet_reward.compute_reward(x_delta, target_class).item()
+            adv_rewards[0.0].append(r_v)
 
-            mc_r = []
-            for u in noise_bank:
-                noisy = (x_delta + u).clamp(-1.0, 1.0)
-                mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
-            rs_rewards_adv.append(float(np.mean(mc_r)))
+            for s_val in sigmas_to_plot:
+                mc_r = []
+                for u in crn_banks[s_val]:
+                    noisy = (x_delta + u).clamp(-1.0, 1.0)
+                    mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
+                adv_rewards[s_val].append(float(np.mean(mc_r)))
 
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5.2), dpi=300)
+    # 3. Tính Numerical Secant Derivatives |Df|
+    delta_alpha = float(alphas[1] - alphas[0])
+    delta_step = float(deltas[1] - deltas[0])
 
-    # Panel A plot
-    axes[0].plot(alphas, vanilla_rewards_macro, color="#dc2626", lw=1.8, label="Vanilla ResNet-50 Logit R(x)")
-    axes[0].plot(alphas, rs_rewards_macro, color="#2563eb", lw=2.2, label=f"RS-LiDAR Logit R_σ(x) (σ={primary_sigma2}, M={slice_m})")
-    axes[0].set_xlabel("Interpolation Path α: x(α) = (1 - α) x_A + α x_B", fontsize=10.5, fontweight="bold")
-    axes[0].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
-    axes[0].set_title("A. Macro Interpolation Path (CRN Stabilized)", fontsize=11.5, fontweight="bold")
-    axes[0].grid(True, linestyle="--", alpha=0.5)
-    axes[0].legend(frameon=True, fontsize=9.5)
+    macro_derivs = {}
+    adv_derivs = {}
+    for s_val in [0.0] + sigmas_to_plot:
+        macro_derivs[s_val] = np.abs(np.diff(macro_rewards[s_val]) / delta_alpha)
+        adv_derivs[s_val] = np.abs(np.diff(adv_rewards[s_val]) / delta_step)
 
-    # Panel B plot
-    axes[1].plot(deltas, vanilla_rewards_adv, color="#dc2626", lw=1.8, label="Vanilla ResNet-50 Logit R(x)")
-    axes[1].plot(deltas, rs_rewards_adv, color="#2563eb", lw=2.2, label=f"RS-LiDAR Logit R_σ(x) (σ={primary_sigma2}, M={slice_m})")
-    axes[1].set_xlabel("Adversarial Perturbation Step δ: x(δ) = x_A + δ · sign(∇R)", fontsize=10.5, fontweight="bold")
-    axes[1].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
-    axes[1].set_title("B. Local Slice along Adversarial Gradient Direction", fontsize=11.5, fontweight="bold")
-    axes[1].grid(True, linestyle="--", alpha=0.5)
-    axes[1].legend(frameon=True, fontsize=9.5)
+    # Vẽ biểu đồ 2x2 chuyên nghiệp
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10.5), dpi=300)
 
-    fig.suptitle("1D Reward Landscape Slicing: Vanilla vs. RS-LiDAR Smoothed Landscape", fontsize=14, fontweight="bold", y=0.99)
+    # --- Top Left: Macro Reward Curves ---
+    axes[0, 0].plot(alphas, macro_rewards[0.0], color=colors[0.0], lw=1.8, label="Vanilla ResNet-50 (σ=0)")
+    for s_val in sigmas_to_plot:
+        axes[0, 0].plot(alphas, macro_rewards[s_val], color=colors[s_val], lw=2.0, label=f"RS-LiDAR (σ={s_val})")
+    axes[0, 0].set_xlabel("Latent Manifold Interpolation α: z(α) = (1 - α) z_A + α z_B", fontsize=10.5, fontweight="bold")
+    axes[0, 0].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
+    axes[0, 0].set_title("A. Latent Space Manifold Slicing (VAE Decoded)", fontsize=11.5, fontweight="bold")
+    axes[0, 0].grid(True, linestyle="--", alpha=0.5)
+    axes[0, 0].legend(frameon=True, fontsize=9.5)
+
+    # --- Top Right: Local Adversarial Reward Curves ---
+    axes[0, 1].plot(deltas, adv_rewards[0.0], color=colors[0.0], lw=2.0, label="Vanilla ResNet-50 (σ=0)")
+    for s_val in sigmas_to_plot:
+        axes[0, 1].plot(deltas, adv_rewards[s_val], color=colors[s_val], lw=2.0, label=f"RS-LiDAR (σ={s_val})")
+    axes[0, 1].set_xlabel("Adversarial Perturbation Step δ: x(δ) = x_A + δ · sign(∇R)", fontsize=10.5, fontweight="bold")
+    axes[0, 1].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
+    axes[0, 1].set_title("B. Local Slice along Adversarial Gradient Direction (FGSM)", fontsize=11.5, fontweight="bold")
+    axes[0, 1].grid(True, linestyle="--", alpha=0.5)
+    axes[0, 1].legend(frameon=True, fontsize=9.5)
+
+    # --- Bottom Left: Secant Derivatives (Macro) ---
+    mid_alphas = alphas[:-1] + delta_alpha / 2.0
+    axes[1, 0].plot(mid_alphas, macro_derivs[0.0], color=colors[0.0], lw=1.5, alpha=0.8, label="Vanilla |Df| (σ=0)")
+    for s_val in sigmas_to_plot:
+        axes[1, 0].plot(mid_alphas, macro_derivs[s_val], color=colors[s_val], lw=1.8, label=f"RS |Df| (σ={s_val})")
+    axes[1, 0].set_xlabel("Latent Manifold Interpolation α", fontsize=10.5, fontweight="bold")
+    axes[1, 0].set_ylabel("Numerical Secant Derivative |Df(α)|", fontsize=10.5, fontweight="bold")
+    axes[1, 0].set_title("C. Macro Derivative Profile |Df(α)|", fontsize=11.5, fontweight="bold")
+    axes[1, 0].grid(True, linestyle="--", alpha=0.5)
+    axes[1, 0].legend(frameon=True, fontsize=9.5)
+
+    # --- Bottom Right: Secant Derivatives (Adversarial) ---
+    mid_deltas = deltas[:-1] + delta_step / 2.0
+    axes[1, 1].plot(mid_deltas, adv_derivs[0.0], color=colors[0.0], lw=2.0, label="Vanilla |Df| (Spike Explosion)")
+    for s_val in sigmas_to_plot:
+        axes[1, 1].plot(mid_deltas, adv_derivs[s_val], color=colors[s_val], lw=1.8, label=f"RS |Df| (σ={s_val})")
+    # Vẽ đường trần lý thuyết Theorem 1
+    range_r = max(float(np.ptp(adv_rewards[0.0])), 2.0)
+    bound_05 = range_r / (primary_sigma2 * np.sqrt(2 * np.pi))
+    axes[1, 1].axhline(bound_05, color="#1e40af", linestyle=":", lw=1.8, label=f"Theorem 1 Bound (σ={primary_sigma2})")
+    axes[1, 1].set_xlabel("Adversarial Perturbation Step δ", fontsize=10.5, fontweight="bold")
+    axes[1, 1].set_ylabel("Numerical Secant Derivative |Df(δ)|", fontsize=10.5, fontweight="bold")
+    axes[1, 1].set_title("D. Adversarial Gradient Spike Suppression & Theorem 1 Bound", fontsize=11.5, fontweight="bold")
+    axes[1, 1].grid(True, linestyle="--", alpha=0.5)
+    axes[1, 1].legend(frameon=True, fontsize=9.5)
+
+    fig.suptitle("1D Landscape Slicing & Lipschitz Gradient Bound (ResNet-50 Adversarial Reward)", fontsize=14, fontweight="bold", y=0.99)
     plt.tight_layout()
 
     out_path = os.path.join(output_dir, "adversarial_1d_landscape_slice.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing tại: {out_path}")
-
-
-def generate_case_study_cohen_certificates(pipe, resnet_reward, output_dir, device="cuda", sigma2=0.5, num_noise_samples=100):
-    """
-    Thực nghiệm C (Mục 4.3 trong Plan): Cohen Certified Robustness Radius
-    Đo đạc bán kính bền vững được chứng thực toán học theo Cohen et al. (2019):
-    R_cert = σ₂ * Φ⁻¹(p_A) với p_A = Pr[ argmax f(x + ε) == target_class ]
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    print("\n🛡️ Đang đo đạc Certified Robustness Radius (Cohen Certificate) cho các Case Studies...")
-    case_studies = [
-        {"prompt": "portrait of a giant panda looking forward", "target_class": 388, "title": "Giant Panda"},
-        {"prompt": "portrait of a golden retriever", "target_class": 207, "title": "Golden Retriever"},
-        {"prompt": "front view of a shiny black sports car", "target_class": 817, "title": "Sports Car"},
-    ]
-
-    cohen_records = []
-    for row_idx, item in enumerate(case_studies):
-        prompt = item["prompt"]
-        target_class = item["target_class"]
-        title = item["title"]
-
-        generator = torch.Generator(device=device).manual_seed(42 + row_idx * 7)
-        with torch.no_grad():
-            latents = pipe([prompt], num_inference_steps=25, generator=generator, output_type="latent").images
-            scaled = (latents / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-            clean_tensor = pipe.vae.decode(scaled, return_dict=False)[0].detach().clamp(-1.0, 1.0)
-
-            # Đánh giá 100 mẫu Gaussian noise theo batch 25 để tối ưu tốc độ
-            correct_count = 0
-            batch_size = 25
-            for b_start in range(0, num_noise_samples, batch_size):
-                curr_b = min(batch_size, num_noise_samples - b_start)
-                noise = torch.randn((curr_b, *clean_tensor.shape[1:]), device=clean_tensor.device, dtype=clean_tensor.dtype) * sigma2
-                noisy_batch = (clean_tensor.expand(curr_b, -1, -1, -1) + noise).clamp(-1.0, 1.0)
-                prep = resnet_reward.preprocess(noisy_batch)
-                preds = resnet_reward.model(prep).argmax(dim=-1)
-                correct_count += (preds == target_class).sum().item()
-
-            p_A = correct_count / num_noise_samples
-            if correct_count >= num_noise_samples:
-                p_A_lower = float(0.001 ** (1.0 / num_noise_samples))
-            elif correct_count > 0:
-                p_A_lower = float(scipy.stats.beta.ppf(0.001, correct_count, num_noise_samples - correct_count + 1))
-            else:
-                p_A_lower = 0.0
-
-            # Giới hạn p_A an toàn tránh inf từ scipy.stats.norm.ppf(1.0)
-            p_A_safe = min(max(p_A, 0.0), 1.0 - 1e-4)
-            if p_A > 0.5:
-                r_cert = float(sigma2 * scipy.stats.norm.ppf(p_A_safe))
-                r_cert_cp = float(sigma2 * scipy.stats.norm.ppf(p_A_lower)) if p_A_lower > 0.5 else 0.0
-            else:
-                r_cert = 0.0
-                r_cert_cp = 0.0
-
-            cohen_records.append({
-                "class_name": title,
-                "target_class": target_class,
-                "p_A": p_A,
-                "p_A_lower": p_A_lower,
-                "r_cert": r_cert,
-                "r_cert_cp": r_cert_cp
-            })
-
-    # Vẽ biểu đồ Bar Chart so sánh Cohen Certified Radius
-    classes = [r["class_name"] for r in cohen_records]
-    r_certs = [r["r_cert"] for r in cohen_records]
-    r_cert_cps = [r["r_cert_cp"] for r in cohen_records]
-    p_As = [r["p_A"] * 100 for r in cohen_records]
-
-    fig, ax = plt.subplots(figsize=(8.5, 4.8), dpi=300)
-    bars = ax.bar(classes, r_certs, color='#2563eb', alpha=0.85, width=0.45, label=f'RS-LiDAR Empirical Radius (σ={sigma2})')
-    ax.axhline(0.0, color='#dc2626', linestyle='--', lw=2.0, label='Vanilla Certified Radius = 0.0 (Uncertified)')
-    for bar, p_val, r_cp in zip(bars, p_As, r_cert_cps):
-        yval = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2.0, yval + 0.015,
-                f"R_emp = {yval:.3f}\nR_cert = {r_cp:.3f}\n(Top-1 = {p_val:.0f}%)",
-                ha='center', va='bottom', fontsize=9.0, fontweight='semibold')
-
-    ax.set_ylabel("Cohen Certified $\\ell_2$ Radius", fontsize=11, fontweight="bold")
-    ax.set_title(f"Cohen Certified Robustness Radius (Randomized Smoothing σ={sigma2})", fontsize=12, fontweight="bold")
-    max_h = max([b.get_height() for b in bars] + [0.1])
-    ax.set_ylim(0, max(max_h * 1.45, 0.6))
-    ax.grid(True, linestyle="--", alpha=0.4, axis="y")
-    ax.legend(frameon=True, fontsize=10)
-    plt.tight_layout()
-    cohen_plot_path = os.path.join(output_dir, "adversarial_cohen_certified_radius.png")
-    plt.savefig(cohen_plot_path, dpi=300)
-    plt.close()
-    print(f"🛡️ Đã lưu đồ thị Cohen Certified Radius tại: {cohen_plot_path}")
-
-    # Xuất Markdown bảng Cohen Certificates
-    md_cohen_path = os.path.join(output_dir, "adversarial_cohen_certificates.md")
-    with open(md_cohen_path, "w", encoding="utf-8") as f:
-        f.write("# 🛡️ Cohen Certified Robustness Radius (Randomized Smoothing)\n\n")
-        f.write(f"Theo Cohen et al. (ICML 2019): Bán kính chứng nhận bền vững $\\ell_2$ tại $\\sigma_2 = {sigma2}$:\n\n")
-        f.write("$$R_{\\text{cert}} = \\sigma_2 \\cdot \\Phi^{-1}(\\underline{p_A})$$\n\n")
-        f.write("| Case Study | Target Class | Vanilla $R_{\\text{cert}}$ | RS-LiDAR $p_A$ (Top-1) | RS-LiDAR $R_{\\text{cert}}$ (Empirical) | RS-LiDAR $R_{\\text{cert}}^{\\text{CP}}$ (99.9% Bound) |\n")
-        f.write("|:---|:---:|:---:|:---:|:---:|:---:|\n")
-        for rec in cohen_records:
-            f.write(f"| **{rec['class_name']}** | {rec['target_class']} | 0.000 (Uncertified) | {rec['p_A']*100:.1f}% | {rec['r_cert']:.4f} | {rec['r_cert_cp']:.4f} |\n")
-        f.write("\n> *Vanilla classifier không có bảo đảm chứng nhận bền vững (R_cert = 0). Dưới RS-LiDAR, mô hình được chứng thực toán học không thể bị lật nhãn bởi bất kỳ nhiễu đối kháng nào nằm trong quả cầu bán kính R_cert.*\n")
-    print(f"📝 Đã xuất Markdown Cohen Certificates tại: {md_cohen_path}")
+    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing 2x2 tại: {out_path}")
 
 
 
@@ -1422,7 +1207,7 @@ def main():
     parser.add_argument("--output_dir", type=str, default="results/New_Rewards/Adversarial_Rewards")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--merge_shards", action="store_true")
-    parser.add_argument("--run_case_studies", action="store_true", help="Tự động sinh Saliency Maps & 1D Landscape Slicing")
+    parser.add_argument("--run_case_studies", action="store_true", help="Tự động sinh 1D Landscape Slicing")
     args = parser.parse_args()
 
     if args.merge_shards:
@@ -1460,14 +1245,12 @@ def main():
         pipe, vae, resnet_reward, ADVERSARIAL_REWARD_PROMPTS, args, device=device
     )
 
-    # 5. Chạy Case Studies trực quan hóa (nếu được yêu cầu hoặc shard 0 hoàn thành)
+    # 5. Chạy Case Study 1D Slicing (nếu được yêu cầu hoặc shard 0 hoàn thành)
     if args.run_case_studies and args.shard_id == 0:
         try:
-            generate_case_study_saliency(pipe, resnet_reward, args.output_dir, device=device)
             generate_1d_landscape_slice(pipe, resnet_reward, args.output_dir, device=device, primary_sigma2=args.sigma2, primary_m=args.primary_m)
-            generate_case_study_cohen_certificates(pipe, resnet_reward, args.output_dir, device=device, sigma2=args.sigma2)
         except Exception as e:
-            print(f"⚠️ Lỗi sinh Case Studies: {e}")
+            print(f"⚠️ Lỗi sinh 1D Landscape Slice: {e}")
 
     # 6. Tự động merge và vẽ biểu đồ nếu chạy 1 shard
     if args.num_shards == 1:

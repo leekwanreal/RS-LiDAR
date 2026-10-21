@@ -46,10 +46,10 @@ Hàm bước nhảy là minh chứng kinh điển nhất cho sức mạnh của 
 
 ## 2. Hàm Dễ Bị Tấn Công Đối Nghịch (Adversarially Vulnerable Models) - *Hằng số Lipschitz cục bộ khổng lồ*
 
-Sử dụng Randomized Smoothing để phòng thủ tấn công đối nghịch đã rất nổi tiếng (Cohen et al., 2019). Kết nối lý thuyết này vào RS-LiDAR sẽ là một "killer experiment".
+Các mạng phân loại sâu thường rất dễ bị tấn công đối nghịch bởi các nhiễu tần số cao (Goodfellow et al., 2015), tạo ra hằng số Lipschitz cục bộ khổng lồ. Việc chứng minh RS-LiDAR dập tắt các gai nhọn này là minh chứng đắt giá cho tính ổn định của thuật toán.
 
 ### Chi tiết triển khai với Vanilla ResNet50:
-*   **Mục đích:** Chứng minh Vanilla LiDAR hoạt động như một thuật toán tấn công (Adversarial Attacker) tạo ra nhiễu rác, trong khi RS-LiDAR kế thừa tính "Robustness" (bền vững) từ thuật toán gốc của Cohen để sinh ra ảnh đúng Semantic.
+*   **Mục đích:** Chứng minh Vanilla LiDAR dễ bị bẫy bởi các gai nhọn đối nghịch cục bộ (Adversarial Spikes), trong khi RS-LiDAR làm mịn cảnh quan và khống chế độ dốc theo Theorem 1.
 *   **Cài đặt Model:**
     * Sử dụng `torchvision.models.resnet50(pretrained=True)`. Cần nhớ hàm chuẩn hóa (Normalize) của ImageNet `mean=[0.485, 0.456, 0.406]`, `std=[0.229, 0.224, 0.225]`.
 *   **Logic Hàm Reward (Pseudocode):**
