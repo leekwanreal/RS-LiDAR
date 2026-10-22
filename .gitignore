@@ -45,6 +45,7 @@ pdf/
 geneval_official_repo/
 figures/*
 !figures/threshold_*.png
+!figures/adversarial_*.png
 extracted_test1/
 
 # Notebook build & temporary helper scripts
