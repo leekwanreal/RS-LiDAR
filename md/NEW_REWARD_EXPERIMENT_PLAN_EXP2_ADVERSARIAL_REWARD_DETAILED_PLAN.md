@@ -304,7 +304,7 @@ Theo đúng schema đã dùng trong [test_threshold_reward.py](file:///c:/HUST/P
 ```python
 def run_adversarial_lipschitz_test(pipe, vae, resnet_reward, prompt_list, args):
     """
-    Pipeline đo đạc Lipschitz cho ResNet50 Adversarial Reward.
+    Pipeline đo đạc Lipschitz cho ResNet50 Adversarially Vulnerable Reward.
     Theo cấu trúc y hệt run_empirical_lipschitz_test() trong test_threshold_reward.py
     """
     for prompt_data in prompt_list:

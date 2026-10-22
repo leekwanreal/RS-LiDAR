@@ -1,6 +1,6 @@
 """
 ========================================================================================
-🧪 MODULE THỰC NGHIỆM ĐỘC LẬP: ĐO ĐẠC HỆ SỐ LIPSCHITZ & GRADIENT CHO ADVERSARIAL REWARD
+🧪 MODULE THỰC NGHIỆM ĐỘC LẬP: ĐO ĐẠC HỆ SỐ LIPSCHITZ & GRADIENT CHO ADVERSARIALLY VULNERABLE REWARD
 ========================================================================================
 
 Module này chuyên biệt hóa cho Thí nghiệm 2 (Adversarially Vulnerable Models - ResNet-50).
@@ -142,14 +142,17 @@ ADVERSARIAL_REWARD_PROMPTS = [
     {"prompt": "aerial view of a volcanic mountain crater with clouds", "target_class": 980, "class_name": "volcano"},
 ]
 
+# Biệt danh tương thích ngữ nghĩa chuẩn
+ADVERSARIALLY_VULNERABLE_REWARD_PROMPTS = ADVERSARIAL_REWARD_PROMPTS
+
 
 # ======================================================================================
-# 🧠 HÀM REWARD ADVERSARIAL VỚI RESNET-50
+# 🧠 HÀM ADVERSARIALLY VULNERABLE REWARD VỚI RESNET-50
 # ======================================================================================
 class ResNet50AdversarialReward:
     """
     Reward function dựa trên Logit/Softmax của mô hình ResNet-50 được tiền huấn luyện trên ImageNet.
-    Có hằng số Lipschitz cục bộ lớn và nhạy cảm cao với nhiễu đối nghịch.
+    Có hằng số Lipschitz cục bộ lớn và nhạy cảm cao với nhiễu đối nghịch (Adversarially Vulnerable).
     """
     def __init__(self, device="cuda", reward_mode="logit"):
         self.device = device
@@ -239,6 +242,8 @@ class ResNet50AdversarialReward:
         return rs_grads, rs_grad_norms
 
 
+# Biệt danh tương thích quy chuẩn thuật ngữ
+ResNet50AdversariallyVulnerableReward = ResNet50AdversarialReward
 
 
 # ======================================================================================
@@ -357,7 +362,7 @@ def run_empirical_lipschitz_test(
     if primary_m not in m_vals:
         primary_m = m_vals[-1]
 
-    print(f"\n🚀 [Shard {args.shard_id}/{args.num_shards}] Bắt đầu thực nghiệm Adversarial Reward trên {len(active_prompts)} prompts")
+    print(f"\n🚀 [Shard {args.shard_id}/{args.num_shards}] Bắt đầu thực nghiệm Adversarially Vulnerable Reward trên {len(active_prompts)} prompts")
     print(f"⚙️ Tham số: {args.num_particles} hạt/prompt | sigma1={primary_sigma1} (sweep={sigma1_vals})")
     print(f"🔬 Bán kính sigma2 sweep: {sigma2_vals} (primary={primary_sigma2}) | M sweep: {m_vals} (max={max_m}, primary={primary_m})")
 
@@ -639,7 +644,7 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
     # 3. Vẽ biểu đồ 1x2 chuyên nghiệp (chuẩn format Ablation 1 + Inset Zoom)
     fig, axes = plt.subplots(1, 2, figsize=(16.0, 6.2), dpi=300)
 
-    # --- Panel Trái (A): Adversarial Reward Profile ---
+    # --- Panel Trái (A): Adversarially Vulnerable Reward Profile ---
     axes[0].plot(deltas, adv_rewards[0.0], color=colors[0.0], lw=2.4, label="Vanilla ResNet-50 (σ=0)", zorder=3)
     for s_val in sigmas_to_plot:
         axes[0].plot(deltas, adv_rewards[s_val], color=colors.get(s_val, "#2563EB"), lw=2.2, label=f"RS-LiDAR (σ={s_val}, M={slice_m})", zorder=4)
@@ -647,16 +652,6 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
     axes[0].axvline(0.0, color="#64748B", linestyle=":", lw=1.6, alpha=0.8, label="Clean Image x₀ (δ=0)")
     r_clean = adv_rewards[0.0][len(deltas) // 2]
     axes[0].scatter([0.0], [r_clean], color="#E63946", s=50, zorder=6)
-
-    # Annotation giải thích gai đối kháng
-    axes[0].annotate(
-        "Adversarial Spike\n(Steep Step Jump)",
-        xy=(0.001, adv_rewards[0.0][min(52, len(adv_rewards[0.0])-1)]),
-        xytext=(0.008, adv_rewards[0.0][min(30, len(adv_rewards[0.0])-1)] - 0.4),
-        arrowprops=dict(facecolor="#E63946", shrink=0.08, width=1.5, headwidth=6),
-        fontsize=9.5, fontweight="bold", color="#E63946",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="#FEF2F2", edgecolor="#E63946", lw=1.0)
-    )
 
     axes[0].set_xlabel("Adversarial Perturbation Step δ: x(δ) = x₀ + δ · sign(∇R)", fontsize=11, fontweight="bold")
     axes[0].set_ylabel("Reward Value (Target Class Logit)", fontsize=11, fontweight="bold")
@@ -673,52 +668,34 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
     # Đường trần lý thuyết Theorem 1 trên biểu đồ toàn cảnh ứng với primary_sigma2
     axes[1].axhline(bound_primary, color=colors.get(primary_sigma2, "#1E3A8A"), linestyle="--", lw=2.0, label=f"Theorem 1 Bound (σ={primary_sigma2})", zorder=5)
 
-    # Annotation cực đại gai nhọn (đặt lệch sang phải tránh Inset Zoom ở góc trái)
-    max_vanilla_deriv = float(np.max(adv_derivs[0.0]))
-    axes[1].annotate(
-        f"Peak Spike: |Df| ≈ {max_vanilla_deriv:.0f}\n(Adversarial Instability)",
-        xy=(0.0, max_vanilla_deriv),
-        xytext=(0.006, max_vanilla_deriv * 0.85),
-        arrowprops=dict(facecolor="#E63946", shrink=0.08, width=1.5, headwidth=6),
-        fontsize=9.5, fontweight="bold", color="#E63946",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="#FEF2F2", edgecolor="#E63946", lw=1.0)
-    )
-
     axes[1].set_xlabel("Adversarial Perturbation Step δ", fontsize=11, fontweight="bold")
     axes[1].set_ylabel("Numerical Secant Derivative |Df(δ)|", fontsize=11, fontweight="bold")
     axes[1].set_title(f"B. Adversarial Gradient Spike Suppression & Theorem 1 Bound (M={slice_m})", fontsize=12, fontweight="bold", pad=10)
     axes[1].grid(True, linestyle="--", alpha=0.5)
-    axes[1].legend(frameon=True, fontsize=9.0, loc="upper right")
+    axes[1].legend(frameon=True, fontsize=9.5, loc="upper right")
 
-    # --- INSET ZOOM SUBPLOT: Phóng to dải đáy kiểm chứng cận Theorem 1 rõ nét ---
-    ax_ins = axes[1].inset_axes([0.06, 0.44, 0.44, 0.48])
+    # --- INSET ZOOM SUBPLOT: Thu nhỏ sang trái [0.05, 0.48, 0.38, 0.46] không che peak vanilla ---
+    ax_ins = axes[1].inset_axes([0.05, 0.48, 0.38, 0.46])
     ax_ins.plot(mid_deltas, adv_derivs[0.0], color=colors[0.0], lw=1.6, label="Vanilla", zorder=3)
     for s_val in sigmas_to_plot:
         ax_ins.plot(mid_deltas, adv_derivs[s_val], color=colors.get(s_val, "#2563EB"), lw=1.8, label=f"RS (σ={s_val})", zorder=4)
 
-    # Vẽ các đường trần Theorem 1 tương ứng với màu đồng bộ của từng sigma
-    visible_bounds = []
-    for s_val in reversed(sigmas_to_plot):
-        b_val = theoretical_bounds[s_val]
-        if b_val <= 25.0:
-            visible_bounds.append(b_val)
-            ls = "--" if s_val == primary_sigma2 else ":"
-            ax_ins.axhline(b_val, color=colors.get(s_val, "#2563EB"), linestyle=ls, lw=1.6, label=f"Bound (σ={s_val})", zorder=5)
+    # Chỉ giữ duy nhất đường trần Theorem 1 Bound cho sigma=0.5 (primary)
+    ax_ins.axhline(bound_primary, color=colors.get(primary_sigma2, "#2563EB"), linestyle="--", lw=1.8, label=f"Bound (σ={primary_sigma2})", zorder=5)
 
-    # Giới hạn trục: zoom sâu vào đáy y theo giá trị trần động
+    # Giới hạn trục: zoom sâu vào đáy y theo trần Theorem 1 của primary_sigma2
     ax_ins.set_xlim(-0.025, 0.025)
-    max_b = max(visible_bounds) if visible_bounds else bound_primary
-    y_zoom_max = max(12.0, float(max_b) * 1.35)
+    y_zoom_max = max(8.0, float(bound_primary) * 2.8)
     ax_ins.set_ylim(0.0, y_zoom_max)
 
-    ax_ins.set_title(f"🔍 Inset Zoom: y ∈ [0, {int(y_zoom_max)}] (Theorem 1 Bounds)", fontsize=8.5, fontweight="bold", pad=4, color="#1E3A8A")
+    ax_ins.set_title(f"🔍 Inset Zoom: y ∈ [0, {int(y_zoom_max)}] (Theorem 1 Bound)", fontsize=8.5, fontweight="bold", pad=4, color="#1E3A8A")
     ax_ins.set_facecolor("#F8FAFC")
     for spine in ax_ins.spines.values():
         spine.set_edgecolor("#1E3A8A")
         spine.set_linewidth(1.3)
     ax_ins.grid(True, linestyle=":", alpha=0.6)
     ax_ins.tick_params(labelsize=8)
-    ax_ins.legend(loc="upper right", fontsize=6.8, frameon=True, framealpha=0.9, handlelength=1.4)
+    ax_ins.legend(loc="upper right", fontsize=7.0, frameon=True, framealpha=0.9, handlelength=1.4)
 
     # Khung chỉ điểm vùng zoom trên đồ thị chính
     try:
@@ -726,7 +703,7 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
     except Exception:
         pass
 
-    fig.suptitle(f"1D Landscape Slicing & Lipschitz Gradient Bound (ResNet-50 Adversarial Reward | M={slice_m})", fontsize=13.5, fontweight="bold", y=0.99)
+    fig.suptitle(f"1D Landscape Slicing & Lipschitz Gradient Bound (ResNet-50 Adversarially Vulnerable Reward | M={slice_m})", fontsize=13.5, fontweight="bold", y=0.99)
     plt.tight_layout()
 
     out_path = os.path.join(output_dir, "adversarial_1d_landscape_slice.png")
@@ -903,7 +880,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
         ])
 
     table1_img_path = os.path.join(output_dir, "adversarial_table_benchmark.png")
-    render_table_as_image(table1_rows, table1_headers, f"Adversarial Reward: Lipschitz & Gradient Benchmark (σ = {primary_sigma2})", table1_img_path)
+    render_table_as_image(table1_rows, table1_headers, f"Adversarially Vulnerable Reward: Lipschitz & Gradient Benchmark (σ = {primary_sigma2})", table1_img_path)
     print(f"📊 Đã lưu ảnh Bảng 1 tại: {table1_img_path}")
 
     # ==================================================================================
@@ -932,7 +909,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
         ])
 
     table_cat_path = os.path.join(output_dir, "adversarial_table_categories_breakdown.png")
-    render_table_as_image(table_cat_rows, table_cat_headers, "Adversarial Reward: 10 Super-Categories Robustness Breakdown", table_cat_path)
+    render_table_as_image(table_cat_rows, table_cat_headers, "Adversarially Vulnerable Reward: 10 Super-Categories Robustness Breakdown", table_cat_path)
     print(f"📊 Đã lưu ảnh Bảng Breakdown 10 classes tại: {table_cat_path}")
 
     # ==================================================================================
@@ -983,7 +960,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
                 ])
 
         table3_img_path = os.path.join(output_dir, "adversarial_table_sigma1_sweep.png")
-        render_table_as_image(table3_rows, table3_headers, f"Adversarial Reward: Probe Radius σ1 Sweep (σ2 = {primary_sigma2}, M = {primary_m})", table3_img_path)
+        render_table_as_image(table3_rows, table3_headers, f"Adversarially Vulnerable Reward: Probe Radius σ1 Sweep (σ2 = {primary_sigma2}, M = {primary_m})", table3_img_path)
         print(f"📊 Đã lưu ảnh Bảng 3 (sigma1 sweep) tại: {table3_img_path}")
 
         # Vẽ đồ thị đường quét sigma1 ablation
@@ -1024,7 +1001,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     # ==================================================================================
     tbl1_md_path = os.path.join(output_dir, "adversarial_lipschitz_benchmark_table.md")
     with open(tbl1_md_path, "w", encoding="utf-8") as f:
-        f.write("# 🧪 Adversarial Reward Lipschitz & Gradient Benchmark (ResNet-50)\n\n")
+        f.write("# 🧪 Adversarially Vulnerable Reward Lipschitz & Gradient Benchmark (ResNet-50)\n\n")
         f.write(f"### 1. Bảng 1: Benchmark Chính Tại Bán Kính Làm Mịn Chuẩn $\\sigma_2 = {primary_sigma2}$\n\n")
         f.write("| " + " | ".join(table1_headers) + " |\n")
         f.write("| " + " | ".join([":---" if i == 0 else ":---:" for i in range(len(table1_headers))]) + " |\n")
@@ -1044,7 +1021,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
 
     tbl2_md_path = os.path.join(output_dir, "adversarial_class_breakdown_table.md")
     with open(tbl2_md_path, "w", encoding="utf-8") as f:
-        f.write("# 📊 Adversarial Reward Breakdown: 10 ImageNet Super-Categories\n\n")
+        f.write("# 📊 Adversarially Vulnerable Reward Breakdown: 10 ImageNet Super-Categories\n\n")
         f.write(f"### Bảng 2: Phân Tích Độ Bền Vững & Tỷ Lệ Co Rút Trên 10 Nhóm Lớp Mục Tiêu ($\\sigma_2 = {primary_sigma2}, M = {primary_m}$)\n\n")
         f.write("| " + " | ".join(table_cat_headers) + " |\n")
         f.write("| " + " | ".join([":---" if i == 0 else ":---:" for i in range(len(table_cat_headers))]) + " |\n")
@@ -1058,7 +1035,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     # ==================================================================================
     plt.figure(figsize=(14, 5.5), dpi=300)
     plt.subplot(1, 2, 1)
-    colors_m = {1: '#f87171', 2: '#fbbf24', 4: '#38bdf8', 8: '#1d4ed8'}
+    colors_m = {1: '#f87171', 2: '#fbbf24', 4: '#38bdf8', 8: '#1d4ed8', 16: '#7c3aed'}
     for M in available_ms:
         means = [stats_matrix[M][s2]["L_mean"] for s2 in available_sigmas]
         plt.plot(available_sigmas, means, marker='o', color=colors_m.get(M, '#6366f1'), lw=2.2, label=f"RS (M={M})")
@@ -1122,7 +1099,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     ax_tab.axis('off')
     ax_tab.set_title("A. Lipschitz Benchmark Summary", fontsize=12, fontweight='bold', pad=8)
     table_snippet_headers = table1_headers
-    table_snippet_rows = table1_rows[:5]
+    table_snippet_rows = table1_rows[:len(available_ms) + 1]
     col_widths = [0.26, 0.14, 0.14, 0.14, 0.15, 0.17]
     tab = ax_tab.table(cellText=table_snippet_rows, colLabels=table_snippet_headers, colWidths=col_widths, loc='center', cellLoc='center', bbox=[-0.02, 0.05, 1.04, 0.88])
     tab.auto_set_font_size(False)
@@ -1189,7 +1166,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
     ax_cat.set_title('F. Contraction Across Classes', fontsize=12, fontweight='bold')
     ax_cat.grid(True, linestyle='--', alpha=0.4)
 
-    fig.suptitle(f"Adversarial Reward Analysis Dashboard (ResNet-50 | RS-LiDAR σ={primary_sigma2}, M={primary_m})", fontsize=15, fontweight='bold', y=0.98)
+    fig.suptitle(f"Adversarially Vulnerable Reward Analysis Dashboard (ResNet-50 | RS-LiDAR σ={primary_sigma2}, M={primary_m})", fontsize=15, fontweight='bold', y=0.98)
     plt.tight_layout(rect=[0, 0.02, 1, 0.96])
     dash_path = os.path.join(output_dir, "adversarial_lipschitz_combined_dashboard.png")
     plt.savefig(dash_path, dpi=300)
@@ -1215,7 +1192,7 @@ def merge_and_plot_results(output_dir, primary_sigma2=0.5, primary_m=4, primary_
 # 🏁 MAIN ENTRY POINT
 # ======================================================================================
 def main():
-    parser = argparse.ArgumentParser(description="Đo đạc Hệ số Lipschitz & Gradient cho Adversarial Reward bằng ResNet-50")
+    parser = argparse.ArgumentParser(description="Đo đạc Hệ số Lipschitz & Gradient cho Adversarially Vulnerable Reward bằng ResNet-50")
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
     parser.add_argument("--num_particles", type=int, default=10)
     parser.add_argument("--guidance_steps", type=int, default=25)
@@ -1268,7 +1245,7 @@ def main():
     pipe.set_progress_bar_config(disable=True)
     vae = pipe.vae
 
-    # 2. Khởi tạo ResNet-50 Adversarial Reward
+    # 2. Khởi tạo ResNet-50 Adversarially Vulnerable Reward
     print("📥 Đang nạp mô hình ResNet-50 (ImageNet Pretrained)...")
     resnet_reward = ResNet50AdversarialReward(device=device, reward_mode=args.reward_mode)
 
