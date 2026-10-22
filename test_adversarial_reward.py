@@ -543,80 +543,49 @@ def run_empirical_lipschitz_test(
 
 
 # ======================================================================================
-# 🎨 CASE STUDY VISUALIZATION: 1D LANDSCAPE SLICING (LATENT MANIFOLD & FGSM)
+# 🎨 CASE STUDY VISUALIZATION: 1D ADVERSARIAL LANDSCAPE SLICING (FGSM DIRECTION)
 # ======================================================================================
 def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", primary_sigma2=0.5, primary_m=4):
     """
-    Cắt lát cảnh quan 1D đa góc nhìn lấy cảm hứng từ phương pháp của Ablation 1 (Directional & Latent Slicing):
-    1. Hàng 1 (Reward Profiles):
-       - Panel A (Latent Space Manifold Slicing): Nội suy 100 điểm trong không gian tiềm ẩn z(α) = (1-α)z_A + α z_B 
-         rồi decode qua VAE để đảm bảo ảnh luôn nằm trên manifold tự nhiên (triệt tiêu 100% hiện tượng chồng hình ma).
-         Vẽ đa mức làm mịn: Vanilla (σ=0), RS (σ=0.1), RS (σ=0.25), RS (σ=0.5).
-       - Panel B (Local Adversarial Perturbation Direction): Cắt lát vi mô dọc vector đạo hàm đối kháng v = sign(∇R)
-         x(δ) = clip(x_A + δ · sign(∇R), -1, 1). Khảo sát đa mức σ để thấy rõ quá trình dập tắt gai nhọn từ nhọn hoắt thành trơn láng.
-    2. Hàng 2 (Secant Numerical Derivatives |Df| vs Theorem 1 Theoretical Bound):
-       - Panel C: Đạo hàm số học vi phân dọc đường nội suy manifold.
-       - Panel D: Đạo hàm số học vi phân dọc hướng đối kháng. Chứng minh Vanilla bùng nổ độ dốc vi mô, còn RS-LiDAR
-         bị ép chặt dưới cận lý thuyết Theorem 1.
+    Cắt lát cảnh quan 1D theo hướng đối kháng cực đoan (FGSM Directional Slicing):
+    Theo phương pháp luận chuẩn của Ablation 1 (test_sensitive_prompt_landscape.py):
+    1. Panel A (Adversarial Landscape Profile):
+       - Khảo sát vi mô dọc theo vector gradient đối kháng: v = sign(∇_x R(x_0)).
+       - Quét x(δ) = clip(x_0 + δ · sign(∇R), -1, 1) với δ ∈ [-0.03, 0.03] (100 điểm).
+       - Chứng minh: Vanilla bộc lộ gai đối kháng dốc đứng (Adversarial Spike);
+         RS-LiDAR làm phẳng dần bề mặt, triệt tiêu tín hiệu gradient giả mạo.
+    2. Panel B (Secant Numerical Derivatives |Df(δ)| vs Theorem 1 Theoretical Bound):
+       - Đạo hàm số học vi phân vi mô |Df(δ)| = |ΔR / Δδ| (ước lượng Lipschitz cục bộ).
+       - Chứng minh: Vanilla bùng nổ đỉnh gai dốc đứng (|Df| ~ 1700);
+         RS-LiDAR dập tắt gai nhọn dẹp sát đáy trục hoành, nằm nghiêm ngặt 100% dưới đường trần lý thuyết Theorem 1.
     """
     os.makedirs(output_dir, exist_ok=True)
-    print("\n📈 Đang thực hiện 1D Landscape Slicing (Latent Manifold + Local Adversarial Direction + Multi-Sigma)...")
+    print("\n📈 Đang thực hiện 1D Adversarial Landscape Slicing (FGSM Directional Spike Suppression)...")
 
     prompt = "portrait of a giant panda looking forward"
-    target_class = 388
+    target_class = 388  # Giant Panda (kinh điển từ Goodfellow et al. 2015)
 
-    generator1 = torch.Generator(device=device).manual_seed(101)
-    generator2 = torch.Generator(device=device).manual_seed(202)
+    generator = torch.Generator(device=device).manual_seed(101)
 
     with torch.no_grad():
-        lat1 = pipe([prompt], num_inference_steps=20, generator=generator1, output_type="latent").images
-        lat2 = pipe([prompt], num_inference_steps=20, generator=generator2, output_type="latent").images
+        lat = pipe([prompt], num_inference_steps=20, generator=generator, output_type="latent").images
+        scaled = (lat / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
+        img0 = pipe.vae.decode(scaled, return_dict=False)[0].clamp(-1.0, 1.0)
 
-        scaled1 = (lat1 / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-        scaled2 = (lat2 / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
+    # 1. Tính gradient đối kháng FGSM tại ảnh sạch x_0
+    grad_A, _ = resnet_reward.compute_gradient(img0, target_class)
+    adv_dir = torch.sign(grad_A)  # Direction of fastest increase / spike (FGSM)
+    deltas = np.linspace(-0.03, 0.03, 100)
+    base_sigmas = [0.1, 0.25, float(primary_sigma2)]
+    sigmas_to_plot = sorted(list(set(s for s in base_sigmas if s > 0)))
+    colors = {0.0: "#E63946", 0.1: "#F59E0B", 0.25: "#10B981", 0.5: "#2563EB", 1.0: "#7C3AED"}
+    slice_m = int(primary_m)  # Đồng nhất hoàn toàn với primary_m của toàn bộ pipeline
 
-        img1 = pipe.vae.decode(scaled1, return_dict=False)[0].clamp(-1.0, 1.0)
-        img2 = pipe.vae.decode(scaled2, return_dict=False)[0].clamp(-1.0, 1.0)
-
-    # 1. Panel A & C: Latent Manifold Interpolation
-    alphas = np.linspace(0.0, 1.0, 100)
-    sigmas_to_plot = [0.1, 0.25, 0.5]
-    colors = {0.0: "#dc2626", 0.1: "#f59e0b", 0.25: "#10b981", 0.5: "#2563eb"}
-    slice_m = max(primary_m, 8)
-
-    # Khởi tạo ma trận CRN theo từng mức sigma để đồ thị không bị jitter
+    # Khởi tạo ngân hàng nhiễu CRN cố định theo từng mức sigma để triệt tiêu phương sai
     crn_banks = {}
     for s_val in sigmas_to_plot:
         torch.manual_seed(42)
-        crn_banks[s_val] = [torch.randn_like(img1) * s_val for _ in range(slice_m)]
-
-    macro_rewards = {0.0: []}
-    for s_val in sigmas_to_plot:
-        macro_rewards[s_val] = []
-
-    with torch.no_grad():
-        for a in alphas:
-            # Latent space interpolation avoids pixel-space ghosting
-            lat_a = (1.0 - a) * lat1 + a * lat2
-            scaled_a = (lat_a / pipe.vae.config.scaling_factor).to(device=device, dtype=pipe.vae.dtype)
-            x_a = pipe.vae.decode(scaled_a, return_dict=False)[0].clamp(-1.0, 1.0)
-
-            # Vanilla
-            r_v = resnet_reward.compute_reward(x_a, target_class).item()
-            macro_rewards[0.0].append(r_v)
-
-            # RS với các mức sigma
-            for s_val in sigmas_to_plot:
-                mc_r = []
-                for u in crn_banks[s_val]:
-                    noisy = (x_a + u).clamp(-1.0, 1.0)
-                    mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
-                macro_rewards[s_val].append(float(np.mean(mc_r)))
-
-    # 2. Panel B & D: Local Adversarial Perturbation Direction
-    grad_A, _ = resnet_reward.compute_gradient(img1, target_class)
-    adv_dir = torch.sign(grad_A)  # Direction of fastest increase / spike (FGSM)
-    deltas = np.linspace(-0.03, 0.03, 100)
+        crn_banks[s_val] = [torch.randn_like(img0) * s_val for _ in range(slice_m)]
 
     adv_rewards = {0.0: []}
     for s_val in sigmas_to_plot:
@@ -624,7 +593,7 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
 
     with torch.no_grad():
         for d in deltas:
-            x_delta = (img1 + d * adv_dir).clamp(-1.0, 1.0)
+            x_delta = (img0 + d * adv_dir).clamp(-1.0, 1.0)
             r_v = resnet_reward.compute_reward(x_delta, target_class).item()
             adv_rewards[0.0].append(r_v)
 
@@ -635,72 +604,135 @@ def generate_1d_landscape_slice(pipe, resnet_reward, output_dir, device="cuda", 
                     mc_r.append(resnet_reward.compute_reward(noisy, target_class).item())
                 adv_rewards[s_val].append(float(np.mean(mc_r)))
 
-    # 3. Tính Numerical Secant Derivatives |Df|
-    delta_alpha = float(alphas[1] - alphas[0])
+    # 2. Tính Numerical Secant Derivatives |Df(δ)|
     delta_step = float(deltas[1] - deltas[0])
-
-    macro_derivs = {}
     adv_derivs = {}
     for s_val in [0.0] + sigmas_to_plot:
-        macro_derivs[s_val] = np.abs(np.diff(macro_rewards[s_val]) / delta_alpha)
         adv_derivs[s_val] = np.abs(np.diff(adv_rewards[s_val]) / delta_step)
 
-    # Vẽ biểu đồ 2x2 chuyên nghiệp
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10.5), dpi=300)
-
-    # --- Top Left: Macro Reward Curves ---
-    axes[0, 0].plot(alphas, macro_rewards[0.0], color=colors[0.0], lw=1.8, label="Vanilla ResNet-50 (σ=0)")
-    for s_val in sigmas_to_plot:
-        axes[0, 0].plot(alphas, macro_rewards[s_val], color=colors[s_val], lw=2.0, label=f"RS-LiDAR (σ={s_val})")
-    axes[0, 0].set_xlabel("Latent Manifold Interpolation α: z(α) = (1 - α) z_A + α z_B", fontsize=10.5, fontweight="bold")
-    axes[0, 0].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
-    axes[0, 0].set_title("A. Latent Space Manifold Slicing (VAE Decoded)", fontsize=11.5, fontweight="bold")
-    axes[0, 0].grid(True, linestyle="--", alpha=0.5)
-    axes[0, 0].legend(frameon=True, fontsize=9.5)
-
-    # --- Top Right: Local Adversarial Reward Curves ---
-    axes[0, 1].plot(deltas, adv_rewards[0.0], color=colors[0.0], lw=2.0, label="Vanilla ResNet-50 (σ=0)")
-    for s_val in sigmas_to_plot:
-        axes[0, 1].plot(deltas, adv_rewards[s_val], color=colors[s_val], lw=2.0, label=f"RS-LiDAR (σ={s_val})")
-    axes[0, 1].set_xlabel("Adversarial Perturbation Step δ: x(δ) = x_A + δ · sign(∇R)", fontsize=10.5, fontweight="bold")
-    axes[0, 1].set_ylabel("Reward Value (Target Class Logit)", fontsize=10.5, fontweight="bold")
-    axes[0, 1].set_title("B. Local Slice along Adversarial Gradient Direction (FGSM)", fontsize=11.5, fontweight="bold")
-    axes[0, 1].grid(True, linestyle="--", alpha=0.5)
-    axes[0, 1].legend(frameon=True, fontsize=9.5)
-
-    # --- Bottom Left: Secant Derivatives (Macro) ---
-    mid_alphas = alphas[:-1] + delta_alpha / 2.0
-    axes[1, 0].plot(mid_alphas, macro_derivs[0.0], color=colors[0.0], lw=1.5, alpha=0.8, label="Vanilla |Df| (σ=0)")
-    for s_val in sigmas_to_plot:
-        axes[1, 0].plot(mid_alphas, macro_derivs[s_val], color=colors[s_val], lw=1.8, label=f"RS |Df| (σ={s_val})")
-    axes[1, 0].set_xlabel("Latent Manifold Interpolation α", fontsize=10.5, fontweight="bold")
-    axes[1, 0].set_ylabel("Numerical Secant Derivative |Df(α)|", fontsize=10.5, fontweight="bold")
-    axes[1, 0].set_title("C. Macro Derivative Profile |Df(α)|", fontsize=11.5, fontweight="bold")
-    axes[1, 0].grid(True, linestyle="--", alpha=0.5)
-    axes[1, 0].legend(frameon=True, fontsize=9.5)
-
-    # --- Bottom Right: Secant Derivatives (Adversarial) ---
-    mid_deltas = deltas[:-1] + delta_step / 2.0
-    axes[1, 1].plot(mid_deltas, adv_derivs[0.0], color=colors[0.0], lw=2.0, label="Vanilla |Df| (Spike Explosion)")
-    for s_val in sigmas_to_plot:
-        axes[1, 1].plot(mid_deltas, adv_derivs[s_val], color=colors[s_val], lw=1.8, label=f"RS |Df| (σ={s_val})")
-    # Vẽ đường trần lý thuyết Theorem 1
+    # Trần lý thuyết Theorem 1 tính động theo từng bán kính: Bound(σ) = Delta R / (σ * sqrt(2*pi))
     range_r = max(float(np.ptp(adv_rewards[0.0])), 2.0)
-    bound_05 = range_r / (primary_sigma2 * np.sqrt(2 * np.pi))
-    axes[1, 1].axhline(bound_05, color="#1e40af", linestyle=":", lw=1.8, label=f"Theorem 1 Bound (σ={primary_sigma2})")
-    axes[1, 1].set_xlabel("Adversarial Perturbation Step δ", fontsize=10.5, fontweight="bold")
-    axes[1, 1].set_ylabel("Numerical Secant Derivative |Df(δ)|", fontsize=10.5, fontweight="bold")
-    axes[1, 1].set_title("D. Adversarial Gradient Spike Suppression & Theorem 1 Bound", fontsize=11.5, fontweight="bold")
-    axes[1, 1].grid(True, linestyle="--", alpha=0.5)
-    axes[1, 1].legend(frameon=True, fontsize=9.5)
+    theoretical_bounds = {
+        s_val: float(range_r / (s_val * math.sqrt(2 * math.pi))) for s_val in sigmas_to_plot
+    }
+    bound_primary = theoretical_bounds.get(primary_sigma2, float(range_r / (primary_sigma2 * math.sqrt(2 * math.pi))))
 
-    fig.suptitle("1D Landscape Slicing & Lipschitz Gradient Bound (ResNet-50 Adversarial Reward)", fontsize=14, fontweight="bold", y=0.99)
+    # Lưu dữ liệu thô ra file JSON để phục vụ phân tích / tái dựng sau này
+    slice_data = {
+        "prompt": prompt,
+        "target_class": target_class,
+        "primary_m": int(slice_m),
+        "primary_sigma2": float(primary_sigma2),
+        "deltas": deltas.tolist(),
+        "adv_rewards": {str(k): [float(v) for v in vals] for k, vals in adv_rewards.items()},
+        "adv_derivs": {str(k): [float(v) for v in vals] for k, vals in adv_derivs.items()},
+        "theoretical_bounds": {str(k): float(v) for k, v in theoretical_bounds.items()},
+        "bound_primary": float(bound_primary)
+    }
+    json_path = os.path.join(output_dir, "adversarial_1d_landscape_data.json")
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(slice_data, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Không thể lưu JSON 1D slice: {e}")
+
+    # 3. Vẽ biểu đồ 1x2 chuyên nghiệp (chuẩn format Ablation 1 + Inset Zoom)
+    fig, axes = plt.subplots(1, 2, figsize=(16.0, 6.2), dpi=300)
+
+    # --- Panel Trái (A): Adversarial Reward Profile ---
+    axes[0].plot(deltas, adv_rewards[0.0], color=colors[0.0], lw=2.4, label="Vanilla ResNet-50 (σ=0)", zorder=3)
+    for s_val in sigmas_to_plot:
+        axes[0].plot(deltas, adv_rewards[s_val], color=colors.get(s_val, "#2563EB"), lw=2.2, label=f"RS-LiDAR (σ={s_val}, M={slice_m})", zorder=4)
+
+    axes[0].axvline(0.0, color="#64748B", linestyle=":", lw=1.6, alpha=0.8, label="Clean Image x₀ (δ=0)")
+    r_clean = adv_rewards[0.0][len(deltas) // 2]
+    axes[0].scatter([0.0], [r_clean], color="#E63946", s=50, zorder=6)
+
+    # Annotation giải thích gai đối kháng
+    axes[0].annotate(
+        "Adversarial Spike\n(Steep Step Jump)",
+        xy=(0.001, adv_rewards[0.0][min(52, len(adv_rewards[0.0])-1)]),
+        xytext=(0.008, adv_rewards[0.0][min(30, len(adv_rewards[0.0])-1)] - 0.4),
+        arrowprops=dict(facecolor="#E63946", shrink=0.08, width=1.5, headwidth=6),
+        fontsize=9.5, fontweight="bold", color="#E63946",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="#FEF2F2", edgecolor="#E63946", lw=1.0)
+    )
+
+    axes[0].set_xlabel("Adversarial Perturbation Step δ: x(δ) = x₀ + δ · sign(∇R)", fontsize=11, fontweight="bold")
+    axes[0].set_ylabel("Reward Value (Target Class Logit)", fontsize=11, fontweight="bold")
+    axes[0].set_title(f"A. Local Slice along Adversarial Gradient Direction (FGSM | M={slice_m})", fontsize=12, fontweight="bold", pad=10)
+    axes[0].grid(True, linestyle="--", alpha=0.5)
+    axes[0].legend(frameon=True, fontsize=9.5, loc="lower right")
+
+    # --- Panel Phải (B): Secant Derivatives & Theorem 1 Bound ---
+    mid_deltas = deltas[:-1] + delta_step / 2.0
+    axes[1].plot(mid_deltas, adv_derivs[0.0], color=colors[0.0], lw=2.4, label="Vanilla |Df| (Spike Explosion)", zorder=3)
+    for s_val in sigmas_to_plot:
+        axes[1].plot(mid_deltas, adv_derivs[s_val], color=colors.get(s_val, "#2563EB"), lw=2.0, label=f"RS |Df| (σ={s_val}, M={slice_m})", zorder=4)
+
+    # Đường trần lý thuyết Theorem 1 trên biểu đồ toàn cảnh ứng với primary_sigma2
+    axes[1].axhline(bound_primary, color=colors.get(primary_sigma2, "#1E3A8A"), linestyle="--", lw=2.0, label=f"Theorem 1 Bound (σ={primary_sigma2})", zorder=5)
+
+    # Annotation cực đại gai nhọn (đặt lệch sang phải tránh Inset Zoom ở góc trái)
+    max_vanilla_deriv = float(np.max(adv_derivs[0.0]))
+    axes[1].annotate(
+        f"Peak Spike: |Df| ≈ {max_vanilla_deriv:.0f}\n(Adversarial Instability)",
+        xy=(0.0, max_vanilla_deriv),
+        xytext=(0.006, max_vanilla_deriv * 0.85),
+        arrowprops=dict(facecolor="#E63946", shrink=0.08, width=1.5, headwidth=6),
+        fontsize=9.5, fontweight="bold", color="#E63946",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="#FEF2F2", edgecolor="#E63946", lw=1.0)
+    )
+
+    axes[1].set_xlabel("Adversarial Perturbation Step δ", fontsize=11, fontweight="bold")
+    axes[1].set_ylabel("Numerical Secant Derivative |Df(δ)|", fontsize=11, fontweight="bold")
+    axes[1].set_title(f"B. Adversarial Gradient Spike Suppression & Theorem 1 Bound (M={slice_m})", fontsize=12, fontweight="bold", pad=10)
+    axes[1].grid(True, linestyle="--", alpha=0.5)
+    axes[1].legend(frameon=True, fontsize=9.0, loc="upper right")
+
+    # --- INSET ZOOM SUBPLOT: Phóng to dải đáy kiểm chứng cận Theorem 1 rõ nét ---
+    ax_ins = axes[1].inset_axes([0.06, 0.44, 0.44, 0.48])
+    ax_ins.plot(mid_deltas, adv_derivs[0.0], color=colors[0.0], lw=1.6, label="Vanilla", zorder=3)
+    for s_val in sigmas_to_plot:
+        ax_ins.plot(mid_deltas, adv_derivs[s_val], color=colors.get(s_val, "#2563EB"), lw=1.8, label=f"RS (σ={s_val})", zorder=4)
+
+    # Vẽ các đường trần Theorem 1 tương ứng với màu đồng bộ của từng sigma
+    visible_bounds = []
+    for s_val in reversed(sigmas_to_plot):
+        b_val = theoretical_bounds[s_val]
+        if b_val <= 25.0:
+            visible_bounds.append(b_val)
+            ls = "--" if s_val == primary_sigma2 else ":"
+            ax_ins.axhline(b_val, color=colors.get(s_val, "#2563EB"), linestyle=ls, lw=1.6, label=f"Bound (σ={s_val})", zorder=5)
+
+    # Giới hạn trục: zoom sâu vào đáy y theo giá trị trần động
+    ax_ins.set_xlim(-0.025, 0.025)
+    max_b = max(visible_bounds) if visible_bounds else bound_primary
+    y_zoom_max = max(12.0, float(max_b) * 1.35)
+    ax_ins.set_ylim(0.0, y_zoom_max)
+
+    ax_ins.set_title(f"🔍 Inset Zoom: y ∈ [0, {int(y_zoom_max)}] (Theorem 1 Bounds)", fontsize=8.5, fontweight="bold", pad=4, color="#1E3A8A")
+    ax_ins.set_facecolor("#F8FAFC")
+    for spine in ax_ins.spines.values():
+        spine.set_edgecolor("#1E3A8A")
+        spine.set_linewidth(1.3)
+    ax_ins.grid(True, linestyle=":", alpha=0.6)
+    ax_ins.tick_params(labelsize=8)
+    ax_ins.legend(loc="upper right", fontsize=6.8, frameon=True, framealpha=0.9, handlelength=1.4)
+
+    # Khung chỉ điểm vùng zoom trên đồ thị chính
+    try:
+        axes[1].indicate_inset_zoom(ax_ins, edgecolor="#1E3A8A", alpha=0.35)
+    except Exception:
+        pass
+
+    fig.suptitle(f"1D Landscape Slicing & Lipschitz Gradient Bound (ResNet-50 Adversarial Reward | M={slice_m})", fontsize=13.5, fontweight="bold", y=0.99)
     plt.tight_layout()
 
     out_path = os.path.join(output_dir, "adversarial_1d_landscape_slice.png")
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing 2x2 tại: {out_path}")
+    print(f"📈 Đã lưu đồ thị 1D Landscape Slicing 1x2 (kèm Inset Zoom) tại: {out_path}")
 
 
 

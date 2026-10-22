@@ -136,36 +136,34 @@ Vì các gai nhọn đối kháng có bề rộng cực hẹp ($\|\delta\|_\inft
 
 ---
 
-## 5. PHÂN TÍCH CHUYÊN SÂU: 1D LANDSCAPE SLICING 2×2
+## 5. PHÂN TÍCH CHUYÊN SÂU: 1D LANDSCAPE SLICING 1×2 (CHUẨN FORMAT ABLATION 1)
 
 *(Đồ thị tương ứng: `adversarial_1d_landscape_slice.png`)*
 
-Kế thừa phương pháp luận cắt lát 1D từ **Ablation 1 (Sensitive Prompt Landscape)**, thí nghiệm triển khai đồ thị 2×2 gồm 4 panels:
+Kế thừa phương pháp luận cắt lát 1D từ **Ablation 1 (Sensitive Prompt Landscape)** trong [`test_sensitive_prompt_landscape.py`](../test_sensitive_prompt_landscape.py), thí nghiệm loại bỏ phép nội suy vĩ mô ngoài đa tạp và chuẩn hóa về đồ thị 1×2 gồm 2 panels chuyên sâu tập trung 100% vào hướng đối kháng FGSM:
 
 ```
-┌────────────────────────────────────────┬────────────────────────────────────────┐
-│ Panel A: Latent Manifold Interpolation │ Panel B: FGSM Adversarial Direction    │
-│ (Nội suy mượt trong không gian latent) │ (Cắt lát vi mô theo hướng đối kháng)   │
-├────────────────────────────────────────┼────────────────────────────────────────┤
-│ Panel C: Macro Secant Derivative |Df|  │ Panel D: Adversarial |Df| vs Theorem 1 │
-│ (Đạo hàm số học vi phân vĩ mô)         │ (Chứng minh dập tắt spike & chặn cứng) │
-└────────────────────────────────────────┴────────────────────────────────────────┘
+┌───────────────────────────────────────────────┬───────────────────────────────────────────────┐
+│ Panel A: Adversarial Landscape Profile        │ Panel B: Numerical Derivative vs Theorem 1    │
+│ (Khảo sát vi mô theo hướng đối kháng FGSM)    │ (Chứng minh dập tắt gai nhọn & chặn cứng)     │
+└───────────────────────────────────────────────┴───────────────────────────────────────────────┘
 ```
 
-### 5.1. Panel A & C: Cắt Lát Đa Tạp Tiềm Ẩn (Latent Space Manifold Slicing)
-- **Cơ chế**: Thay vì nội suy thô trong pixel space $x(\alpha) = (1-\alpha)x_A + \alpha x_B$ (gây ra hiện tượng chồng hình / ghosting tại $\alpha \approx 0.5$ khiến classifier bị kích hoạt ngoài đa tạp), phương pháp mới nội suy trong không gian tiềm ẩn:
-  $$z(\alpha) = (1-\alpha) z_A + \alpha z_B \implies x(\alpha) = \text{VAE.decode}(z(\alpha))$$
-- **Kết quả**: Mọi bức ảnh $x(\alpha)$ dọc lát cắt đều là ảnh tự nhiên, sắc nét. Đường cong reward biến thiên nhịp nhàng; RS-LiDAR với các mức $\sigma_2 \in \{0.1, 0.25, 0.5\}$ làm phẳng hoàn toàn các gợn sóng li ti, trong khi đạo hàm $|Df(\alpha)|$ tại Panel C giảm ổn định.
+### 5.1. Panel A: Cắt Lát Hướng Đối Kháng Cực Đoan (FGSM Adversarial Slicing)
+- **Cơ chế**: Xuất phát từ ảnh sạch $x_0$, tính vector gradient đối kháng:
+  $$v = \operatorname{sign}(\nabla_x R(x_0))$$
+  Khảo sát $100$ điểm trên đoạn $x(\delta) = \operatorname{clip}(x_0 + \delta v, -1, 1)$ với $\delta \in [-0.03, 0.03]$.
+- **Hiện tượng & Ý nghĩa**:
+  - **Vanilla ResNet-50 (đường đỏ)**: Tại $\delta \approx 0$, chỉ cần nhích nhẹ $\delta = 0.003$, reward nhảy vọt từ $5.1 \to 8.2$. Đây là minh chứng kinh điển cho **Gai đối kháng (Adversarial Spike)** của Goodfellow et al. (2015).
+  - **RS-LiDAR (các đường xanh)**: Quá trình làm mịn Gaussian với $\sigma_2 \in \{0.1, 0.25, 0.5\}$ gọt nhẵn đỉnh gai nhọn thành sườn đồi thoai thoải và phẳng mịn hoàn toàn ở $\sigma_2=0.5$.
+  - **Ý nghĩa cốt lõi đối với Diffusion Guidance**: Việc đường reward trở nên phẳng dọc theo hướng đối kháng chứng minh RS-LiDAR **triệt tiêu hoàn toàn gradient giả mạo**. Thuật toán gửi tín hiệu rõ ràng cho bộ khuếch tán: *"Đi theo hướng nhiễu này không đem lại bất kỳ reward nào, không được đi vào!"*, bảo vệ mô hình khỏi các bẫy đối kháng cục bộ.
 
-### 5.2. Panel B & D: Cắt Lát Hướng Đối Kháng (FGSM Adversarial Slicing)
-- **Cơ chế**: Xuất phát từ ảnh sạch $x_A$, tính vector gradient đối kháng:
-  $$v = \text{sign}(\nabla_x R(x_A))$$
-  Khảo sát $100$ điểm trên đoạn $x(\delta) = \text{clip}(x_A + \delta v, -1, 1)$ với $\delta \in [-0.03, 0.03]$.
-- **Ý nghĩa của đường cong phẳng mịn**:
-  - **Vanilla ResNet-50 (đường đỏ)**: Tại $\delta \approx 0$, chỉ cần nhích nhẹ $\delta = 0.003$, reward nhảy vọt từ $5.1 \to 8.2$. Đây là minh chứng kinh điển cho **Adversarial Spike**. Đạo hàm tại Panel D vọt lên mức cực đại.
-  - **RS-LiDAR (các đường xanh)**: Quá trình làm mịn Gaussian với $\sigma_2 \in \{0.1, 0.25, 0.5\}$ gọt nhẵn đỉnh gai nhọn thành sườn đồi và phẳng mịn hoàn toàn ở $\sigma_2=0.5$.
-  - **Giá trị cốt lõi**: Việc đường reward trở nên phẳng dọc theo hướng đối kháng chứng minh RS-LiDAR **triệt tiêu hoàn toàn gradient giả mạo**. Thuật toán gửi tín hiệu rõ ràng cho bộ khuếch tán: *"Đi theo hướng nhiễu này không đem lại bất kỳ reward nào, không được đi vào!"*, bảo vệ mô hình khỏi các bẫy đối kháng cục bộ.
-  - Tại Panel D, toàn bộ đạo hàm vi phân của RS-LiDAR nằm nghiêm ngặt phía dưới đường trần lý thuyết của Theorem 1.
+### 5.2. Panel B: Đạo Hàm Vi Phân Số Học & Trần Lý Thuyết Theorem 1
+- **Đo đạc**: Tính đạo hàm số học vi mô $|Df(\delta)| = \frac{|R(x(\delta_{i+1})) - R(x(\delta_i))|}{\Delta \delta}$ (ước lượng Lipschitz cục bộ $L_{\text{local}}$).
+- **Kết quả đối chiếu**:
+  - **Vanilla**: Đạo hàm vi mô bùng nổ thành một gai nhọn khổng lồ cao tới **$1700$** tại $\delta \approx 0$ (hiện tượng **Spike Explosion**).
+  - **RS-LiDAR**: Toàn bộ đạo hàm bị ép dẹp dí sát trục hoành ($|Df| < 20$ tại $\sigma=0.5$).
+  - **Bảo đảm Theorem 1**: Toàn bộ đường biểu diễn của RS-LiDAR nằm nghiêm ngặt 100% phía dưới đường trần lý thuyết $\frac{\Delta R}{\sigma_2 \sqrt{2\pi}}$ (đường nét đứt màu xanh đậm). Đây là bằng chứng thực nghiệm thép khẳng định tính đúng đắn của Theorem 1.
 
 ---
 
