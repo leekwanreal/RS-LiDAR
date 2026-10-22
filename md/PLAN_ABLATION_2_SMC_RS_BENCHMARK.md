@@ -103,7 +103,7 @@ graph LR
     subgraph Input
         P[Prompt p] --> Noise[N Hạt Khởi Tạo x_T]
     end
-    subgraph DenoisingLoop [Vòng Lặp Khử Nhiễu DDIM-100]
+    subgraph DenoisingLoop [Vòng Lặp Khử Nhiễu DDPM-100]
         Noise --> Step[Denoising Step t]
         Step --> Check{t in [800, 200]<br>và i % 20 == 0?}
         Check -- Không --> Step
@@ -318,9 +318,9 @@ Mọi thư mục kết quả sinh ra trong `Target_samples/` đều tuân theo c
 
 ```text
 Target_samples/
-├── SMC_SD15_N4_freq20_lmbda10.0_DDIM100_s12.5_seed42_100p/            # Vanilla SMC (N=4)
-├── RSSMC_SD15_N4_sig1.0_M4_crn_freq20_lmbda10.0_DDIM100_s12.5_seed42_100p/       # Static RS-SMC (Fixed sigma=1.0)
-└── RSSMC_SD15_N4_sig1.0_M4_crn_anneal_freq20_lmbda10.0_DDIM100_s12.5_seed42_100p/ # Annealed RS-SMC (Ours)
+├── SMC_SD15_N4_freq20_lmbda10.0_DDPM100_s12.5_seed42_100p/            # Vanilla SMC (N=4)
+├── RSSMC_SD15_N4_sig1.0_M4_crn_freq20_lmbda10.0_DDPM100_s12.5_seed42_100p/       # Static RS-SMC (Fixed sigma=1.0)
+└── RSSMC_SD15_N4_sig1.0_M4_crn_anneal_freq20_lmbda10.0_DDPM100_s12.5_seed42_100p/ # Annealed RS-SMC (Ours)
 ```
 
 **Cấu trúc bên trong mỗi thư mục**:
