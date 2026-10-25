@@ -478,7 +478,7 @@ def get_args():
     parser.add_argument(
         "--metrics_to_compute",
         type=str,
-        default="ImageReward#Clip-Score#Clip-Diversity#HumanPreference#AS",
+        default="ImageReward",
         help="# separated list of metrics",
     )
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl")
