@@ -81,6 +81,7 @@ from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
 
 from fks_utils import do_eval
 from lookahead_datasets import gen_lookahead_samples
+from rs_smc_engine import HarmonizedRSLiDARSMCEngine
 
 def parse_prompt_indices(indices_arg):
     if not indices_arg:
