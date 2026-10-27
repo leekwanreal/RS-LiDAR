@@ -40,18 +40,20 @@ def compute_multi_reward_pareto_potential(
     for name, r_mc in multi_rewards_mc.items():
         # Bước 1: Tính Entropic Risk từ M mẫu (Định lý 5.2)
         stats = compute_entropic_antithetic_rewards(r_mc, sigma=sigma, beta_risk=beta_risk)
-        r_j = stats["r_corrected"]         # [N]
+        r_j = stats["r_corrected"]         # [N] (phần thưởng đã phạt rủi ro Entropic)
         grad_e_j = stats["grad_energy_sq"] # [N]
         
-        # Bước 2: Chuẩn hóa Local Lipschitz (Định lý 6)
+        # Bước 2: Chuẩn hóa Local Lipschitz theo Thứ nguyên Đồng bậc (Định lý 6)
+        # Sử dụng kỳ vọng phần thưởng gốc r_raw_mean = r_mc.mean(dim=0) để tính phương sai
+        # nhằm bảo toàn thứ nguyên [R]^2 cho Var(R_j), tránh méo mó bậc 4 do thành phần phạt bình phương
+        r_raw_mean = r_mc.to(torch.float32).mean(dim=0)
         mu_j = r_j.mean(dim=-1, keepdim=True)
-        # unbiased=False fallback khi N=1, nhưng thường N >= 2
-        var_j = r_j.var(dim=-1, unbiased=(r_j.shape[-1] > 1), keepdim=True) 
+        var_j = r_raw_mean.var(dim=-1, unbiased=(r_mc.shape[-1] > 1), keepdim=True) 
         
-        # Gradient variance scale do M mẫu sinh ra
+        # Gradient variance scale do M mẫu sinh ra có thứ nguyên [R]^2:
         lip_var_j = grad_e_j.mean(dim=-1, keepdim=True) * (sigma ** 2)
         
-        # Lambda_j: Scale động ngăn Gradient Starvation (Định lý 6)
+        # Lambda_j: Scale động ngăn Gradient Starvation (Định lý 6) có thứ nguyên chuẩn [R]
         lambda_j = torch.sqrt(var_j + kappa_lip * lip_var_j + 1e-6)
         
         r_norm = (r_j - mu_j) / lambda_j
