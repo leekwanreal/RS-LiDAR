@@ -70,17 +70,22 @@ try:
 except Exception:
     pass
 
-from diffusers import DDIMScheduler, UNet2DConditionModel
+try:
+    from diffusers import DDIMScheduler, UNet2DConditionModel
 
-import sys
-sys.path.append("fkd_diffusers")
+    import sys
+    sys.path.append("fkd_diffusers")
 
-from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
-from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+    from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
+    from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
 
+    from fks_utils import do_eval
+    from lookahead_datasets import gen_lookahead_samples
+except ImportError:
+    DDIMScheduler = UNet2DConditionModel = None
+    FKDStableDiffusionXL = FKDStableDiffusion = None
+    do_eval = gen_lookahead_samples = None
 
-from fks_utils import do_eval
-from lookahead_datasets import gen_lookahead_samples
 from rs_smc_engine import HarmonizedRSLiDARSMCEngine
 
 def parse_prompt_indices(indices_arg):
@@ -460,7 +465,16 @@ def get_args():
     parser.add_argument("--use_rs_smc", type=str2bool, nargs="?", const=True, default=False, help="Alias for --use_smc_smoothing")
     parser.add_argument("--smc_sigma", type=float, default=0.25, help="Gaussian noise standard deviation for RS-SMC (default: 0.25)")
     parser.add_argument("--smc_num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M for RS-SMC (default: 4)")
-    parser.add_argument("--smc_M", type=int, default=None, help="Alias for --smc_num_mc_samples")
+    parser.add_argument("--smc_M", type=int, default=4, help="Alias for --smc_num_mc_samples")
+    parser.add_argument("--M", type=int, default=4, help="Alias for number of MC samples M")
+    parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn"], help="Monte Carlo noise sampling mode")
+    parser.add_argument("--beta_risk", type=float, default=0.5, help="Entropic risk penalty parameter beta (Theorem 5.2, default: 0.5)")
+    parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
+    parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
+    parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
+    parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
+    parser.add_argument("--s_flow", type=float, default=12.5, help="Velocity guidance scale for Rectified Flows (default: 12.5)")
+    parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
     parser.add_argument("--smc_smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
     parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")
     parser.add_argument("--smc_smoothing_mode", type=str, default="loop", choices=["loop", "vectorized"], help="Smoothing execution mode: 'loop' (default, VRAM safe) or 'vectorized'")

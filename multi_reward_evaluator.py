@@ -83,3 +83,33 @@ def compute_multi_reward_pareto_potential(
     diagnostics["softmin_term"] = softmin_term
     
     return pareto_potential, diagnostics
+
+
+class LocalLipschitzParetoEvaluator:
+    """
+    Object-oriented wrapper for Local-Lipschitz Multi-Reward Pareto Evaluator (Theorem 6).
+    """
+    def __init__(
+        self,
+        sigma: float = 1.0,
+        kappa_lip: float = 1.0,
+        pareto_rho: float = 0.5,
+        tau_p: float = 2.0,
+        beta_risk: float = 0.5
+    ):
+        self.sigma = sigma
+        self.kappa_lip = kappa_lip
+        self.pareto_rho = pareto_rho
+        self.tau_p = tau_p
+        self.beta_risk = beta_risk
+
+    @torch.no_grad()
+    def evaluate(self, multi_rewards_mc: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        return compute_multi_reward_pareto_potential(
+            multi_rewards_mc=multi_rewards_mc,
+            sigma=self.sigma,
+            kappa_lip=self.kappa_lip,
+            pareto_rho=self.pareto_rho,
+            tau_p=self.tau_p,
+            beta_risk=self.beta_risk
+        )
