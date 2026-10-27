@@ -70,16 +70,113 @@ try:
 except Exception:
     pass
 
-from diffusers import DDIMScheduler, UNet2DConditionModel, DPMSolverMultistepScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline, DiffusionPipeline, LCMScheduler, AutoPipelineForText2Image, EulerDiscreteScheduler, FluxPipeline
-from huggingface_hub import hf_hub_download
-from safetensors.torch import load_file
+try:
+    from diffusers import (
+        DDIMScheduler, UNet2DConditionModel, DPMSolverMultistepScheduler,
+        StableDiffusionPipeline, StableDiffusionXLPipeline, DiffusionPipeline,
+        LCMScheduler, AutoPipelineForText2Image, EulerDiscreteScheduler, FluxPipeline
+    )
+    from huggingface_hub import hf_hub_download
+    from safetensors.torch import load_file
+except ImportError:
+    DDIMScheduler = UNet2DConditionModel = DPMSolverMultistepScheduler = None
+    StableDiffusionPipeline = StableDiffusionXLPipeline = DiffusionPipeline = None
+    LCMScheduler = AutoPipelineForText2Image = EulerDiscreteScheduler = FluxPipeline = None
+    hf_hub_download = load_file = None
 
 
 import sys
 sys.path.append("fkd_diffusers")
 
 
-from fks_utils import do_eval
+try:
+    from fks_utils import do_eval
+except ImportError:
+    do_eval = None
+from typing import Dict, List, Optional
+
+@torch.no_grad()
+def generate_smoothed_pixel_batch(
+    images_0: torch.Tensor,
+    sigma: float,
+    M: int = 4,
+    noise_mode: str = "independent_antithetic"
+) -> torch.Tensor:
+    """
+    Tạo batch nhiễu Monte Carlo tuân thủ tính đối xứng Antithetic (Theorem 5.1),
+    IID độc lập, hoặc Coupled CRN (Common Random Numbers).
+    """
+    N, C, H, W = images_0.shape
+    device, dtype = images_0.device, images_0.dtype
+
+    if sigma <= 0.0 or M <= 0:
+        return images_0.unsqueeze(0).repeat(max(1, M), 1, 1, 1, 1)
+
+    if noise_mode == "independent_antithetic":
+        assert M % 2 == 0, f"M phải là số chẵn cho chế độ antithetic, nhận M={M}."
+        half_M = M // 2
+        u_half = torch.randn((half_M, N, C, H, W), device=device, dtype=dtype)
+        u = torch.cat([u_half, -u_half], dim=0)
+    elif noise_mode == "independent_iid":
+        u = torch.randn((M, N, C, H, W), device=device, dtype=dtype)
+    elif noise_mode == "coupled_crn":
+        # Chế độ cũ: cùng 1 nhiễu cho toàn bộ N hạt
+        u = torch.randn((M, 1, C, H, W), device=device, dtype=dtype).expand(M, N, C, H, W)
+    else:
+        raise ValueError(f"Unknown noise_mode: {noise_mode}. Expected 'independent_antithetic', 'independent_iid', or 'coupled_crn'.")
+
+    # In-place broadcast addition to save VRAM, explicitly delete u
+    perturbed = torch.clamp(images_0.unsqueeze(0) + sigma * u, -1.0, 1.0)
+    del u
+    return perturbed
+
+
+@torch.no_grad()
+def compute_entropic_antithetic_rewards(
+    rewards_mc: torch.Tensor,
+    sigma: float = 1.0,
+    beta_risk: float = 0.5
+) -> Dict[str, torch.Tensor]:
+    """
+    Phân rã Half-Sum / Half-Difference (Theorem 5.1) và tính Donsker-Varadhan Entropic Risk (Theorem 5.2).
+    """
+    # Ép kiểu FP32 để chống tràn số / sai số
+    r_fp32 = rewards_mc.to(torch.float32)
+    M, N = r_fp32.shape
+
+    if M % 2 != 0:
+        # Fallback nếu M lẻ (không phải antithetic)
+        r_mean = r_fp32.mean(dim=0)
+        variance = r_fp32.var(dim=0, unbiased=True) if M > 1 else torch.zeros_like(r_mean)
+        r_corrected = r_mean - (beta_risk / (2.0 * float(M))) * variance
+        return {
+            "r_corrected": r_corrected.to(rewards_mc.dtype),
+            "grad_energy_sq": torch.zeros_like(r_mean, dtype=rewards_mc.dtype),
+            "pair_variance": variance.to(rewards_mc.dtype)
+        }
+
+    half_M = M // 2
+    r_pos = r_fp32[:half_M]
+    r_neg = r_fp32[half_M:]
+
+    # Định lý 5.1: Phân rã Half-Sum và Half-Difference
+    pair_sums = 0.5 * (r_pos + r_neg)
+    pair_diffs = 0.5 * (r_pos - r_neg)
+
+    grad_energy_sq = torch.mean(pair_diffs ** 2, dim=0) / (sigma ** 2 + 1e-8)
+    curv_var = pair_sums.var(dim=0, unbiased=True) if half_M >= 2 else torch.zeros_like(grad_energy_sq)
+
+    # Định lý 5.2: Phạt Donsker-Varadhan Entropic Risk
+    total_var = (sigma ** 2) * grad_energy_sq + curv_var
+    r_mean = r_fp32.mean(dim=0)  # Tương đương pair_sums.mean(dim=0)
+    r_corrected = r_mean - (beta_risk / (2.0 * float(M))) * total_var
+
+    return {
+        "r_corrected": r_corrected.to(rewards_mc.dtype),
+        "grad_energy_sq": grad_energy_sq.to(rewards_mc.dtype),
+        "pair_variance": total_var.to(rewards_mc.dtype)
+    }
+
 
 def parse_prompt_indices(indices_arg):
     if not indices_arg:
@@ -254,8 +351,14 @@ def main(args):
     # set output directory
     prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
     if getattr(args, "use_smoothing", False):
-        crn_suffix = "_crn" if getattr(args, "use_crn", False) else ""
-        prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}{crn_suffix}"
+        if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" or getattr(args, "use_crn", False):
+            suffix = "_crn"
+        elif getattr(args, "noise_mode", "") == "independent_iid":
+            suffix = "_iid"
+        else:
+            beta_str = f"_beta{args.beta_risk}" if getattr(args, "beta_risk", 0.0) != 0.0 else ""
+            suffix = f"_antithetic{beta_str}"
+        prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}{suffix}"
     if getattr(args, "run_name", None):
         output_dir = os.path.join(args.output_dir, args.run_name)
     else:
@@ -431,20 +534,34 @@ def main(args):
             if use_loop:
                 mc_evals = {metric: [] for metric in metrics_to_compute}
                 with torch.inference_mode():
+                    half_M = args.num_mc_samples // 2
+                    is_antithetic = (getattr(args, "noise_mode", "independent_antithetic") == "independent_antithetic" and args.num_mc_samples % 2 == 0)
+                    if is_antithetic:
+                        if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                            u_half_list = [torch.randn_like(scaled_latents) for _ in range(half_M)]
+                        else:
+                            u_half_list = [torch.randn_like(decoded_tensor) for _ in range(half_M)]
+                    else:
+                        u_half_list = None
+
                     for m_idx in range(args.num_mc_samples):
                         if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                            if getattr(args, "use_crn", False):
+                            if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                                 noise = torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma
+                            elif is_antithetic and u_half_list is not None:
+                                u_m = u_half_list[m_idx] if m_idx < half_M else -u_half_list[m_idx - half_M]
+                                noise = u_m * args.sigma
                             else:
                                 noise = torch.randn_like(scaled_latents) * args.sigma
                             noisy_lat = scaled_latents + noise
                             noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
                         else:
                             if args.sigma > 0:
-                                if getattr(args, "use_crn", False):
-                                    # Common Random Numbers (CRN): sinh đúng 1 vector nhiễu (1, 3, H, W) cho prompt này
-                                    # và broadcast cộng trực tiếp vào cả batch đã decode (N, 3, H, W)
+                                if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                                     noise = torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma
+                                elif is_antithetic and u_half_list is not None:
+                                    u_m = u_half_list[m_idx] if m_idx < half_M else -u_half_list[m_idx - half_M]
+                                    noise = u_m * args.sigma
                                 else:
                                     noise = torch.randn_like(decoded_tensor) * args.sigma
                                 noisy_t = (decoded_tensor + noise).clamp(-1.0, 1.0)
@@ -456,36 +573,58 @@ def main(args):
                         for metric in metrics_to_compute:
                             mc_evals[metric].append(eval_m[metric]["result"])
 
+                    if u_half_list is not None:
+                        del u_half_list
+
                 results = {}
                 for metric in metrics_to_compute:
-                    smoothed_scores = np.mean(mc_evals[metric], axis=0).tolist()
-                    scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                    results[metric] = {
-                        "result": smoothed_scores,
-                        "mean": scores_arr.mean().item(),
-                        "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                        "max": scores_arr.max().item(),
-                        "min": scores_arr.min().item(),
-                    }
+                    scores_mat = torch.tensor(mc_evals[metric], dtype=torch.float32)
+                    if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" and getattr(args, "beta_risk", 0.0) == 0.0:
+                        smoothed_scores = scores_mat.mean(dim=0).tolist()
+                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
+                        results[metric] = {
+                            "result": smoothed_scores,
+                            "mean": scores_arr.mean().item(),
+                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
+                            "max": scores_arr.max().item(),
+                            "min": scores_arr.min().item(),
+                        }
+                    else:
+                        entropic_res = compute_entropic_antithetic_rewards(
+                            scores_mat, sigma=args.sigma, beta_risk=getattr(args, "beta_risk", 0.5)
+                        )
+                        smoothed_scores = entropic_res["r_corrected"].tolist()
+                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
+                        results[metric] = {
+                            "result": smoothed_scores,
+                            "mean": scores_arr.mean().item(),
+                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
+                            "max": scores_arr.max().item(),
+                            "min": scores_arr.min().item(),
+                            "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
+                            "pair_variance": entropic_res["pair_variance"].tolist(),
+                        }
                 images = clean_images
             else:
                 num_mc = args.num_mc_samples
                 n_particles = decoded_tensor.shape[0]
                 with torch.inference_mode():
                     if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                        if getattr(args, "use_crn", False):
+                        if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                             noisy_lat_list = [scaled_latents + torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma for _ in range(num_mc)]
+                            noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
                         else:
-                            noisy_lat_list = [scaled_latents + torch.randn_like(scaled_latents) * args.sigma for _ in range(num_mc)]
-                        noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
+                            perturbed_lat = generate_smoothed_pixel_batch(scaled_latents, sigma=args.sigma, M=num_mc, noise_mode=getattr(args, "noise_mode", "independent_antithetic"))
+                            noisy_lat_cat = perturbed_lat.view(-1, *scaled_latents.shape[1:])
                         noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
                     else:
                         if args.sigma > 0:
-                            if getattr(args, "use_crn", False):
+                            if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                                 noisy_t_list = [(decoded_tensor + torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
+                                noisy_t_all = torch.cat(noisy_t_list, dim=0)
                             else:
-                                noisy_t_list = [(decoded_tensor + torch.randn_like(decoded_tensor) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
-                            noisy_t_all = torch.cat(noisy_t_list, dim=0)
+                                perturbed_all = generate_smoothed_pixel_batch(decoded_tensor, sigma=args.sigma, M=num_mc, noise_mode=getattr(args, "noise_mode", "independent_antithetic"))
+                                noisy_t_all = perturbed_all.view(-1, *decoded_tensor.shape[1:])
                         else:
                             noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
 
@@ -496,16 +635,32 @@ def main(args):
                 results = {}
                 for metric in metrics_to_compute:
                     raw_scores = eval_all[metric]["result"]
-                    scores_by_m = np.array(raw_scores).reshape(num_mc, n_particles)
-                    smoothed_scores = np.mean(scores_by_m, axis=0).tolist()
-                    scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                    results[metric] = {
-                        "result": smoothed_scores,
-                        "mean": scores_arr.mean().item(),
-                        "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                        "max": scores_arr.max().item(),
-                        "min": scores_arr.min().item(),
-                    }
+                    scores_mat = torch.tensor(raw_scores, dtype=torch.float32).view(num_mc, n_particles)
+                    if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" and getattr(args, "beta_risk", 0.0) == 0.0:
+                        smoothed_scores = scores_mat.mean(dim=0).tolist()
+                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
+                        results[metric] = {
+                            "result": smoothed_scores,
+                            "mean": scores_arr.mean().item(),
+                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
+                            "max": scores_arr.max().item(),
+                            "min": scores_arr.min().item(),
+                        }
+                    else:
+                        entropic_res = compute_entropic_antithetic_rewards(
+                            scores_mat, sigma=args.sigma, beta_risk=getattr(args, "beta_risk", 0.5)
+                        )
+                        smoothed_scores = entropic_res["r_corrected"].tolist()
+                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
+                        results[metric] = {
+                            "result": smoothed_scores,
+                            "mean": scores_arr.mean().item(),
+                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
+                            "max": scores_arr.max().item(),
+                            "min": scores_arr.min().item(),
+                            "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
+                            "pair_variance": entropic_res["pair_variance"].tolist(),
+                        }
                 images = clean_images
         else:
             images = clean_images
@@ -524,7 +679,9 @@ def main(args):
                 "num_mc_samples": args.num_mc_samples,
                 "domain": args.smoothing_domain,
                 "mode": "loop" if use_loop else "vectorized",
-                "use_crn": getattr(args, "use_crn", False),
+                "noise_mode": getattr(args, "noise_mode", "independent_antithetic"),
+                "beta_risk": getattr(args, "beta_risk", 0.5),
+                "use_crn": getattr(args, "use_crn", False) or (getattr(args, "noise_mode", "") == "coupled_crn"),
                 "reused_latents_from": reused_latent_file,
             }
 
@@ -636,8 +793,13 @@ def get_args():
     parser.add_argument("--reuse_latents_from", type=str, default=None, help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
     parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
     parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers (CRN): broadcast a single noise sample across all N particles within each prompt to eliminate inter-particle ranking variance")
+    parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn"], help="Monte Carlo noise sampling mode: 'independent_antithetic' (Theorem 5.1), 'independent_iid', or 'coupled_crn' (legacy)")
+    parser.add_argument("--beta_risk", type=float, default=0.5, help="Entropic risk penalty parameter beta (Theorem 5.2, default: 0.5; 0.0 disables risk penalty)")
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
     args = parser.parse_args()
+
+    if getattr(args, "use_crn", False):
+        args.noise_mode = "coupled_crn"
 
     if args.M is not None:
         args.num_mc_samples = args.M
