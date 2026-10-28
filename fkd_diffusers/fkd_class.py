@@ -119,6 +119,20 @@ class FKD:
             kwargs.get("terminal_resample", smc_terminal_resample),
         )
 
+        # Hybrid SMC / Harmonized Engine (Task 1.5)
+        self.use_hybrid_smc = kwargs.get("use_hybrid_smc", False)
+        if self.use_hybrid_smc:
+            from rs_smc_engine import HarmonizedRSLiDARSMCEngine
+            self.smc_engine = HarmonizedRSLiDARSMCEngine(
+                sigma_high=kwargs.get("sigma_high", 1.0),
+                sigma_smc=kwargs.get("sigma_smc", kwargs.get("smc_sigma", 0.25)),
+                beta_risk=kwargs.get("beta_risk", 0.5),
+                eta_drift=kwargs.get("eta_drift", 0.4),
+                alpha_couple=kwargs.get("alpha_couple", 0.7)
+            )
+        else:
+            self.smc_engine = None
+
         # Initialize device and population reward state
         self.device = device
 
@@ -263,7 +277,27 @@ class FKD:
         # Decode latents to population images and compute rewards
         population_images = self.latent_to_decode_fn(x0_preds)
 
-        if not getattr(self, "use_smc_smoothing", False):
+        if getattr(self, "use_hybrid_smc", False) and getattr(self, "smc_engine", None) is not None:
+            # Doob-Tweedie Innovation Residual and 64-bit Seed Replay (Theorem 5.2 / Lemma Double-Counting)
+            if self.scheduler is not None and hasattr(self.scheduler, "alphas_cumprod"):
+                alpha_bar_t = float(self.scheduler.alphas_cumprod[min(sampling_idx, len(self.scheduler.alphas_cumprod) - 1)])
+                alpha_bar_0 = float(self.scheduler.alphas_cumprod[0]) if len(self.scheduler.alphas_cumprod) > 0 else 1.0
+                rho_t = max(1e-4, alpha_bar_t / (alpha_bar_0 + 1e-8))
+            else:
+                rho_t = 1.0 - (sampling_idx / float(max(1, self.time_steps)))
+            
+            seed_int = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
+            v_lidar = self.population_rs
+            phi_residual, v_smc = self.smc_engine.compute_step(
+                x_t=latents,
+                tweedie_x0=population_images,
+                v_lidar=v_lidar,
+                seed_int=seed_int,
+                rho_t=rho_t,
+                reward_fn=self.reward_fn
+            )
+            rs_candidates = phi_residual
+        elif not getattr(self, "use_smc_smoothing", False):
             # Vanilla SMC: Original raw reward evaluation (Zero Regression)
             rs_candidates = self.reward_fn(population_images)
         else:

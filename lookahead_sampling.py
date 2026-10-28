@@ -93,14 +93,15 @@ try:
     from fks_utils import do_eval
 except ImportError:
     do_eval = None
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 @torch.no_grad()
 def generate_smoothed_pixel_batch(
     images_0: torch.Tensor,
     sigma: float,
     M: int = 4,
-    noise_mode: str = "independent_antithetic"
+    noise_mode: str = "independent_antithetic",
+    clamp_range: Optional[Tuple[float, float]] = (-1.0, 1.0)
 ) -> torch.Tensor:
     """
     Tạo batch nhiễu Monte Carlo tuân thủ tính đối xứng Antithetic (Theorem 5.1),
@@ -126,7 +127,9 @@ def generate_smoothed_pixel_batch(
         raise ValueError(f"Unknown noise_mode: {noise_mode}. Expected 'independent_antithetic', 'independent_iid', or 'coupled_crn'.")
 
     # In-place broadcast addition to save VRAM, explicitly delete u
-    perturbed = torch.clamp(images_0.unsqueeze(0) + sigma * u, -1.0, 1.0)
+    perturbed = images_0.unsqueeze(0) + sigma * u
+    if clamp_range is not None:
+        perturbed = torch.clamp(perturbed, clamp_range[0], clamp_range[1])
     del u
     return perturbed
 
@@ -135,7 +138,8 @@ def generate_smoothed_pixel_batch(
 def compute_entropic_antithetic_rewards(
     rewards_mc: torch.Tensor,
     sigma: float = 1.0,
-    beta_risk: float = 0.5
+    beta_risk: float = 0.5,
+    noise_mode: str = "independent_antithetic"
 ) -> Dict[str, torch.Tensor]:
     """
     Phân rã Half-Sum / Half-Difference (Theorem 5.1) và tính Donsker-Varadhan Entropic Risk (Theorem 5.2).
@@ -144,14 +148,15 @@ def compute_entropic_antithetic_rewards(
     r_fp32 = rewards_mc.to(torch.float32)
     M, N = r_fp32.shape
 
-    if M % 2 != 0:
-        # Fallback nếu M lẻ (không phải antithetic)
+    if noise_mode != "independent_antithetic" or M % 2 != 0:
+        # Fallback chuẩn nếu không phải antithetic hoặc M lẻ
         r_mean = r_fp32.mean(dim=0)
         variance = r_fp32.var(dim=0, unbiased=True) if M > 1 else torch.zeros_like(r_mean)
         r_corrected = r_mean - (beta_risk / (2.0 * float(M))) * variance
+        grad_energy_sq = variance / (sigma ** 2 + 1e-8)
         return {
             "r_corrected": r_corrected.to(rewards_mc.dtype),
-            "grad_energy_sq": torch.zeros_like(r_mean, dtype=rewards_mc.dtype),
+            "grad_energy_sq": grad_energy_sq.to(rewards_mc.dtype),
             "pair_variance": variance.to(rewards_mc.dtype)
         }
 
@@ -577,8 +582,10 @@ def main(args):
                         del u_half_list
 
                 results = {}
+                multi_rewards_mc = {}
                 for metric in metrics_to_compute:
                     scores_mat = torch.tensor(mc_evals[metric], dtype=torch.float32)
+                    multi_rewards_mc[metric] = scores_mat
                     if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" and getattr(args, "beta_risk", 0.0) == 0.0:
                         smoothed_scores = scores_mat.mean(dim=0).tolist()
                         scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -591,7 +598,10 @@ def main(args):
                         }
                     else:
                         entropic_res = compute_entropic_antithetic_rewards(
-                            scores_mat, sigma=args.sigma, beta_risk=getattr(args, "beta_risk", 0.5)
+                            scores_mat,
+                            sigma=args.sigma,
+                            beta_risk=getattr(args, "beta_risk", 0.5),
+                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
                         )
                         smoothed_scores = entropic_res["r_corrected"].tolist()
                         scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -604,6 +614,29 @@ def main(args):
                             "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
                             "pair_variance": entropic_res["pair_variance"].tolist(),
                         }
+                if getattr(args, "use_pareto", False) and len(metrics_to_compute) > 1:
+                    try:
+                        from multi_reward_evaluator import compute_multi_reward_pareto_potential
+                        pareto_pot, pareto_diag = compute_multi_reward_pareto_potential(
+                            multi_rewards_mc,
+                            sigma=args.sigma,
+                            pareto_rho=getattr(args, "pareto_rho", 0.5),
+                            beta_risk=getattr(args, "beta_risk", 0.5),
+                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
+                        )
+                        pareto_list = pareto_pot.tolist()
+                        results["Pareto"] = {
+                            "result": pareto_list,
+                            "mean": pareto_pot.mean().item(),
+                            "std": pareto_pot.std().item() if len(pareto_list) > 1 else 0.0,
+                            "max": pareto_pot.max().item(),
+                            "min": pareto_pot.min().item(),
+                        }
+                        if "Pareto" not in metrics_to_compute:
+                            metrics_to_compute = list(metrics_to_compute) + ["Pareto"]
+                            metrics_arr["Pareto"] = dict(mean=0, max=0, min=0, std=0)
+                    except Exception as e:
+                        print(f"Warning: Failed to compute Pareto potential: {e}")
                 images = clean_images
             else:
                 num_mc = args.num_mc_samples
@@ -614,7 +647,13 @@ def main(args):
                             noisy_lat_list = [scaled_latents + torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma for _ in range(num_mc)]
                             noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
                         else:
-                            perturbed_lat = generate_smoothed_pixel_batch(scaled_latents, sigma=args.sigma, M=num_mc, noise_mode=getattr(args, "noise_mode", "independent_antithetic"))
+                            perturbed_lat = generate_smoothed_pixel_batch(
+                                scaled_latents,
+                                sigma=args.sigma,
+                                M=num_mc,
+                                noise_mode=getattr(args, "noise_mode", "independent_antithetic"),
+                                clamp_range=None
+                            )
                             noisy_lat_cat = perturbed_lat.view(-1, *scaled_latents.shape[1:])
                         noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
                     else:
@@ -633,9 +672,11 @@ def main(args):
                     eval_all = do_eval(prompt=eval_prompt_all, images=noisy_pil_all, metrics_to_compute=metrics_to_compute)
 
                 results = {}
+                multi_rewards_mc = {}
                 for metric in metrics_to_compute:
                     raw_scores = eval_all[metric]["result"]
                     scores_mat = torch.tensor(raw_scores, dtype=torch.float32).view(num_mc, n_particles)
+                    multi_rewards_mc[metric] = scores_mat
                     if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" and getattr(args, "beta_risk", 0.0) == 0.0:
                         smoothed_scores = scores_mat.mean(dim=0).tolist()
                         scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -648,7 +689,10 @@ def main(args):
                         }
                     else:
                         entropic_res = compute_entropic_antithetic_rewards(
-                            scores_mat, sigma=args.sigma, beta_risk=getattr(args, "beta_risk", 0.5)
+                            scores_mat,
+                            sigma=args.sigma,
+                            beta_risk=getattr(args, "beta_risk", 0.5),
+                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
                         )
                         smoothed_scores = entropic_res["r_corrected"].tolist()
                         scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -661,6 +705,29 @@ def main(args):
                             "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
                             "pair_variance": entropic_res["pair_variance"].tolist(),
                         }
+                if getattr(args, "use_pareto", False) and len(metrics_to_compute) > 1:
+                    try:
+                        from multi_reward_evaluator import compute_multi_reward_pareto_potential
+                        pareto_pot, pareto_diag = compute_multi_reward_pareto_potential(
+                            multi_rewards_mc,
+                            sigma=args.sigma,
+                            pareto_rho=getattr(args, "pareto_rho", 0.5),
+                            beta_risk=getattr(args, "beta_risk", 0.5),
+                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
+                        )
+                        pareto_list = pareto_pot.tolist()
+                        results["Pareto"] = {
+                            "result": pareto_list,
+                            "mean": pareto_pot.mean().item(),
+                            "std": pareto_pot.std().item() if len(pareto_list) > 1 else 0.0,
+                            "max": pareto_pot.max().item(),
+                            "min": pareto_pot.min().item(),
+                        }
+                        if "Pareto" not in metrics_to_compute:
+                            metrics_to_compute = list(metrics_to_compute) + ["Pareto"]
+                            metrics_arr["Pareto"] = dict(mean=0, max=0, min=0, std=0)
+                    except Exception as e:
+                        print(f"Warning: Failed to compute Pareto potential: {e}")
                 images = clean_images
         else:
             images = clean_images
@@ -696,9 +763,18 @@ def main(args):
             images = [images[i] for i in sorted_idx]
         latents = [latents[i] for i in sorted_idx]
         for metric in metrics_to_compute:
-            results[metric]["result"] = [
-                results[metric]["result"][i] for i in sorted_idx
-            ]
+            if metric in results and "result" in results[metric]:
+                results[metric]["result"] = [
+                    results[metric]["result"][i] for i in sorted_idx
+                ]
+                if "grad_energy_sq" in results[metric]:
+                    results[metric]["grad_energy_sq"] = [
+                        results[metric]["grad_energy_sq"][i] for i in sorted_idx
+                    ]
+                if "pair_variance" in results[metric]:
+                    results[metric]["pair_variance"] = [
+                        results[metric]["pair_variance"][i] for i in sorted_idx
+                    ]
 
         for metric in metrics_to_compute:
             metrics_arr[metric]["mean"] += results[metric]["mean"]
@@ -801,11 +877,14 @@ def get_args():
     parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
     parser.add_argument("--s_flow", type=float, default=12.5, help="Velocity guidance scale for Rectified Flows (default: 12.5)")
     parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
+    parser.add_argument("--use_pareto", type=str2bool, nargs="?", const=True, default=False, help="Enable Local-Lipschitz Multi-Reward Pareto Evaluator (Theorem 6)")
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
     args = parser.parse_args()
 
-    if getattr(args, "use_crn", False):
+    if getattr(args, "use_crn", False) or getattr(args, "noise_mode", "") == "coupled_crn":
         args.noise_mode = "coupled_crn"
+        if not any(arg.startswith("--beta_risk") for arg in sys.argv):
+            args.beta_risk = 0.0
 
     if args.M is not None:
         args.num_mc_samples = args.M

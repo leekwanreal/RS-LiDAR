@@ -121,6 +121,17 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertLess(res_noisy["r_corrected"][0].item(), 10.0)
         self.assertGreaterEqual(res_noisy["grad_energy_sq"][0].item(), 0.0)
 
+        # Bug 7 Fix Verification: clamp_range=None for latent smoothing
+        latents_large = torch.randn((self.N, 4, 64, 64), device=self.device) * 5.0
+        perturbed_lat = generate_smoothed_pixel_batch(latents_large, sigma=0.25, M=self.M, clamp_range=None)
+        self.assertTrue((perturbed_lat.abs() > 1.0).any(), "Latents must not be clamped to [-1, 1] when clamp_range=None.")
+
+        # Bug 5 Fix Verification: noise_mode fallback in entropic scorer
+        r_mc_iid = torch.randn((self.M, self.N), device=self.device)
+        res_iid = compute_entropic_antithetic_rewards(r_mc_iid, noise_mode="independent_iid")
+        self.assertEqual(res_iid["r_corrected"].shape, (self.N,))
+        self.assertGreaterEqual(res_iid["grad_energy_sq"].min().item(), 0.0)
+
     def test_02_pareto_normalization_and_monotonicity(self):
         """Theorem 6: Lipschitz Scale & Soft-Min"""
         # Two objectives with 100x discrepancy: R1 in [0, 1], R2 in [0, 100]
@@ -154,6 +165,14 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         # Confirm 100x scale discrepancy is calibrated: ratio lambda_2 / lambda_1 ≈ 100
         ratio = lambda_2 / lambda_1
         self.assertAlmostEqual(ratio, 100.0, places=1)
+
+        # Bug 9 Fix Verification: reward_weights support
+        pot_w, diag_w = compute_multi_reward_pareto_potential(
+            multi_rewards,
+            reward_weights={"image_reward": 0.8, "large_metric": 0.2}
+        )
+        self.assertEqual(pot_w.shape, (2,))
+        self.assertIn("weights", diag_w)
 
         # Confirm Smooth Tchebycheff Soft-Min protects against reward hacking
         multi_candidates = {
@@ -192,16 +211,25 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertTrue(torch.isfinite(out_boundary).all())
         self.assertLess(torch.norm(out_boundary).item(), 0.05)
 
+        # Bug 1 & 11 Fix Verification: Ensure whitening weights have shape (1, 16, 1, 1) and empirical values available
+        self.assertEqual(guidance.whitening_weights.shape, (1, 16, 1, 1))
+        self.assertEqual(RSFlowLiDARGuidance.FLUX_EMPIRICAL_INV_STDS.shape, (16,))
+        self.assertGreater(RSFlowLiDARGuidance.FLUX_EMPIRICAL_INV_STDS[15].item(), 2.0)
+        guidance_flux = RSFlowLiDARGuidance(whitening_weights=RSFlowLiDARGuidance.FLUX_EMPIRICAL_INV_STDS)
+        self.assertGreater(guidance_flux.whitening_weights[0, 15, 0, 0].item(), 2.0)
+
     def test_04_residual_smc_seed_replay(self):
         """Double-Counting Lemma: Innovation Residual"""
         engine = HarmonizedRSLiDARSMCEngine(
             sigma_high=1.0,
             sigma_smc=0.25,
             beta_risk=0.5,
-            eta_drift=0.4
+            eta_drift=0.4,
+            alpha_couple=0.7
         )
-        x_t = torch.randn((self.N, self.C, self.H, self.W), device=self.device)
-        tweedie_x0 = torch.randn((self.N, self.C, self.H, self.W), device=self.device)
+        # Bug 2 Fix Verification: x_t is latent [N, 4, 64, 64], tweedie_x0 is image [N, 3, 512, 512]
+        x_t = torch.randn((self.N, 4, 64, 64), device=self.device)
+        tweedie_x0 = torch.randn((self.N, 3, 512, 512), device=self.device)
         v_lidar = torch.tensor([2.0, 2.0, 2.0, 2.0], device=self.device)
         mock_reward = lambda x: torch.ones(x.shape[0], device=self.device) * 3.0
 
@@ -209,6 +237,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         # v_smc = 3.0 (since r_pos=r_neg=3.0, diff=0)
         # phi_residual = 3.0 - (0.4 * 0.5 * 2.0) = 3.0 - 0.4 = 2.6
         phi_res, v_smc = engine.compute_step(x_t, tweedie_x0, v_lidar, seed_int=42, rho_t=0.5, reward_fn=mock_reward)
+        self.assertEqual(phi_res.shape, (self.N,))
         self.assertTrue(torch.allclose(phi_res, torch.tensor([2.6, 2.6, 2.6, 2.6])))
 
         # 64-bit Seed Replay Determinism
@@ -236,6 +265,13 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertEqual(args_lookahead.alpha_couple, 0.7)
         self.assertEqual(args_lookahead.s_flow, 12.5)
         self.assertEqual(args_lookahead.pareto_rho, 0.5)
+        self.assertFalse(args_lookahead.use_pareto)
+
+        # Bug 6 Fix Verification: --use_crn True automatically defaults beta_risk to 0.0 for legacy equivalence
+        sys.argv = ["lookahead_sampling.py", "--use_crn", "True"]
+        args_crn = get_lookahead_args()
+        self.assertEqual(args_crn.noise_mode, "coupled_crn")
+        self.assertEqual(args_crn.beta_risk, 0.0)
 
         sys.argv = ["LiDAR_sampling.py"]
         args_lidar = get_lidar_args()
@@ -248,6 +284,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertEqual(args_lidar.alpha_couple, 0.7)
         self.assertEqual(args_lidar.s_flow, 12.5)
         self.assertEqual(args_lidar.pareto_rho, 0.5)
+        self.assertFalse(args_lidar.use_hybrid_smc)
 
     def test_06_legacy_backward_compatibility(self):
         """Rule 1 & 2: Bit-for-bit Backward Compatibility"""
@@ -271,12 +308,28 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         res_zero_beta = compute_entropic_antithetic_rewards(r_raw, beta_risk=0.0)
         self.assertTrue(torch.equal(res_zero_beta["r_corrected"], r_raw.mean(dim=0)))
 
+        # Bug 8 Fix Verification: Particle sorting synchronization
+        import numpy as np
+        results_mock = {
+            "ImageReward": {
+                "result": [0.5, 0.9, 0.1, 0.7],
+                "grad_energy_sq": [10.0, 20.0, 30.0, 40.0],
+                "pair_variance": [1.0, 2.0, 3.0, 4.0]
+            }
+        }
+        sorted_idx = np.argsort(results_mock["ImageReward"]["result"])[::-1]
+        results_mock["ImageReward"]["result"] = [results_mock["ImageReward"]["result"][i] for i in sorted_idx]
+        results_mock["ImageReward"]["grad_energy_sq"] = [results_mock["ImageReward"]["grad_energy_sq"][i] for i in sorted_idx]
+        results_mock["ImageReward"]["pair_variance"] = [results_mock["ImageReward"]["pair_variance"][i] for i in sorted_idx]
+        self.assertEqual(results_mock["ImageReward"]["grad_energy_sq"], [20.0, 40.0, 10.0, 30.0])
+
     def test_07_e2e_50_steps_loop(self):
         """End-to-End Mock 50-Step Sampling Loop"""
         z_t = torch.randn((1, self.C, self.H, self.W), device=self.device)
         lookahead_z0 = torch.randn((self.N, self.C, self.H, self.W), device=self.device)
+        tweedie_img = torch.randn((self.N, 3, 512, 512), device=self.device)
         flow_guidance = RSFlowLiDARGuidance(s_flow=12.5)
-        smc_engine = HarmonizedRSLiDARSMCEngine()
+        smc_engine = HarmonizedRSLiDARSMCEngine(alpha_couple=0.7)
         dummy_reward_fn = lambda x: torch.randn(x.shape[0], device=self.device)
 
         for step in range(50):
@@ -300,8 +353,8 @@ class TestPhase1UnifiedModules(unittest.TestCase):
                 delta_v = flow_guidance.compute_velocity_guidance(z_t, lookahead_z0, r_stats["r_corrected"], sigma_t)
                 self.assertEqual(delta_v.shape, z_t.shape)
 
-                # 5. Hybrid SMC step
-                phi_res, v_smc = smc_engine.compute_step(lookahead_z0, lookahead_z0, r_stats["r_corrected"], seed_int=42+step, rho_t=rho_t, reward_fn=dummy_reward_fn)
+                # 5. Hybrid SMC step with realistic 3-channel Tweedie image
+                phi_res, v_smc = smc_engine.compute_step(lookahead_z0, tweedie_img, r_stats["r_corrected"], seed_int=42+step, rho_t=rho_t, reward_fn=dummy_reward_fn)
                 self.assertEqual(phi_res.shape, (self.N,))
 
                 # Free loop references

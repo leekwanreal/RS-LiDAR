@@ -7,21 +7,24 @@ class HarmonizedRSLiDARSMCEngine:
         sigma_high: float = 1.0,
         sigma_smc: float = 0.25,
         beta_risk: float = 0.5,
-        eta_drift: float = 0.4
+        eta_drift: float = 0.4,
+        alpha_couple: float = 0.7
     ):
         """
-        Động cơ SMC kết hợp Doob-Tweedie Innovation Residual và 64-bit Seed Replay.
+        Động cơ SMC kết hợp Doob-Tweedie Innovation Residual, 64-bit Seed Replay và Kernel-Coupled Noise.
         
         Args:
             sigma_high: Giới hạn độ lệch chuẩn nhiễu tối đa.
             sigma_smc: Độ lệch chuẩn nhiễu chuẩn hóa cho SMC Tweedie perturbation.
             beta_risk: Hệ số phạt rủi ro Entropic Risk (Định lý 5.2).
             eta_drift: Tỷ lệ thế năng lookahead đã hấp thụ vào drift (Định lý Girsanov).
+            alpha_couple: Hệ số ghép cặp hạt lookahead và SMC (Theorem 5.1).
         """
         self.sigma_high = sigma_high
         self.sigma_smc = sigma_smc
         self.beta_risk = beta_risk
         self.eta_drift = eta_drift
+        self.alpha_couple = alpha_couple
 
     @torch.no_grad()
     def compute_step(
@@ -37,8 +40,8 @@ class HarmonizedRSLiDARSMCEngine:
         Thực thi 1 bước đánh giá thặng dư thông tin mới (Innovation).
         
         Args:
-            x_t: Latent tensor hiện tại [N, C, H, W].
-            tweedie_x0: Ước lượng điểm sạch Tweedie [N, C, H, W].
+            x_t: Latent tensor hiện tại [N, C_lat, H_lat, W_lat].
+            tweedie_x0: Ước lượng điểm sạch Tweedie [N, C_img, H_img, W_img].
             v_lidar: Thế năng tương lai đã hấp thụ vào Drift [N].
             seed_int: Seed 64-bit nguyên thủy từ bước lookahead.
             rho_t: Tỷ lệ tín hiệu trên nhiễu (alpha_bar_t / alpha_bar_0).
@@ -47,18 +50,29 @@ class HarmonizedRSLiDARSMCEngine:
         Returns:
             Tuple (phi_residual, v_smc)
         """
-        device, dtype = x_t.device, x_t.dtype
-        N = x_t.shape[0]
+        device, dtype = tweedie_x0.device, tweedie_x0.dtype
+        N = tweedie_x0.shape[0]
         
-        # 1. 64-bit Seed Replay: Tái tạo nhiễu đối xứng (0.00 GiB VRAM overhead)
-        generator = torch.Generator(device=device).manual_seed(seed_int)
-        u_base = torch.randn(x_t.shape, generator=generator, device=device, dtype=dtype)
+        # 1. 64-bit Seed Replay & Kernel Coupling: Tái tạo nhiễu đối xứng (0.00 GiB VRAM overhead)
+        # Khớp tuyệt đối kích thước không gian với tweedie_x0 (thường là 3 channel pixel domain)
+        if seed_int is not None and self.alpha_couple > 0.0:
+            generator = torch.Generator(device=device).manual_seed(int(seed_int))
+            u_lookahead = torch.randn(tweedie_x0.shape, generator=generator, device=device, dtype=dtype)
+            if self.alpha_couple >= 1.0:
+                u_base = u_lookahead
+            else:
+                zeta = torch.randn(tweedie_x0.shape, generator=generator, device=device, dtype=dtype)
+                alpha = self.alpha_couple
+                u_base = ((1.0 - alpha ** 2) ** 0.5) * zeta + alpha * u_lookahead
+                del zeta
+        else:
+            u_base = torch.randn(tweedie_x0.shape, device=device, dtype=dtype)
         
         # 2. Sinh mẫu Tweedie Đối ngẫu
         sigma_t = self.sigma_smc * rho_t
         tw_pos = torch.clamp(tweedie_x0 + sigma_t * u_base, -1.0, 1.0)
         tw_neg = torch.clamp(tweedie_x0 - sigma_t * u_base, -1.0, 1.0)
-        del u_base # Giải phóng ngay lập tức
+        del u_base  # Giải phóng ngay lập tức
         
         # 3. Đánh giá Reward 
         # Gọi batch 2N để tối ưu tốc độ, sau đó tách ra N và N

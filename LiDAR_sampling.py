@@ -250,7 +250,7 @@ def main(args):
 
     lookaheads = None
     if args.use_rag:
-        lookaheads = gen_lookahead_samples(args.lookahead_path, args.top_k)
+        lookaheads = gen_lookahead_samples(args.lookahead_path, args.top_k, reward_key=args.guidance_reward_fn)
         if len(lookaheads) > 0:
             first_idx = next(iter(lookaheads.data.keys()))
             first_lat = lookaheads[first_idx]["latents"]
@@ -313,6 +313,12 @@ def main(args):
             use_grad=args.use_grad,
             use_rag=args.use_rag,
             use_smc_smoothing=getattr(args, "use_smc_smoothing", False),
+            use_hybrid_smc=getattr(args, "use_hybrid_smc", False),
+            sigma_high=getattr(args, "sigma_high", 1.0),
+            sigma_low=getattr(args, "sigma_low", 0.25),
+            eta_drift=getattr(args, "eta_drift", 0.4),
+            beta_risk=getattr(args, "beta_risk", 0.5),
+            alpha_couple=getattr(args, "alpha_couple", 0.7),
             smc_sigma=getattr(args, "smc_sigma", 0.25),
             smc_num_mc_samples=getattr(args, "smc_num_mc_samples", 4),
             smc_smoothing_domain=getattr(args, "smc_smoothing_domain", "image"),
@@ -483,6 +489,7 @@ def get_args():
     parser.add_argument("--smc_sigma_min", type=float, default=None, help="Minimum floor for annealed sigma")
     parser.add_argument("--smc_terminal_resample", type=str2bool, nargs="?", const=True, default=True, help="Whether to perform resampling at terminal step (time_steps - 1). Default: True. Set False to preserve particle diversity.")
     parser.add_argument("--terminal_resample", type=str2bool, nargs="?", const=True, default=None, help="Alias for --smc_terminal_resample")
+    parser.add_argument("--use_hybrid_smc", type=str2bool, nargs="?", const=True, default=False, help="Enable Harmonized RS-Twisted-SMC Engine with Doob-Tweedie Innovation Residual and 64-bit Seed Replay (Theorem 5.2 / Lemma Double-Counting)")
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)

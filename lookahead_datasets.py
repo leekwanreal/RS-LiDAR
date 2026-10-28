@@ -43,8 +43,9 @@ def init_tokenizer():
 
 
 class gen_lookahead_samples(Dataset):
-    def __init__(self, directory, top_k):
-        print("top_k:", top_k)
+    def __init__(self, directory, top_k, reward_key="ImageReward"):
+        self.reward_key = reward_key
+        print("top_k:", top_k, "| reward_key:", reward_key)
         clean_dir = directory.rstrip("/\\")
         basename = os.path.basename(clean_dir)
         candidates = [
@@ -84,7 +85,9 @@ class gen_lookahead_samples(Dataset):
                     latent = torch.load(latent_path, map_location="cpu")
                     with open(results_path, "r") as f:
                         label = json.load(f)
-                    if "ImageReward" in label and "result" in label["ImageReward"]:
+                    if self.reward_key in label and "result" in label[self.reward_key]:
+                        reward = label[self.reward_key]["result"]
+                    elif "ImageReward" in label and "result" in label["ImageReward"]:
                         reward = label["ImageReward"]["result"]
                     else:
                         first_metric = [k for k in label.keys() if isinstance(label[k], dict) and "result" in label[k]]

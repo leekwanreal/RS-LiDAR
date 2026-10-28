@@ -1,25 +1,30 @@
 import torch
 from typing import Optional
 
-
 class RSFlowLiDARGuidance:
+    # Empirical VAE Whitening \Sigma^{-1/2} cho 16-channel FLUX (Định lý 7 & Table 2)
+    FLUX_EMPIRICAL_INV_STDS = torch.tensor([
+        0.546, 0.690, 0.800, 0.909, 1.053, 1.136, 1.250, 1.389,
+        1.538, 1.724, 1.923, 2.128, 2.381, 2.632, 2.857, 3.125
+    ], dtype=torch.float32)
+
     def __init__(
         self, 
         s_flow: float = 12.5, 
         lambda_r: float = 5000.0, 
         whitening_weights: Optional[torch.Tensor] = None
     ):
-        """
+        r"""
         Module điều khiển vận tốc Lookahead cho Rectified Flows (Định lý 7).
         
         Args:
             s_flow: Hệ số khuếch đại vận tốc dẫn đường (default: 12.5).
             lambda_r: Độ nhạy nhiệt độ Softmax exponentiation cho reward (default: 5000.0).
-            whitening_weights: Trọng số làm trắng latent space (default: 16-channel FLUX).
+            whitening_weights: Trọng số làm trắng latent space \Sigma^{-1/2} (default: 16-channel identity / FLUX empirical).
         """
         self.s_flow = s_flow
         self.lambda_r = lambda_r
-        # Default VAE Whitening cho 16-channel nếu không được cung cấp (FLUX approx)
+        # Default VAE Whitening cho 16-channel nếu không cung cấp (bảo toàn đơn vị phương sai cho latents chuẩn hóa)
         if whitening_weights is None:
             self.whitening_weights = torch.ones((1, 16, 1, 1))
         else:
@@ -32,16 +37,18 @@ class RSFlowLiDARGuidance:
         lookahead_z0: torch.Tensor, 
         smoothed_rewards: torch.Tensor, 
         sigma_t: float,
+        use_posterior_damper: bool = True,
         bypass_fast_path: bool = False
     ) -> torch.Tensor:
-        """
-        Tính toán vector lực đẩy vận tốc an toàn với Parabolic Damper.
+        r"""
+        Tính toán vector lực đẩy vận tốc an toàn với Parabolic Damper (Định lý 7).
         
         Args:
             z_t: Latent hiện tại [B, C, H, W].
             lookahead_z0: Các điểm ảnh sạch dự phóng [K, C, H, W].
             smoothed_rewards: Điểm thưởng đã chuẩn hóa [K].
-            sigma_t: Mức độ nhiễu hiện tại in [0, 1].
+            sigma_t: Mức độ nhiễu hiện tại in [0, 1] (1=noise, 0=clean).
+            use_posterior_damper: Kích hoạt Parabolic Damper \omega(t) = t(1-t) triệt tiêu kỳ dị.
             bypass_fast_path: Cho phép tắt Fast-path để kiểm tra Parabolic Damper tại biên cực tiểu.
             
         Returns:
@@ -76,19 +83,22 @@ class RSFlowLiDARGuidance:
         sq_dist = torch.sum(diff ** 2, dim=-1)                           # [B, K]
         
         # 4. Softmax Tilting
-        log_base = -sq_dist / (2.0 * var_k)
+        log_base = -sq_dist / (2.0 * var_k + 1e-8)
         log_tilted = log_base + self.lambda_r * smoothed_rewards.unsqueeze(0)
         
         w_base = torch.softmax(log_base, dim=-1)
         w_tilted = torch.softmax(log_tilted, dim=-1)
         w_diff = (w_tilted - w_base).unsqueeze(-1)  # [B, K, 1]
         
-        # Trọng tâm vector dịch chuyển
+        # Trọng tâm vector dịch chuyển \sum (w^r - w) ((1-t)z0 - z_t)
         mean_shift_flat = torch.sum(w_diff * diff, dim=1)  # [B, D]
         
-        # 5. Parabolic Boundary Damper (Định lý 7)
+        # 5. Singularity-Free Parabolic Damped Velocity Shift (Định lý 7 & Theorem 7 formula 38)
         omega_t = sigma_t * (1.0 - sigma_t)
-        
-        velocity_shift_flat = -self.s_flow * omega_t * mean_shift_flat
+        if use_posterior_damper:
+            velocity_shift_flat = -self.s_flow * omega_t * mean_shift_flat
+        else:
+            efr_score_grad = mean_shift_flat / (var_k + 1e-8)
+            velocity_shift_flat = -self.s_flow * (sigma_t / (alpha_t + 1e-8)) * efr_score_grad
         
         return velocity_shift_flat.view(B, C, H, W)
