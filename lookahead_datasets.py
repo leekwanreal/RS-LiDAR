@@ -85,13 +85,25 @@ class gen_lookahead_samples(Dataset):
                     latent = torch.load(latent_path, map_location="cpu")
                     with open(results_path, "r") as f:
                         label = json.load(f)
+                    metric_key = None
                     if self.reward_key in label and "result" in label[self.reward_key]:
-                        reward = label[self.reward_key]["result"]
+                        metric_key = self.reward_key
                     elif "ImageReward" in label and "result" in label["ImageReward"]:
-                        reward = label["ImageReward"]["result"]
+                        metric_key = "ImageReward"
                     else:
                         first_metric = [k for k in label.keys() if isinstance(label[k], dict) and "result" in label[k]]
-                        reward = label[first_metric[0]]["result"] if first_metric else [0.0] * len(latent)
+                        metric_key = first_metric[0] if first_metric else None
+
+                    if metric_key is not None:
+                        reward = label[metric_key]["result"]
+                        reward_high = label[metric_key].get("result_high", reward)
+                        reward_low = label[metric_key].get("result_low", reward)
+                    else:
+                        reward = [0.0] * len(latent)
+                        reward_high = reward
+                        reward_low = reward
+
+                    lookahead_seeds = label.get("lookahead_seeds", None)
                     prompt = label["prompt"]
 
                     random.seed(42)
@@ -99,11 +111,17 @@ class gen_lookahead_samples(Dataset):
                     indices = random.sample(range(len(latent)), k)
                     latents = [latent[i] for i in indices]
                     rewards = [reward[i] for i in indices]
+                    rewards_high = [reward_high[i] for i in indices]
+                    rewards_low = [reward_low[i] for i in indices]
+                    seeds = [lookahead_seeds[i] for i in indices] if lookahead_seeds is not None and len(lookahead_seeds) > max(indices) else None
                     prompts = [prompt[i] for i in indices]
                     prompt_idx = int(d)
                     datapoint = {
                         "latents": torch.stack(latents),
                         "rewards": torch.tensor(rewards),
+                        "rewards_high": torch.tensor(rewards_high),
+                        "rewards_low": torch.tensor(rewards_low),
+                        "seeds": seeds,
                         "prompts": prompts,
                         "prompt_idx": prompt_idx
                     }

@@ -5,7 +5,7 @@ Feynman-Kac Diffusion (FKD) steering mechanism implementation.
 import torch
 from enum import Enum
 import numpy as np
-from typing import Callable, Optional, Tuple, Any
+from typing import Callable, Optional, Tuple, Any, Union, List
 import logging
 
 
@@ -250,7 +250,13 @@ class FKD:
         return torch.cat(rewards_list, dim=0)
 
     def resample(
-        self, *, sampling_idx: int, latents: torch.Tensor, x0_preds: torch.Tensor
+        self,
+        *,
+        sampling_idx: int,
+        latents: torch.Tensor,
+        x0_preds: torch.Tensor,
+        v_lidar: Optional[torch.Tensor] = None,
+        seed_int: Optional[Union[int, List[int], torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Perform resampling of particles if conditions are met.
@@ -286,8 +292,18 @@ class FKD:
             else:
                 rho_t = 1.0 - (sampling_idx / float(max(1, self.time_steps)))
             
-            seed_int = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
-            v_lidar = self.population_rs
+            # Align v_lidar if passed from pipeline; otherwise fallback safely
+            if v_lidar is None:
+                if self.population_rs[0] > -90.0:
+                    v_lidar = self.population_rs
+                else:
+                    v_lidar = self.reward_fn(population_images)
+            else:
+                v_lidar = v_lidar.to(device=latents.device, dtype=torch.float32)
+
+            if seed_int is None:
+                seed_int = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
+
             phi_residual, v_smc = self.smc_engine.compute_step(
                 x_t=latents,
                 tweedie_x0=population_images,
@@ -354,7 +370,13 @@ class FKD:
             self.product_of_potentials = self.product_of_potentials.to(device=rs_candidates.device)
 
         # Compute importance weights
-        if self.potential_type == PotentialType.MAX:
+        if getattr(self, "use_hybrid_smc", False):
+            # Harmonized RS-Twisted-SMC: rs_candidates is ALREADY the Doob-Tweedie Innovation Residual phi_residual.
+            # Double-counting has been removed via Girsanov drift subtraction.
+            # Do NOT subtract self.population_rs to avoid double-subtraction.
+            w = torch.exp(self.lmbda * rs_candidates)
+            self.population_rs = v_smc.to(device=self.population_rs.device, dtype=self.population_rs.dtype)
+        elif self.potential_type == PotentialType.MAX:
             rs_candidates = torch.max(rs_candidates, self.population_rs)
             w = torch.exp(self.lmbda * rs_candidates)
         elif self.potential_type == PotentialType.ADD:

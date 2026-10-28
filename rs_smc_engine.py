@@ -56,15 +56,27 @@ class HarmonizedRSLiDARSMCEngine:
         # 1. 64-bit Seed Replay & Kernel Coupling: Tái tạo nhiễu đối xứng (0.00 GiB VRAM overhead)
         # Khớp tuyệt đối kích thước không gian với tweedie_x0 (thường là 3 channel pixel domain)
         if seed_int is not None and self.alpha_couple > 0.0:
-            generator = torch.Generator(device=device).manual_seed(int(seed_int))
-            u_lookahead = torch.randn(tweedie_x0.shape, generator=generator, device=device, dtype=dtype)
+            if isinstance(seed_int, (list, tuple, torch.Tensor)) and len(seed_int) == N:
+                u_lookahead = torch.empty(tweedie_x0.shape, device=device, dtype=dtype)
+                zeta = torch.empty(tweedie_x0.shape, device=device, dtype=dtype)
+                for i in range(N):
+                    gen_seed = int(seed_int[i].item() if isinstance(seed_int[i], torch.Tensor) else seed_int[i]) & 0x7FFFFFFF
+                    gen = torch.Generator(device=device).manual_seed(gen_seed)
+                    u_lookahead[i] = torch.randn(tweedie_x0.shape[1:], generator=gen, device=device, dtype=dtype)
+                    zeta[i] = torch.randn(tweedie_x0.shape[1:], generator=gen, device=device, dtype=dtype)
+            else:
+                scalar_val = seed_int[0] if isinstance(seed_int, (list, tuple, torch.Tensor)) else seed_int
+                scalar_seed = int(scalar_val.item() if isinstance(scalar_val, torch.Tensor) else scalar_val) & 0x7FFFFFFF
+                gen = torch.Generator(device=device).manual_seed(scalar_seed)
+                u_lookahead = torch.randn(tweedie_x0.shape, generator=gen, device=device, dtype=dtype)
+                zeta = torch.randn(tweedie_x0.shape, generator=gen, device=device, dtype=dtype)
+
             if self.alpha_couple >= 1.0:
                 u_base = u_lookahead
             else:
-                zeta = torch.randn(tweedie_x0.shape, generator=generator, device=device, dtype=dtype)
                 alpha = self.alpha_couple
                 u_base = ((1.0 - alpha ** 2) ** 0.5) * zeta + alpha * u_lookahead
-                del zeta
+            del zeta, u_lookahead  # Giải phóng ngay lập tức
         else:
             u_base = torch.randn(tweedie_x0.shape, device=device, dtype=dtype)
         
@@ -85,7 +97,8 @@ class HarmonizedRSLiDARSMCEngine:
         
         # 5. Doob-Tweedie Innovation Residual (Triệt tiêu Double-Counting)
         # Chỉ đánh giá lượng giá trị MỚI chưa được cộng vào drift
-        phi_residual = v_smc - (self.eta_drift * rho_t * v_lidar)
+        v_lidar_aligned = v_lidar.to(device=device, dtype=v_smc.dtype) if isinstance(v_lidar, torch.Tensor) else torch.tensor(v_lidar, device=device, dtype=v_smc.dtype)
+        phi_residual = v_smc - (self.eta_drift * rho_t * v_lidar_aligned)
         
         return phi_residual, v_smc
 

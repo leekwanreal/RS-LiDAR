@@ -337,10 +337,27 @@ class FKDStableDiffusionXL(
         # --------------------------------------------------
         # weights
         # --------------------------------------------------
-        rewards = subset["rewards"][0].to(device).float()  # (K,)
-        rewards = rewards.view(1, K)  # (1, K)
+        if "rewards_high" in subset and "rewards_low" in subset:
+            r_high = subset["rewards_high"][0].to(device).float().view(1, K)
+            r_low = subset["rewards_low"][0].to(device).float().view(1, K)
+            alpha_prod_0 = self.scheduler.alphas_cumprod[0].to(device) if len(self.scheduler.alphas_cumprod) > 0 else 1.0
+            rho_t = torch.clamp(alpha_prod_t / (alpha_prod_0 + 1e-8), 1e-4, 1.0)
+            rewards = (1.0 - rho_t ** 2) * r_low + (rho_t ** 2) * r_high
+        else:
+            rewards = subset["rewards"][0].to(device).float()  # (K,)
+            rewards = rewards.view(1, K)  # (1, K)
+
         w = F.softmax(potential, dim=1)  # (B, K)
         w_r = F.softmax((lamda * rewards + potential), dim=1)  # (B, K)
+
+        # Extract Lookahead Prospective Potential and dominant seed for Doob-Tweedie Innovation Residual
+        self._last_v_lidar = (w_r * rewards).sum(dim=1)  # (B,)
+        dominant_indices = torch.argmax(w_r, dim=1)  # (B,)
+        seeds_list = subset.get("seeds", None)
+        if seeds_list is not None and len(seeds_list) > 0:
+            self._last_dominant_seeds = [seeds_list[idx.item()] if idx.item() < len(seeds_list) else None for idx in dominant_indices]
+        else:
+            self._last_dominant_seeds = None
 
         delta_w = (w_r - w)[..., None, None, None]
         guide = delta_w * lookahead_latents_expanded
@@ -843,8 +860,14 @@ class FKDStableDiffusionXL(
 
                 # FK Steering Change
                 if fkd_args is not None and fkd_args['use_smc']:
+                    v_lidar_val = getattr(self, "_last_v_lidar", None)
+                    dominant_seeds = getattr(self, "_last_dominant_seeds", None)
                     latents, current_pop_images = fkd.resample(
-                        sampling_idx=i, latents=latents, x0_preds=x0_preds
+                        sampling_idx=i,
+                        latents=latents,
+                        x0_preds=x0_preds,
+                        v_lidar=v_lidar_val,
+                        seed_int=dominant_seeds,
                     )
 
                     # if current_pop_images is not None:

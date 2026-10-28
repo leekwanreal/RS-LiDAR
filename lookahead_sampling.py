@@ -101,7 +101,8 @@ def generate_smoothed_pixel_batch(
     sigma: float,
     M: int = 4,
     noise_mode: str = "independent_antithetic",
-    clamp_range: Optional[Tuple[float, float]] = (-1.0, 1.0)
+    clamp_range: Optional[Tuple[float, float]] = (-1.0, 1.0),
+    **kwargs
 ) -> torch.Tensor:
     """
     Tạo batch nhiễu Monte Carlo tuân thủ tính đối xứng Antithetic (Theorem 5.1),
@@ -113,7 +114,26 @@ def generate_smoothed_pixel_batch(
     if sigma <= 0.0 or M <= 0:
         return images_0.unsqueeze(0).repeat(max(1, M), 1, 1, 1, 1)
 
-    if noise_mode == "independent_antithetic":
+    if noise_mode == "stratified_harmonized":
+        assert M >= 4 and M % 2 == 0, f"M must be even and >= 4 for stratified_harmonized, got M={M}."
+        sigma_hi = kwargs.get("sigma_high", 1.0) if kwargs else 1.0
+        sigma_lo = kwargs.get("sigma_low", 0.25) if kwargs else 0.25
+        u_hi = torch.randn((1, N, C, H, W), device=device, dtype=dtype)
+        p_hi = torch.cat([u_hi, -u_hi], dim=0) * sigma_hi
+        u_lo = torch.randn((1, N, C, H, W), device=device, dtype=dtype)
+        p_lo = torch.cat([u_lo, -u_lo], dim=0) * sigma_lo
+        pert = torch.cat([p_hi, p_lo], dim=0)
+        if M > 4:
+            extra_half = (M - 4) // 2
+            u_ex = torch.randn((extra_half, N, C, H, W), device=device, dtype=dtype)
+            p_ex = torch.cat([u_ex, -u_ex], dim=0) * sigma_lo
+            pert = torch.cat([pert, p_ex], dim=0)
+        perturbed = images_0.unsqueeze(0) + pert
+        del u_hi, u_lo, pert
+        if clamp_range is not None:
+            perturbed = torch.clamp(perturbed, clamp_range[0], clamp_range[1])
+        return perturbed
+    elif noise_mode == "independent_antithetic":
         assert M % 2 == 0, f"M phải là số chẵn cho chế độ antithetic, nhận M={M}."
         half_M = M // 2
         u_half = torch.randn((half_M, N, C, H, W), device=device, dtype=dtype)
@@ -124,7 +144,7 @@ def generate_smoothed_pixel_batch(
         # Chế độ cũ: cùng 1 nhiễu cho toàn bộ N hạt
         u = torch.randn((M, 1, C, H, W), device=device, dtype=dtype).expand(M, N, C, H, W)
     else:
-        raise ValueError(f"Unknown noise_mode: {noise_mode}. Expected 'independent_antithetic', 'independent_iid', or 'coupled_crn'.")
+        raise ValueError(f"Unknown noise_mode: {noise_mode}. Expected 'independent_antithetic', 'independent_iid', 'coupled_crn', or 'stratified_harmonized'.")
 
     # In-place broadcast addition to save VRAM, explicitly delete u
     perturbed = images_0.unsqueeze(0) + sigma * u
@@ -139,7 +159,8 @@ def compute_entropic_antithetic_rewards(
     rewards_mc: torch.Tensor,
     sigma: float = 1.0,
     beta_risk: float = 0.5,
-    noise_mode: str = "independent_antithetic"
+    noise_mode: str = "independent_antithetic",
+    **kwargs
 ) -> Dict[str, torch.Tensor]:
     """
     Phân rã Half-Sum / Half-Difference (Theorem 5.1) và tính Donsker-Varadhan Entropic Risk (Theorem 5.2).
@@ -147,6 +168,31 @@ def compute_entropic_antithetic_rewards(
     # Ép kiểu FP32 để chống tràn số / sai số
     r_fp32 = rewards_mc.to(torch.float32)
     M, N = r_fp32.shape
+
+    if noise_mode == "stratified_harmonized" and M >= 4:
+        # Pair 1 (high): [0, 1], Pair 2 (low): [2, 3]
+        r_hi_pos, r_hi_neg = r_fp32[0], r_fp32[1]
+        mean_hi = 0.5 * (r_hi_pos + r_hi_neg)
+        diff_hi = 0.5 * (r_hi_pos - r_hi_neg)
+        grad_energy_hi = diff_hi ** 2
+        r_hi_corr = mean_hi - (beta_risk / 4.0) * grad_energy_hi
+
+        r_lo_pos, r_lo_neg = r_fp32[2], r_fp32[3]
+        mean_lo = 0.5 * (r_lo_pos + r_lo_neg)
+        diff_lo = 0.5 * (r_lo_pos - r_lo_neg)
+        grad_energy_lo = diff_lo ** 2
+        r_lo_corr = mean_lo - (beta_risk / 4.0) * grad_energy_lo
+
+        r_corrected = 0.5 * (r_hi_corr + r_lo_corr)
+        grad_energy_sq = 0.5 * (grad_energy_hi + grad_energy_lo)
+        pair_var = 0.5 * (grad_energy_hi + grad_energy_lo)
+        return {
+            "r_corrected": r_corrected.to(rewards_mc.dtype),
+            "grad_energy_sq": grad_energy_sq.to(rewards_mc.dtype),
+            "pair_variance": pair_var.to(rewards_mc.dtype),
+            "r_high": r_hi_corr.to(rewards_mc.dtype),
+            "r_low": r_lo_corr.to(rewards_mc.dtype),
+        }
 
     if noise_mode != "independent_antithetic" or M % 2 != 0:
         # Fallback chuẩn nếu không phải antithetic hoặc M lẻ
@@ -601,7 +647,9 @@ def main(args):
                             scores_mat,
                             sigma=args.sigma,
                             beta_risk=getattr(args, "beta_risk", 0.5),
-                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
+                            noise_mode=getattr(args, "noise_mode", "independent_antithetic"),
+                            sigma_high=getattr(args, "sigma_high", 1.0),
+                            sigma_low=getattr(args, "sigma_low", 0.25)
                         )
                         smoothed_scores = entropic_res["r_corrected"].tolist()
                         scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -614,6 +662,10 @@ def main(args):
                             "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
                             "pair_variance": entropic_res["pair_variance"].tolist(),
                         }
+                        if "r_high" in entropic_res and "r_low" in entropic_res:
+                            results[metric]["result_high"] = entropic_res["r_high"].tolist()
+                            results[metric]["result_low"] = entropic_res["r_low"].tolist()
+                results["lookahead_seeds"] = [(int(args.seed) * 1000003 + k * 1009) & 0x7FFFFFFF for k in range(n_particles)]
                 if getattr(args, "use_pareto", False) and len(metrics_to_compute) > 1:
                     try:
                         from multi_reward_evaluator import compute_multi_reward_pareto_potential
@@ -662,7 +714,7 @@ def main(args):
                                 noisy_t_list = [(decoded_tensor + torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
                                 noisy_t_all = torch.cat(noisy_t_list, dim=0)
                             else:
-                                perturbed_all = generate_smoothed_pixel_batch(decoded_tensor, sigma=args.sigma, M=num_mc, noise_mode=getattr(args, "noise_mode", "independent_antithetic"))
+                                perturbed_all = generate_smoothed_pixel_batch(decoded_tensor, sigma=args.sigma, M=num_mc, noise_mode=getattr(args, "noise_mode", "independent_antithetic"), sigma_high=getattr(args, "sigma_high", 1.0), sigma_low=getattr(args, "sigma_low", 0.25))
                                 noisy_t_all = perturbed_all.view(-1, *decoded_tensor.shape[1:])
                         else:
                             noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
@@ -869,7 +921,7 @@ def get_args():
     parser.add_argument("--reuse_latents_from", type=str, default=None, help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
     parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
     parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers (CRN): broadcast a single noise sample across all N particles within each prompt to eliminate inter-particle ranking variance")
-    parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn"], help="Monte Carlo noise sampling mode: 'independent_antithetic' (Theorem 5.1), 'independent_iid', or 'coupled_crn' (legacy)")
+    parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode: 'independent_antithetic' (Theorem 5.1), 'independent_iid', or 'coupled_crn' (legacy)")
     parser.add_argument("--beta_risk", type=float, default=0.5, help="Entropic risk penalty parameter beta (Theorem 5.2, default: 0.5; 0.0 disables risk penalty)")
     parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
     parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
