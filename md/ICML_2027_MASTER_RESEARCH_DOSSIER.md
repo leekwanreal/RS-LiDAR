@@ -139,6 +139,20 @@ Comparison between Vanilla Sequential Monte Carlo (SMC) and RS-LiDAR + SMC:
 
 ---
 
+### Table 5.1: Ablation Study on Phase 2 Target Denoising Steps ($S \in \{25, 30, 35, 40, 45, 50\}$, SD v1.5)
+> Empirical evaluation across all $553$ GenEval prompts comparing Vanilla LiDAR (Replication) vs. RS-LiDAR ($\sigma=1.0, M=8$):
+
+| Steps ($S$) | Method | ImageReward (↑) | CLIP-Score (↑) | HPS v2.1 (↑) | GenEval (↑) | Dynamic Regime |
+| :---: | :--- | :---: | :---: | :---: | :--- |
+| **$S = 25$** | LiDAR (Replication)<br>**RS-LiDAR ($M=8$)** | 0.0356<br>**0.0882** | 0.2720<br>**0.2746** | 0.2402<br>**0.2408** | 0.3946<br>**0.4129** | Budget constrained: +147.8% IR gain |
+| **$S = 30$** | LiDAR (Replication)<br>**RS-LiDAR ($M=8$)** | 0.2511<br>**0.2885** | 0.2759<br>**0.2775** | 0.2543<br>**0.2547** | 0.4319<br>**0.4479** | Fast manifold attraction |
+| **$S = 35$** | LiDAR (Replication)<br>**RS-LiDAR ($M=8$)** | 0.3291<br>**0.3688** | 0.2773<br>**0.2789** | 0.2616<br>**0.2624** | 0.4515<br>**0.4680** | Under-steered trajectory |
+| **$S = 40$** | LiDAR (Replication)<br>**RS-LiDAR ($M=8$)** | 0.3513<br>**0.3824** | 0.2776<br>**0.2788** | 0.2652<br>**0.2658** | 0.4563<br>**0.4626** | Near-optimal convergence |
+| **$S = 45$** | LiDAR (Replication)<br>**RS-LiDAR ($M=8$)** | 0.3648<br>**0.3959** | 0.2781<br>**0.2792** | 0.2676<br>**0.2684** | 0.4505<br>**0.4696** | 🏆 **Global Maximum (IR = 0.3959)** |
+| **$S = 50$** | LiDAR (Replication)<br>**RS-LiDAR ($M=8$)** | 0.3466<br>**0.3760** | 0.2772<br>**0.2789** | 0.2674<br>**0.2684** | 0.4550<br>**0.4670** | Saturation drop (Over-steering) |
+
+---
+
 ### Table 5.2: Empirical Local Lipschitz Constant Reduction across 5,530 Pairs
 Measured across 5,530 differential perturbation pairs ($\|x_1 - x_2\| \le \epsilon$):
 
