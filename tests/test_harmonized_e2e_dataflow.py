@@ -196,6 +196,91 @@ class TestHarmonizedE2EDataFlow(unittest.TestCase):
         expected_mid = 0.75 * r_low + 0.25 * r_high
         self.assertTrue(torch.allclose(r_sync_mid, expected_mid, atol=1e-6))
 
+    def test_06_no_hardcoded_parameters(self):
+        """
+        Verify that all parameters (eta_drift, alpha_couple, beta_risk, sigma_low, sigma_high)
+        are dynamically passed from CLI/kwargs and NOT hardcoded.
+        """
+        custom_eta = 0.62
+        custom_alpha = 0.85
+        custom_beta = 0.33
+        custom_sigma_low = 0.18
+        custom_sigma_high = 1.45
+
+        fkd = FKD(
+            reward_fn=lambda x: torch.ones(x.shape[0]),
+            latent_to_decode_fn=lambda x: torch.zeros((x.shape[0], 3, 32, 32)),
+            num_particles=4,
+            time_steps=50,
+            potential_type=PotentialType.DIFF,
+            use_hybrid_smc=True,
+            eta_drift=custom_eta,
+            alpha_couple=custom_alpha,
+            beta_risk=custom_beta,
+            sigma_low=custom_sigma_low,
+            sigma_high=custom_sigma_high,
+            device=self.device
+        )
+
+        engine = fkd.smc_engine
+        self.assertIsNotNone(engine)
+        self.assertEqual(engine.eta_drift, custom_eta)
+        self.assertEqual(engine.alpha_couple, custom_alpha)
+        self.assertEqual(engine.beta_risk, custom_beta)
+        self.assertEqual(engine.sigma_smc, custom_sigma_low)
+        self.assertEqual(engine.sigma_high, custom_sigma_high)
+
+    def test_07_noise_in_pixel_space_verified(self):
+        """
+        Verify that noise is TRULY added in pixel space (RGB 3-channel domain [-1, 1]):
+        - Checks that tweedie_x0 has 3 channels (RGB pixel space, not 4 channels latent).
+        - Checks that reward_fn receives [2N, 3, H, W] in [-1.0, 1.0].
+        - Checks that noise perturbation actually modifies pixel values.
+        """
+        engine = HarmonizedRSLiDARSMCEngine(
+            sigma_smc=0.25,
+            beta_risk=0.5,
+            eta_drift=0.4,
+            alpha_couple=0.7
+        )
+
+        # 3 channels RGB pixel domain [-1.0, 1.0]
+        N, C, H, W = 4, 3, 64, 64
+        tweedie_pixel = torch.full((N, C, H, W), 0.5, device=self.device)
+        latents_dummy = torch.randn((N, 4, 16, 16), device=self.device)
+        v_lidar = torch.zeros((N,), device=self.device)
+
+        captured_shapes = []
+        captured_ranges = []
+        captured_diffs = []
+
+        def inspecting_reward_fn(pixel_batch):
+            # Assert 3 channels (RGB pixel space, NOT 4 channels latent space!)
+            captured_shapes.append(pixel_batch.shape)
+            captured_ranges.append((pixel_batch.min().item(), pixel_batch.max().item()))
+            # Measure deviation from unperturbed tweedie_pixel
+            diff = pixel_batch[:N] - tweedie_pixel
+            captured_diffs.append(diff.abs().mean().item())
+            return pixel_batch.mean(dim=(1, 2, 3))
+
+        phi_res, v_smc = engine.compute_step(
+            x_t=latents_dummy,
+            tweedie_x0=tweedie_pixel,
+            v_lidar=v_lidar,
+            seed_int=12345,
+            rho_t=1.0,
+            reward_fn=inspecting_reward_fn
+        )
+
+        # 1. Verify batch shape is [2N, 3, H, W] (3 channels = RGB pixel space!)
+        self.assertEqual(captured_shapes[0], (2 * N, 3, H, W))
+        # 2. Verify values are clamped to [-1.0, 1.0] (image pixel space contract)
+        min_val, max_val = captured_ranges[0]
+        self.assertGreaterEqual(min_val, -1.0)
+        self.assertLessEqual(max_val, 1.0)
+        # 3. Verify noise was actually added: difference is strictly positive!
+        self.assertGreater(captured_diffs[0], 0.05, "Noise was NOT injected into pixel values!")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,7 +125,7 @@ class FKD:
             from rs_smc_engine import HarmonizedRSLiDARSMCEngine
             self.smc_engine = HarmonizedRSLiDARSMCEngine(
                 sigma_high=kwargs.get("sigma_high", 1.0),
-                sigma_smc=kwargs.get("sigma_smc", kwargs.get("smc_sigma", 0.25)),
+                sigma_smc=kwargs.get("sigma_smc", kwargs.get("sigma_low", kwargs.get("smc_sigma", 0.25))),
                 beta_risk=kwargs.get("beta_risk", 0.5),
                 eta_drift=kwargs.get("eta_drift", 0.4),
                 alpha_couple=kwargs.get("alpha_couple", 0.7)

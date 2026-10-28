@@ -586,8 +586,21 @@ def main(args):
                 mc_evals = {metric: [] for metric in metrics_to_compute}
                 with torch.inference_mode():
                     half_M = args.num_mc_samples // 2
+                    is_stratified = (getattr(args, "noise_mode", "") == "stratified_harmonized" and args.num_mc_samples >= 4 and args.num_mc_samples % 2 == 0)
                     is_antithetic = (getattr(args, "noise_mode", "independent_antithetic") == "independent_antithetic" and args.num_mc_samples % 2 == 0)
-                    if is_antithetic:
+                    
+                    sigma_hi = getattr(args, "sigma_high", 1.0)
+                    sigma_lo = getattr(args, "sigma_low", 0.25)
+
+                    if is_stratified:
+                        if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                            u_p1 = torch.randn_like(scaled_latents)
+                            u_p2 = torch.randn_like(scaled_latents)
+                        else:
+                            u_p1 = torch.randn_like(decoded_tensor)
+                            u_p2 = torch.randn_like(decoded_tensor)
+                        u_half_list = None
+                    elif is_antithetic:
                         if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
                             u_half_list = [torch.randn_like(scaled_latents) for _ in range(half_M)]
                         else:
@@ -597,7 +610,13 @@ def main(args):
 
                     for m_idx in range(args.num_mc_samples):
                         if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
-                            if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
+                            if is_stratified:
+                                if m_idx == 0: noise = u_p1 * sigma_hi
+                                elif m_idx == 1: noise = -u_p1 * sigma_hi
+                                elif m_idx == 2: noise = u_p2 * sigma_lo
+                                elif m_idx == 3: noise = -u_p2 * sigma_lo
+                                else: noise = torch.randn_like(scaled_latents) * sigma_lo
+                            elif getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                                 noise = torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma
                             elif is_antithetic and u_half_list is not None:
                                 u_m = u_half_list[m_idx] if m_idx < half_M else -u_half_list[m_idx - half_M]
@@ -607,7 +626,14 @@ def main(args):
                             noisy_lat = scaled_latents + noise
                             noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
                         else:
-                            if args.sigma > 0:
+                            if is_stratified:
+                                if m_idx == 0: noise = u_p1 * sigma_hi
+                                elif m_idx == 1: noise = -u_p1 * sigma_hi
+                                elif m_idx == 2: noise = u_p2 * sigma_lo
+                                elif m_idx == 3: noise = -u_p2 * sigma_lo
+                                else: noise = torch.randn_like(decoded_tensor) * sigma_lo
+                                noisy_t = (decoded_tensor + noise).clamp(-1.0, 1.0)
+                            elif args.sigma > 0:
                                 if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                                     noise = torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma
                                 elif is_antithetic and u_half_list is not None:
@@ -704,12 +730,14 @@ def main(args):
                                 sigma=args.sigma,
                                 M=num_mc,
                                 noise_mode=getattr(args, "noise_mode", "independent_antithetic"),
-                                clamp_range=None
+                                clamp_range=None,
+                                sigma_high=getattr(args, "sigma_high", 1.0),
+                                sigma_low=getattr(args, "sigma_low", 0.25)
                             )
                             noisy_lat_cat = perturbed_lat.view(-1, *scaled_latents.shape[1:])
                         noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
                     else:
-                        if args.sigma > 0:
+                        if args.sigma > 0 or getattr(args, "noise_mode", "") == "stratified_harmonized":
                             if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                                 noisy_t_list = [(decoded_tensor + torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
                                 noisy_t_all = torch.cat(noisy_t_list, dim=0)
