@@ -413,7 +413,10 @@ class FKD:
                     w, num_samples=self.num_particles, replacement=True
                 )
                 resampled_latents = latents[indices]
-                self.population_rs = rs_candidates[indices]
+                if getattr(self, "use_hybrid_smc", False):
+                    self.population_rs = v_smc[indices].to(device=self.population_rs.device, dtype=self.population_rs.dtype)
+                else:
+                    self.population_rs = rs_candidates[indices]
 
                 # Resample population images
                 resampled_images = population_images[indices]
@@ -426,7 +429,10 @@ class FKD:
                 # No resampling
                 resampled_images = population_images
                 resampled_latents = latents
-                self.population_rs = rs_candidates
+                if getattr(self, "use_hybrid_smc", False):
+                    self.population_rs = v_smc.to(device=self.population_rs.device, dtype=self.population_rs.dtype)
+                else:
+                    self.population_rs = rs_candidates
 
         else:
             # Resample indices based on weights
@@ -434,7 +440,10 @@ class FKD:
                 w, num_samples=self.num_particles, replacement=True
             )
             resampled_latents = latents[indices]
-            self.population_rs = rs_candidates[indices]
+            if getattr(self, "use_hybrid_smc", False):
+                self.population_rs = v_smc[indices].to(device=self.population_rs.device, dtype=self.population_rs.dtype)
+            else:
+                self.population_rs = rs_candidates[indices]
 
             # Resample population images
             resampled_images = population_images[indices]

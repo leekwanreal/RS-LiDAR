@@ -167,8 +167,10 @@ class TestHarmonizedE2EDataFlow(unittest.TestCase):
             seed_int=42
         )
 
-        # Ensure self.population_rs was updated to v_smc (around 1.0-1.5) and NOT still -100.0!
+        # Ensure self.population_rs was updated to v_smc (around 1.0-2.0) and NOT phi_residual or -100.0!
         self.assertTrue(fkd.population_rs[0] > 0.0, f"Expected population_rs > 0, got {fkd.population_rs}")
+        # Verify that population_rs stores Tweedie reward v_smc values, which are >= 1.0
+        self.assertTrue(torch.all(fkd.population_rs >= 1.0), f"Expected v_smc >= 1.0, got {fkd.population_rs}")
 
     def test_05_homotopy_variance_bridge_formula(self):
         """
