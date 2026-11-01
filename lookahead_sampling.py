@@ -577,6 +577,7 @@ def main(args):
 
         end_time = datetime.now()
         time_taken = end_time - start_time
+        n_particles = decoded_tensor.shape[0]
 
         if getattr(args, "use_smoothing", False):
             # Randomized Smoothing: Monte Carlo expectation E[R(x + eps)] over M noisy samples
