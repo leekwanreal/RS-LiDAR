@@ -284,5 +284,50 @@ class TestHarmonizedE2EDataFlow(unittest.TestCase):
         self.assertGreater(captured_diffs[0], 0.05, "Noise was NOT injected into pixel values!")
 
 
+
+    def test_08_nested_seed_unpacking_and_none_resilience(self):
+        """
+        Verify that HarmonizedRSLiDARSMCEngine and FKD.resample:
+        1. Handle seed_int=[None, None] without TypeError or crashing.
+        2. Handle nested seed_int=[[101, 102, 103, 104]] by unpacking cleanly.
+        3. Handle mixed/tensor/scalar seeds with multi-layer defensive normalization.
+        """
+        engine = HarmonizedRSLiDARSMCEngine(alpha_couple=0.7)
+        tweedie_x0 = torch.zeros((self.N, self.C, self.H, self.W), device=self.device)
+        x_t = torch.zeros((self.N, 4, 16, 16), device=self.device)
+        v_lidar = torch.zeros((self.N,), device=self.device)
+        def dummy_reward(imgs):
+            return imgs.mean(dim=(1, 2, 3))
+
+        # 1. seed_int with None elements (the exact cause of the earlier crash)
+        phi_none, v_none = engine.compute_step(x_t, tweedie_x0, v_lidar, [None] * self.N, 1.0, dummy_reward)
+        self.assertEqual(phi_none.shape, (self.N,))
+        self.assertEqual(v_none.shape, (self.N,))
+
+        # 2. Nested list seeds: [[s0, s1, ...]] (collate_like_dataloader artifact)
+        phi_nested, v_nested = engine.compute_step(x_t, tweedie_x0, v_lidar, [[101, 102, 103, 104]], 1.0, dummy_reward)
+        self.assertEqual(phi_nested.shape, (self.N,))
+        self.assertEqual(v_nested.shape, (self.N,))
+
+        # 3. FKD.resample with [None, None] under use_hybrid_smc
+        fkd = FKD(
+            reward_fn=dummy_reward,
+            potential_type=PotentialType.DIFF,
+            num_particles=self.N,
+            use_hybrid_smc=True,
+            latent_to_decode_fn=lambda l: torch.zeros((l.shape[0], self.C, self.H, self.W), device=l.device),
+            smc_engine=engine,
+            resampling_interval=list(range(10))
+        )
+        res_lat, _ = fkd.resample(
+            sampling_idx=0,
+            latents=x_t,
+            x0_preds=x_t,
+            v_lidar=v_lidar,
+            seed_int=[None] * self.N
+        )
+        self.assertEqual(res_lat.shape, x_t.shape)
+
+
 if __name__ == "__main__":
     unittest.main()

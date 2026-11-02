@@ -353,9 +353,28 @@ class FKDStableDiffusionXL(
         # Extract Lookahead Prospective Potential and dominant seed for Doob-Tweedie Innovation Residual
         self._last_v_lidar = (w_r * rewards).sum(dim=1)  # (B,)
         dominant_indices = torch.argmax(w_r, dim=1)  # (B,)
-        seeds_list = subset.get("seeds", None)
+        raw_seeds = subset.get("seeds", None)
+        seeds_list = None
+        if raw_seeds is not None:
+            if isinstance(raw_seeds, (list, tuple)) and len(raw_seeds) > 0:
+                candidate = raw_seeds[0]
+                if isinstance(candidate, (list, tuple)):
+                    seeds_list = candidate
+                elif isinstance(candidate, (int, float, torch.Tensor)):
+                    seeds_list = raw_seeds
+            elif isinstance(raw_seeds, torch.Tensor):
+                seeds_list = raw_seeds.tolist()
+
         if seeds_list is not None and len(seeds_list) > 0:
-            self._last_dominant_seeds = [seeds_list[idx.item()] if idx.item() < len(seeds_list) else None for idx in dominant_indices]
+            extracted_seeds = []
+            for idx in dominant_indices:
+                i_val = idx.item() if hasattr(idx, "item") else int(idx)
+                if 0 <= i_val < len(seeds_list) and seeds_list[i_val] is not None:
+                    s_val = seeds_list[i_val]
+                    extracted_seeds.append(int(s_val.item() if hasattr(s_val, "item") else s_val))
+                else:
+                    extracted_seeds.append(None)
+            self._last_dominant_seeds = extracted_seeds if any(s is not None for s in extracted_seeds) else None
         else:
             self._last_dominant_seeds = None
 

@@ -56,20 +56,47 @@ class HarmonizedRSLiDARSMCEngine:
         # 1. 64-bit Seed Replay & Kernel Coupling: Tái tạo nhiễu đối xứng (0.00 GiB VRAM overhead)
         # Khớp tuyệt đối kích thước không gian với tweedie_x0 (thường là 3 channel pixel domain)
         if seed_int is not None and self.alpha_couple > 0.0:
-            if isinstance(seed_int, (list, tuple, torch.Tensor)) and len(seed_int) == N:
+            clean_seeds = None
+            if isinstance(seed_int, (list, tuple, torch.Tensor)):
+                raw_list = seed_int.tolist() if isinstance(seed_int, torch.Tensor) else list(seed_int)
+                if len(raw_list) > 0 and isinstance(raw_list[0], (list, tuple)):
+                    raw_list = raw_list[0]
+                parsed = []
+                for s in raw_list:
+                    if s is None:
+                        parsed.append(None)
+                    elif hasattr(s, "item"):
+                        parsed.append(int(s.item()) & 0x7FFFFFFF)
+                    else:
+                        try:
+                            parsed.append(int(s) & 0x7FFFFFFF)
+                        except (ValueError, TypeError):
+                            parsed.append(None)
+                if len(parsed) == N:
+                    clean_seeds = parsed
+                elif len(parsed) > 0 and parsed[0] is not None:
+                    clean_seeds = [parsed[0]] * N
+            else:
+                try:
+                    s_val = int(seed_int.item() if hasattr(seed_int, "item") else seed_int) & 0x7FFFFFFF
+                    clean_seeds = [s_val] * N
+                except (ValueError, TypeError):
+                    clean_seeds = None
+
+            if clean_seeds is not None:
                 u_lookahead = torch.empty(tweedie_x0.shape, device=device, dtype=dtype)
                 zeta = torch.empty(tweedie_x0.shape, device=device, dtype=dtype)
                 for i in range(N):
-                    gen_seed = int(seed_int[i].item() if isinstance(seed_int[i], torch.Tensor) else seed_int[i]) & 0x7FFFFFFF
-                    gen = torch.Generator(device=device).manual_seed(gen_seed)
-                    u_lookahead[i] = torch.randn(tweedie_x0.shape[1:], generator=gen, device=device, dtype=dtype)
-                    zeta[i] = torch.randn(tweedie_x0.shape[1:], generator=gen, device=device, dtype=dtype)
+                    if clean_seeds[i] is not None:
+                        gen = torch.Generator(device=device).manual_seed(clean_seeds[i])
+                        u_lookahead[i] = torch.randn(tweedie_x0.shape[1:], generator=gen, device=device, dtype=dtype)
+                        zeta[i] = torch.randn(tweedie_x0.shape[1:], generator=gen, device=device, dtype=dtype)
+                    else:
+                        u_lookahead[i] = torch.randn(tweedie_x0.shape[1:], device=device, dtype=dtype)
+                        zeta[i] = torch.randn(tweedie_x0.shape[1:], device=device, dtype=dtype)
             else:
-                scalar_val = seed_int[0] if isinstance(seed_int, (list, tuple, torch.Tensor)) else seed_int
-                scalar_seed = int(scalar_val.item() if isinstance(scalar_val, torch.Tensor) else scalar_val) & 0x7FFFFFFF
-                gen = torch.Generator(device=device).manual_seed(scalar_seed)
-                u_lookahead = torch.randn(tweedie_x0.shape, generator=gen, device=device, dtype=dtype)
-                zeta = torch.randn(tweedie_x0.shape, generator=gen, device=device, dtype=dtype)
+                u_lookahead = torch.randn(tweedie_x0.shape, device=device, dtype=dtype)
+                zeta = torch.randn(tweedie_x0.shape, device=device, dtype=dtype)
 
             if self.alpha_couple >= 1.0:
                 u_base = u_lookahead

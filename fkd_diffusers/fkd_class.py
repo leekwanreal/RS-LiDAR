@@ -301,8 +301,11 @@ class FKD:
             else:
                 v_lidar = v_lidar.to(device=latents.device, dtype=torch.float32)
 
-            if seed_int is None:
+            if seed_int is None or (isinstance(seed_int, (list, tuple)) and all(s is None for s in seed_int)):
                 seed_int = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
+            elif isinstance(seed_int, (list, tuple)):
+                default_seed = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
+                seed_int = [default_seed if s is None else (int(s.item() if hasattr(s, "item") else s) & 0x7FFFFFFF) for s in seed_int]
 
             phi_residual, v_smc = self.smc_engine.compute_step(
                 x_t=latents,
