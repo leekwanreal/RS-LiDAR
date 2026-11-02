@@ -471,11 +471,30 @@ def main(args):
                 if lat_valid:
                     with open(results_file, "r") as f:
                         res_cached = json.load(f)
-                    if getattr(args, "use_smoothing", False) and "smoothing" in res_cached:
-                        cached_m = res_cached["smoothing"].get("num_mc_samples")
-                        if cached_m is not None and cached_m != args.num_mc_samples:
+                    if getattr(args, "use_smoothing", False):
+                        if "smoothing" not in res_cached or not res_cached["smoothing"].get("enabled", False):
                             lat_valid = False
-                            print(f"⚠️ [Prompt {real_idx:05d}] Cache results.json có M={cached_m} != M={args.num_mc_samples} yêu cầu. Tự động tính lại chuẩn xác!")
+                            print(f"⚠️ [Prompt {real_idx:05d}] Cache results.json là kết quả Vanilla (không làm trơn), trong khi lệnh hiện tại yêu cầu --use_smoothing. Tự động tính lại chuẩn xác!")
+                        else:
+                            s_info = res_cached["smoothing"]
+                            cached_m = s_info.get("num_mc_samples")
+                            cached_mode = s_info.get("noise_mode")
+                            cached_sig = s_info.get("sigma")
+                            cached_beta = s_info.get("beta_risk")
+
+                            mismatch_reasons = []
+                            if cached_m is not None and cached_m != args.num_mc_samples:
+                                mismatch_reasons.append(f"M: {cached_m} != {args.num_mc_samples}")
+                            if cached_mode is not None and cached_mode != getattr(args, "noise_mode", "independent_antithetic"):
+                                mismatch_reasons.append(f"noise_mode: '{cached_mode}' != '{args.noise_mode}'")
+                            if cached_sig is not None and abs(cached_sig - args.sigma) > 1e-4:
+                                mismatch_reasons.append(f"sigma: {cached_sig} != {args.sigma}")
+                            if cached_beta is not None and abs(cached_beta - getattr(args, "beta_risk", 0.5)) > 1e-4:
+                                mismatch_reasons.append(f"beta_risk: {cached_beta} != {args.beta_risk}")
+
+                            if mismatch_reasons:
+                                lat_valid = False
+                                print(f"⚠️ [Prompt {real_idx:05d}] Cache results.json không khớp siêu tham số ({', '.join(mismatch_reasons)}). Tự động tính lại chuẩn xác!")
                     if lat_valid:
                         for metric in metrics_to_compute:
                             if metric in res_cached:
@@ -502,18 +521,6 @@ def main(args):
                 os.path.join("Lookahead_samples", args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
                 os.path.join(args.output_dir, args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
             ]
-            if not is_xl:
-                candidates.append(
-                    os.path.join("Lookahead_samples", f"{args.seed}_{args.num_particles}_{args.num_inference_steps}", f"{real_idx:0>5}", "samples", "latent.pt")
-                )
-                if args.num_inference_steps == 5:
-                    if args.num_particles <= 50:
-                        candidates.append(
-                            os.path.join("Lookahead_samples", "100_50_5", f"{real_idx:0>5}", "samples", "latent.pt")
-                        )
-                    candidates.append(
-                        os.path.join("Lookahead_samples", f"Lookahead_SD15_DPM5_n{args.num_particles}_seed{args.seed}", f"{real_idx:0>5}", "samples", "latent.pt")
-                    )
             for c in candidates:
                 if os.path.exists(c):
                     try:
@@ -526,6 +533,15 @@ def main(args):
                             break
                     except Exception:
                         continue
+            if reused_latent_file is None:
+                raise FileNotFoundError(
+                    f"\n{'='*70}\n"
+                    f"❌ [FAIL-FAST: KHÔNG TÌM THẤY LATENTS ĐỂ TÁI SỬ DỤNG]\n"
+                    f"Bạn đã chỉ định --reuse_latents_from='{args.reuse_latents_from}', nhưng không tìm thấy file latent.pt\n"
+                    f"nào hợp lệ cho prompt #{real_idx:05d} (yêu cầu {expected_latent_dim}x{expected_latent_dim}, >= {args.num_particles} hạt)!\n"
+                    f"Hệ thống dừng ngay lập tức thay vì tự ý fallback sang thư mục khác hoặc sinh mới tốn GPU.\n"
+                    f"{'='*70}"
+                )
 
         start_time = datetime.now()
         with torch.inference_mode():
@@ -973,6 +989,20 @@ def get_args():
             args.beta_risk = 0.0
 
     args.M = args.num_mc_samples
+
+    # Fail-Fast: Kiểm tra xung đột cờ dòng lệnh giữa --num_mc_samples và --M
+    raw_m_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--M=')]
+    raw_mc_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--num_mc_samples=')]
+    if raw_m_flags and raw_mc_flags and raw_m_flags[0] != raw_mc_flags[0]:
+        raise ValueError(f"❌ [FAIL-FAST] Phát hiện xung đột cờ dòng lệnh: --num_mc_samples={raw_mc_flags[0]} nhưng --M={raw_m_flags[0]}! Vui lòng chỉ định một giá trị duy nhất.")
+
+    # Fail-Fast: Chế độ Antithetic bắt buộc M phải là số chẵn
+    if getattr(args, "use_smoothing", False):
+        if getattr(args, "noise_mode", "") == "independent_antithetic" and args.num_mc_samples % 2 != 0:
+            raise ValueError(f"❌ [FAIL-FAST] Chế độ nhiễu 'independent_antithetic' yêu cầu --num_mc_samples phải là số chẵn (ví dụ: 2, 4, 8, 16) để tạo cặp đối xứng (+u, -u), nhưng nhận được M={args.num_mc_samples}!")
+        if getattr(args, "noise_mode", "") == "stratified_harmonized" and (args.num_mc_samples < 4 or args.num_mc_samples % 2 != 0):
+            raise ValueError(f"❌ [FAIL-FAST] Chế độ nhiễu 'stratified_harmonized' yêu cầu --num_mc_samples >= 4 và là số chẵn, nhưng nhận được M={args.num_mc_samples}!")
+
     if args.no_reuse_latents:
         args.reuse_latents_from = None
     if args.loop_smoothing is not None:

@@ -251,20 +251,28 @@ def main(args):
     lookaheads = None
     if args.use_rag:
         lookaheads = gen_lookahead_samples(args.lookahead_path, args.top_k, reward_key=args.guidance_reward_fn)
-        if len(lookaheads) > 0:
-            first_idx = next(iter(lookaheads.data.keys()))
-            first_lat = lookaheads[first_idx]["latents"]
-            expected_dim = 128 if ("xl" in args.model_name.lower() or "flux" in args.model_name.lower()) else 64
-            if first_lat.shape[-1] != expected_dim:
-                raise ValueError(
-                    f"\n{'='*70}\n"
-                    f"❌ [LỖI KHÔNG TƯƠNG THÍCH KÍCH THƯỚC LATENT]\n"
-                    f"Lookahead dataset '{args.lookahead_path}' có spatial dimension là {first_lat.shape[-1]}x{first_lat.shape[-1]},\n"
-                    f"trong khi mô hình hiện tại '{args.model_name}' yêu cầu {expected_dim}x{expected_dim}!\n"
-                    f"Nguyên nhân: Phase 1 đã chạy với mô hình khác (hoặc bị tái sử dụng nhầm latents SD 1.5 64x64 cho SDXL 128x128).\n"
-                    f"Giải pháp: Vui lòng chạy lại Phase 1 với cờ --overwrite để sinh lookahead latents {expected_dim}x{expected_dim} chuẩn xác!\n"
-                    f"{'='*70}"
-                )
+        if len(lookaheads) == 0:
+            raise FileNotFoundError(
+                f"\n{'='*70}\n"
+                f"❌ [FAIL-FAST: KHÔNG TÌM THẤY LOOKAHEAD DATASET]\n"
+                f"Bạn đã kích hoạt --use_rag nhưng không tìm thấy dữ liệu lookahead hợp lệ nào tại: '{args.lookahead_path}'!\n"
+                f"Hệ thống dừng ngay lập tức (Fail-Fast) để tránh Phase 2 chạy mù không có guidance (Vanilla) làm lãng phí GPU.\n"
+                f"Giải pháp: Kiểm tra lại tên thư mục Lookahead hoặc chạy Phase 1 trước.\n"
+                f"{'='*70}"
+            )
+        first_idx = next(iter(lookaheads.data.keys()))
+        first_lat = lookaheads[first_idx]["latents"]
+        expected_dim = 128 if ("xl" in args.model_name.lower() or "flux" in args.model_name.lower()) else 64
+        if first_lat.shape[-1] != expected_dim:
+            raise ValueError(
+                f"\n{'='*70}\n"
+                f"❌ [LỖI KHÔNG TƯƠNG THÍCH KÍCH THƯỚC LATENT]\n"
+                f"Lookahead dataset '{args.lookahead_path}' có spatial dimension là {first_lat.shape[-1]}x{first_lat.shape[-1]},\n"
+                f"trong khi mô hình hiện tại '{args.model_name}' yêu cầu {expected_dim}x{expected_dim}!\n"
+                f"Nguyên nhân: Phase 1 đã chạy với mô hình khác (hoặc bị tái sử dụng nhầm latents SD 1.5 64x64 cho SDXL 128x128).\n"
+                f"Giải pháp: Vui lòng chạy lại Phase 1 với cờ --overwrite để sinh lookahead latents {expected_dim}x{expected_dim} chuẩn xác!\n"
+                f"{'='*70}"
+            )
 
     total_prompts = len(prompt_data)
     if args.num_shards > 1:
@@ -530,6 +538,12 @@ def get_args():
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
     parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
     args = parser.parse_args()
+
+    # Fail-Fast: Kiểm tra xung đột cờ dòng lệnh
+    raw_m_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--M=') or a.startswith('--smc_M=')]
+    raw_mc_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--smc_num_mc_samples=')]
+    if raw_m_flags and raw_mc_flags and raw_m_flags[0] != raw_mc_flags[0]:
+        raise ValueError(f"❌ [FAIL-FAST] Phát hiện xung đột cờ dòng lệnh: --smc_num_mc_samples={raw_mc_flags[0]} nhưng --M/--smc_M={raw_m_flags[0]}! Vui lòng chỉ định một giá trị duy nhất.")
 
     if args.M is not None:
         args.smc_num_mc_samples = args.M
