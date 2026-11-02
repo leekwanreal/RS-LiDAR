@@ -471,15 +471,21 @@ def main(args):
                 if lat_valid:
                     with open(results_file, "r") as f:
                         res_cached = json.load(f)
-                    for metric in metrics_to_compute:
-                        if metric in res_cached:
-                            metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
-                            metrics_arr[metric]["max"] += res_cached[metric]["max"]
-                            metrics_arr[metric]["min"] += res_cached[metric]["min"]
-                            metrics_arr[metric]["std"] += res_cached[metric]["std"]
-                    n_samples += 1
-                    print(f"⏩ [Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{real_idx:05d}: Đã có sẵn kết quả hợp lệ, tự động bỏ qua (Resume)!")
-                    continue
+                    if getattr(args, "use_smoothing", False) and "smoothing" in res_cached:
+                        cached_m = res_cached["smoothing"].get("num_mc_samples")
+                        if cached_m is not None and cached_m != args.num_mc_samples:
+                            lat_valid = False
+                            print(f"⚠️ [Prompt {real_idx:05d}] Cache results.json có M={cached_m} != M={args.num_mc_samples} yêu cầu. Tự động tính lại chuẩn xác!")
+                    if lat_valid:
+                        for metric in metrics_to_compute:
+                            if metric in res_cached:
+                                metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
+                                metrics_arr[metric]["max"] += res_cached[metric]["max"]
+                                metrics_arr[metric]["min"] += res_cached[metric]["min"]
+                                metrics_arr[metric]["std"] += res_cached[metric]["std"]
+                        n_samples += 1
+                        print(f"⏩ [Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{real_idx:05d}: Đã có sẵn kết quả hợp lệ, tự động bỏ qua (Resume)!")
+                        continue
             except Exception as e:
                 print(f"Error loading cached result for prompt {real_idx}: {e}")
 
@@ -942,8 +948,7 @@ def get_args():
     parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
     parser.add_argument("--use_smoothing", action="store_true", default=False, help="Enable Randomized Smoothing for Phase 1 lookahead rewards")
     parser.add_argument("--sigma", type=float, default=0.25, help="Gaussian noise standard deviation for Randomized Smoothing (default: 0.25)")
-    parser.add_argument("--num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M to compute expected reward (default: 4)")
-    parser.add_argument("--M", type=int, default=4, help="Number of Monte Carlo samples M (default: 4)")
+    parser.add_argument("--num_mc_samples", "--M", dest="num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M to compute expected reward (default: 4)")
     parser.add_argument("--smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
     parser.add_argument("--vectorized_smoothing", type=str2bool, nargs="?", const=True, default=False, help="Compute smoothing over all M*N samples in a single batch (True) or loop over M MC iterations (False, default to save VRAM and avoid OOM)")
     parser.add_argument("--loop_smoothing", type=str2bool, nargs="?", const=True, default=None, help="Explicitly enable/disable loop-based smoothing over M iterations (default: True, overrides --vectorized_smoothing if set)")
@@ -967,8 +972,7 @@ def get_args():
         if not any(arg.startswith("--beta_risk") for arg in sys.argv):
             args.beta_risk = 0.0
 
-    if args.M is not None:
-        args.num_mc_samples = args.M
+    args.M = args.num_mc_samples
     if args.no_reuse_latents:
         args.reuse_latents_from = None
     if args.loop_smoothing is not None:

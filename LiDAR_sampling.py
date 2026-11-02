@@ -470,9 +470,8 @@ def get_args():
     parser.add_argument("--use_smc_smoothing", type=str2bool, nargs="?", const=True, default=False, help="Enable Randomized Smoothing for SMC resampling")
     parser.add_argument("--use_rs_smc", type=str2bool, nargs="?", const=True, default=False, help="Alias for --use_smc_smoothing")
     parser.add_argument("--smc_sigma", type=float, default=0.25, help="Gaussian noise standard deviation for RS-SMC (default: 0.25)")
-    parser.add_argument("--smc_num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M for RS-SMC (default: 4)")
-    parser.add_argument("--smc_M", type=int, default=4, help="Alias for --smc_num_mc_samples")
-    parser.add_argument("--M", type=int, default=4, help="Alias for number of MC samples M")
+    parser.add_argument("--smc_num_mc_samples", "--smc_M", dest="smc_num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M for RS-SMC (default: 4)")
+    parser.add_argument("--M", dest="M", type=int, default=None, help="Alias for number of MC samples M")
     parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode")
     parser.add_argument("--beta_risk", type=float, default=0.5, help="Entropic risk penalty parameter beta (Theorem 5.2, default: 0.5)")
     parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
@@ -532,8 +531,10 @@ def get_args():
     parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
     args = parser.parse_args()
 
-    if args.smc_M is not None:
-        args.smc_num_mc_samples = args.smc_M
+    if args.M is not None:
+        args.smc_num_mc_samples = args.M
+    args.M = args.smc_num_mc_samples
+    args.smc_M = args.smc_num_mc_samples
     if args.terminal_resample is not None:
         args.smc_terminal_resample = args.terminal_resample
     if args.use_rs_smc:
