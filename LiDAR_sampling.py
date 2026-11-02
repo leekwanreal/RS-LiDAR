@@ -465,6 +465,7 @@ def str2bool(v):
 
 
 def get_args():
+    import sys
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default="Target_samples")
     parser.add_argument("--save_individual_images", action="store_true")

@@ -161,7 +161,7 @@ def test_arg_parser_auto_dispatch():
     code = open("LiDAR_sampling.py", encoding="utf-8").read()
     tree = ast.parse(code)
     funcs = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("str2bool", "get_args")]
-    ns = {"argparse": argparse}
+    ns = {"argparse": argparse, "sys": sys}
     exec(compile(ast.Module(body=funcs, type_ignores=[]), "<string>", "exec"), ns)
     get_args = ns["get_args"]
 
