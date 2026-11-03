@@ -67,3 +67,4 @@
 2. **Mục Ablation Study Độc Đáo**:
    * Sử dụng bảng số liệu 5 cấu hình trên cho Section 5.2 (Manifold Geometry & Noise Exploration Analysis) để chứng minh tính trung thực và chiều sâu nghiên cứu thực nghiệm:
    * *"Trong không gian khuếch tán siêu cao chiều, khám phá đẳng hướng IID vượt trội hơn phản xạ đối xứng 1D của Antithetic."*
+
