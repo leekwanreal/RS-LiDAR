@@ -93,7 +93,7 @@ from rs_smc_engine import HarmonizedRSLiDARSMCEngine
 
 
 def parse_prompt_indices(indices_arg):
-    if not indices_arg:
+    if not indices_arg or str(indices_arg).strip().lower() in ["none", "all", ""]:
         return None
     if isinstance(indices_arg, (list, tuple)):
         return list(indices_arg)
@@ -650,8 +650,8 @@ def get_args():
     parser.add_argument("--resample_t_end", type=int, default=200)
     parser.add_argument("--potential_type", type=str, default="diff")
 
-    parser.add_argument("--max_prompt", type=int, default=100)
-    parser.add_argument("--prompt_indices", type=str, default="stratified_100", help="Optional subset of prompt indices (e.g. 'stratified_100', '0-99')")
+    parser.add_argument("--max_prompt", type=int, default=1000)
+    parser.add_argument("--prompt_indices", type=str, default=None, help="Optional subset of prompt indices (e.g. 'stratified_100', '0-99', '0,5,10', or path to JSON)")
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--shard_id", type=int, default=0)
     parser.add_argument("--gpu_id", type=int, default=None)
