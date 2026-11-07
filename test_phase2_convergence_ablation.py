@@ -156,16 +156,8 @@ def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
 def decode_latents_to_pil(pipe, latents):
     """Decodes latent tensor x_0 (B, 4, H, W) to a list of PIL Images using pipe.vae."""
     with torch.inference_mode():
-        needs_upcasting = (
-            hasattr(pipe.vae, "config")
-            and getattr(pipe.vae.config, "force_upcast", False)
-            and pipe.vae.dtype == torch.float16
-        )
         lat = latents.clone()
-        if needs_upcasting and hasattr(pipe, "upcast_vae"):
-            pipe.upcast_vae()
-            lat = lat.to(next(iter(pipe.vae.post_quant_conv.parameters())).dtype)
-        elif lat.dtype != pipe.vae.dtype:
+        if lat.dtype != pipe.vae.dtype:
             lat = lat.to(pipe.vae.dtype)
 
         scaled = lat / pipe.vae.config.scaling_factor
