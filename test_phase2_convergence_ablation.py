@@ -177,7 +177,7 @@ def decode_latents_to_pil(pipe, latents):
         return list(pil_images)
 
 
-def attach_convergence_hook(pipe, eval_checkpoint_steps):
+def attach_convergence_hook(pipe, eval_checkpoint_steps, total_inference_steps=None):
     """
     Hooks pipe.scheduler.step to capture and decode pred_original_sample (x_0)
     at the specified eval_checkpoint_steps during the single denoising trajectory.
@@ -187,6 +187,7 @@ def attach_convergence_hook(pipe, eval_checkpoint_steps):
     pipe._step_counter = 0
     pipe._checkpoint_predictions = {}
     pipe._eval_checkpoint_steps = set(eval_checkpoint_steps)
+    pipe._total_inference_steps = total_inference_steps
 
     def hooked_step(*step_args, **step_kwargs):
         pipe._step_counter += 1
@@ -197,6 +198,11 @@ def attach_convergence_hook(pipe, eval_checkpoint_steps):
         step_output = orig_step_fn(*step_args, **step_kwargs)
 
         if current_step in pipe._eval_checkpoint_steps:
+            # For the terminal step, skip redundant VAE decode of pred_original_sample;
+            # the pipeline will decode the final latents (prev_sample) into final_images directly.
+            if pipe._total_inference_steps is not None and current_step == pipe._total_inference_steps:
+                return step_output
+
             if hasattr(step_output, "pred_original_sample") and step_output.pred_original_sample is not None:
                 x0_lat = step_output.pred_original_sample.detach().clone()
             elif isinstance(step_output, (tuple, list)) and len(step_output) > 1 and step_output[1] is not None:
@@ -287,7 +293,7 @@ def main(args):
             pass
 
     # Attach non-invasive convergence hook
-    attach_convergence_hook(pipe, eval_checkpoint_steps)
+    attach_convergence_hook(pipe, eval_checkpoint_steps, total_inference_steps=args.num_inference_steps)
 
     # Output directory setup
     cur_time = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -464,10 +470,10 @@ def main(args):
 
         final_images = _extract_pil_images(raw_final_images)
 
-        # Ensure final step has decoded images
+        # Always assign pipeline's final_images (decoded from prev_sample) for terminal step
+        # to ensure 100% bitwise & metric alignment with LiDAR_sampling.py
         if args.num_inference_steps in eval_checkpoint_steps:
-            if args.num_inference_steps not in pipe._checkpoint_predictions:
-                pipe._checkpoint_predictions[args.num_inference_steps] = final_images
+            pipe._checkpoint_predictions[args.num_inference_steps] = final_images
 
         eval_prompt = [prompt[0]] * len(final_images) if isinstance(prompt, list) else [prompt] * len(final_images)
 
@@ -513,23 +519,20 @@ def main(args):
                 sample_path = os.path.join(step_prompt_path, "samples")
                 os.makedirs(sample_path, exist_ok=True)
                 for image_idx, image in enumerate(imgs_k_sorted):
-                    image.save(os.path.join(sample_path, f"{image_idx:05}.png"))
+                    image.save(os.path.join(sample_path, f"{image_idx:05}.png"), compress_level=1)
 
                 best_of_n_sample_path = os.path.join(step_prompt_path, "best_of_n_samples")
                 os.makedirs(best_of_n_sample_path, exist_ok=True)
                 for image_idx, image in enumerate(imgs_k_sorted[:1]):
-                    image.save(os.path.join(best_of_n_sample_path, f"{image_idx:05}.png"))
+                    image.save(os.path.join(best_of_n_sample_path, f"{image_idx:05}.png"), compress_level=1)
 
-                n_show = len(imgs_k_sorted)
-                _, ax = plt.subplots(1, n_show, figsize=(n_show * 5, 5))
-                if n_show == 1:
-                    ax = [ax]
-                for i_ax, image in enumerate(imgs_k_sorted):
-                    ax[i_ax].imshow(image)
-                    ax[i_ax].axis("off")
-                plt.suptitle(f"{prompt[0]} (Step {step_k})")
-                plt.savefig(os.path.join(step_prompt_path, "grid.png"))
-                plt.close()
+                # Fast PIL grid creation (avoids heavy matplotlib CPU overhead across thousands of steps)
+                if imgs_k_sorted:
+                    w, h = imgs_k_sorted[0].size
+                    grid_img = Image.new("RGB", (w * len(imgs_k_sorted), h))
+                    for i_ax, img in enumerate(imgs_k_sorted):
+                        grid_img.paste(img, (i_ax * w, 0))
+                    grid_img.save(os.path.join(step_prompt_path, "grid.png"), compress_level=1)
 
             # Accumulate metrics
             for metric in metrics_to_compute:
