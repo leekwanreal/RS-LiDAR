@@ -176,6 +176,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32)
             else:
                 latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32)
+        else:
+            latents = latents.to(device=device)
 
         # Chuẩn bị Lookahead tensors
         if lookahead_latents is not None:
@@ -187,8 +189,16 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 rewards = rewards.to(device=device, dtype=torch.float32)
 
         # Cửa sổ thời gian áp dụng guidance (Fast-Path)
-        t_start = fkd_args.get("resampling_t_start", 0.98)
-        t_end = fkd_args.get("resampling_t_end", 0.20)
+        t_start = fkd_args.get("guidance_start", fkd_args.get("resampling_t_start", 1.0))
+        t_end = fkd_args.get("guidance_end", fkd_args.get("resampling_t_end", 0.95))
+        # Phòng hộ nếu vô tình truyền nhầm tham số diffusion dạng số nguyên (> 1.0)
+        if t_start > 1.0:
+            t_start = 1.0
+        if t_end > 1.0:
+            t_end = 0.95
+
+        self.flow_guidance_module.t_start = t_start
+        self.flow_guidance_module.t_end = t_end
 
         # -------------------------------------------------------------
         # Vòng lặp giải vi phân Euler ngược thời gian (t = 1.0 -> 0.0)
@@ -247,6 +257,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     lookahead_z0=lookahead_latents,
                     smoothed_rewards=rewards,
                     sigma_t=t_curr,
+                    t_start=t_start,
+                    t_end=t_end,
                 )
                 
                 # Nếu latents ở dạng 3D packed, đóng gói lại delta_v tương ứng

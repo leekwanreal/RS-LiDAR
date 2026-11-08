@@ -578,12 +578,12 @@ def main(args):
                 latents = latents.to(torch.float32)
 
             if "flux" in args.model_name.lower():
-                latents_unpacked = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
-                latents_unpacked = (latents_unpacked / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
+                latents = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
+                scaled_latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
                 vae_batch_size = 1
                 decoded_chunks = []
-                for v_i in range(0, latents_unpacked.shape[0], vae_batch_size):
-                    chunk = latents_unpacked[v_i : v_i + vae_batch_size]
+                for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
+                    chunk = scaled_latents[v_i : v_i + vae_batch_size]
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
                 decoded_tensor = torch.cat(decoded_chunks, dim=0)
                 if args.save_individual_images or not getattr(args, "use_smoothing", False):

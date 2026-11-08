@@ -160,6 +160,20 @@ def main(args):
     if args.resample_t_end is None:
         args.resample_t_end = args.num_inference_steps
 
+    is_flux = ("flux" in args.model_name.lower())
+    if is_flux:
+        if "--s_flow" not in sys.argv and getattr(args, "s_flow", 12.5) == 12.5:
+            args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX
+        if args.guidance_start is None:
+            args.guidance_start = 1.0
+        if args.guidance_end is None:
+            args.guidance_end = 0.95
+    else:
+        if args.guidance_start is None:
+            args.guidance_start = 0.98
+        if args.guidance_end is None:
+            args.guidance_end = 0.20
+
     if args.use_smc:
         assert args.resample_frequency > 0
         if args.num_particles <= 1:
@@ -356,11 +370,13 @@ def main(args):
             adaptive_resampling=args.adaptive_resampling,
             resample_frequency=args.resample_frequency,
             time_steps=args.num_inference_steps,
-            resampling_t_start=args.FK_resample_t_start,
-            resampling_t_end=args.resample_t_end,
+            resampling_t_start=args.guidance_start if is_flux else args.FK_resample_t_start,
+            resampling_t_end=args.guidance_end if is_flux else args.resample_t_end,
+            guidance_start=args.guidance_start,
+            guidance_end=args.guidance_end,
             guidance_reward_fn=args.guidance_reward_fn,
             potential_type=args.potential_type,
-            s_flow=getattr(args, "s_flow", 12.5),
+            s_flow=args.s_flow,
         )
 
         start_time = datetime.now()
@@ -500,7 +516,9 @@ def get_args():
     parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
     parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
     parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
-    parser.add_argument("--s_flow", type=float, default=12.5, help="Velocity guidance scale for Rectified Flows (default: 12.5)")
+    parser.add_argument("--s_flow", type=float, default=12.5, help="Velocity guidance scale for Rectified Flows (default: 12.5; auto-set to 40.0 for FLUX unless specified)")
+    parser.add_argument("--guidance_start", type=float, default=None, help="Upper bound of guidance window for Flow Matching (default: 1.0 for FLUX Table 3 [0.95, 1.0])")
+    parser.add_argument("--guidance_end", type=float, default=None, help="Lower bound of guidance window for Flow Matching (default: 0.95 for FLUX Table 3 [0.95, 1.0])")
     parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
     parser.add_argument("--smc_smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
     parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")

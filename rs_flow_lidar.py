@@ -12,18 +12,24 @@ class RSFlowLiDARGuidance:
         self, 
         s_flow: float = 12.5, 
         lambda_r: float = 5000.0, 
-        whitening_weights: Optional[torch.Tensor] = None
+        whitening_weights: Optional[torch.Tensor] = None,
+        t_start: float = 0.98,
+        t_end: float = 0.20
     ):
         r"""
         Module điều khiển vận tốc Lookahead cho Rectified Flows (Flow Matching).
         
         Args:
-            s_flow: Hệ số khuếch đại vận tốc dẫn đường (default: 12.5).
+            s_flow: Hệ số khuếch đại vận tốc dẫn đường (default: 12.5; khuyên dùng 40.0 cho FLUX).
             lambda_r: Độ nhạy nhiệt độ Softmax exponentiation cho reward (default: 5000.0).
             whitening_weights: Trọng số làm trắng latent space \Sigma^{-1/2} cho khoảng cách Mahalanobis.
+            t_start: Mốc thời gian bắt đầu lái (default: 0.98; khuyên dùng 1.0 cho FLUX).
+            t_end: Mốc thời gian ngắt lái (default: 0.20; khuyên dùng 0.95 cho FLUX Table 3).
         """
         self.s_flow = s_flow
         self.lambda_r = lambda_r
+        self.t_start = t_start
+        self.t_end = t_end
         if whitening_weights is None:
             self.whitening_weights = torch.ones((1, 16, 1, 1))
         else:
@@ -36,7 +42,9 @@ class RSFlowLiDARGuidance:
         lookahead_z0: torch.Tensor, 
         smoothed_rewards: torch.Tensor, 
         sigma_t: float,
-        bypass_fast_path: bool = False
+        bypass_fast_path: bool = False,
+        t_start: Optional[float] = None,
+        t_end: Optional[float] = None
     ) -> torch.Tensor:
         r"""
         Tính toán vector gia số vận tốc lái dẫn đường chuẩn xác cho Flow Matching:
@@ -48,23 +56,42 @@ class RSFlowLiDARGuidance:
             smoothed_rewards: Điểm thưởng đã làm trơn bằng RS [K].
             sigma_t: Mức độ nhiễu hiện tại t in [0, 1] (1=noise, 0=clean).
             bypass_fast_path: Cho phép tắt Fast-path để kiểm tra hành vi số học tại biên.
+            t_start: Mốc thời gian bắt đầu lái cục bộ (nếu None lấy theo self.t_start).
+            t_end: Mốc thời gian kết thúc lái cục bộ (nếu None lấy theo self.t_end).
             
         Returns:
             Gia số vận tốc delta_v [B, C, H, W].
         """
-        # 1. Fast-Path Early Return (Cửa sổ hoạt động an toàn [0.20, 0.98])
-        if not bypass_fast_path and (sigma_t <= 0.20 or sigma_t >= 0.98):
-            return torch.zeros_like(z_t)
+        win_start = t_start if t_start is not None else getattr(self, "t_start", 0.98)
+        win_end = t_end if t_end is not None else getattr(self, "t_end", 0.20)
+
+        # 1. Fast-Path Early Return (Cửa sổ hoạt động an toàn [win_end, win_start])
+        if not bypass_fast_path:
+            if win_start >= 0.999:
+                # Nếu lái ngay từ bước nhiễu thuần túy t=1.0 (như Table 3 FLUX [0.95, 1.0])
+                if sigma_t < win_end or sigma_t > win_start:
+                    return torch.zeros_like(z_t)
+            else:
+                # Mặc định an toàn cho liên tục [0.20, 0.98]
+                if sigma_t <= win_end or sigma_t >= win_start:
+                    return torch.zeros_like(z_t)
             
         device = z_t.device
+        dtype = z_t.dtype
         B, C, H, W = z_t.shape
         K = lookahead_z0.shape[0]
+
+        # Đảm bảo tuyệt đối đồng bộ device và dtype giữa các tensor
+        if lookahead_z0.device != device or lookahead_z0.dtype != dtype:
+            lookahead_z0 = lookahead_z0.to(device=device, dtype=dtype)
+        if smoothed_rewards.device != device:
+            smoothed_rewards = smoothed_rewards.to(device=device, dtype=torch.float32)
         
         # 2. VAE Whitening cho khoảng cách Mahalanobis (Tương thích kích thước động)
         if self.whitening_weights.shape[1] == C:
-            w_weights = self.whitening_weights.to(device, dtype=z_t.dtype)
+            w_weights = self.whitening_weights.to(device, dtype=dtype)
         else:
-            w_weights = torch.ones((1, C, 1, 1), device=device, dtype=z_t.dtype)
+            w_weights = torch.ones((1, C, 1, 1), device=device, dtype=dtype)
             
         z_t_w = z_t * w_weights
         z0_w = lookahead_z0 * w_weights
