@@ -19,7 +19,9 @@ from compute_diversity_metrics import (
     compute_vendi_score,
     compute_pairwise_clip_distance,
     compute_pairwise_lpips_batch,
-    format_markdown_table
+    format_markdown_table,
+    parse_run_settings,
+    save_and_merge_reports
 )
 
 class TestDiversityMetrics(unittest.TestCase):
@@ -113,6 +115,65 @@ class TestDiversityMetrics(unittest.TestCase):
         self.assertIn("Vanilla_SMC_N4", table)
         self.assertIn("RS_SMC_LiDAR_N4", table)
         self.assertIn("0.9796", table)
+
+    def test_parse_run_settings(self):
+        """Verifies automatic extraction of hyperparameters from systematic run names."""
+        name_rssmc = "RSSMC_SD15_N4_sig0.25_M8_anneal_LiDAR_freq20_lmbda10.0_DDPM100_s12.5_seed100"
+        cfg1 = parse_run_settings(name_rssmc)
+        self.assertEqual(cfg1["method"], "RS-SMC (Ours)")
+        self.assertEqual(cfg1["backbone"], "SD15")
+        self.assertEqual(cfg1["particles"], 4)
+        self.assertEqual(cfg1["sigma"], 0.25)
+        self.assertEqual(cfg1["M"], 8)
+        self.assertEqual(cfg1["anneal"], "Có")
+        self.assertEqual(cfg1["guidance"], "LiDAR")
+
+        name_smc = "SMC_SD15_N4_LiDAR_freq20_lmbda10.0_DDPM100_s12.5_seed100"
+        cfg2 = parse_run_settings(name_smc)
+        self.assertEqual(cfg2["method"], "Vanilla SMC")
+        self.assertEqual(cfg2["particles"], 4)
+        self.assertEqual(cfg2["sigma"], "—")
+        self.assertEqual(cfg2["anneal"], "—")
+
+    def test_save_and_merge_reports(self):
+        """Verifies incremental accumulation and deduplication across multiple evaluation rounds."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = os.path.join(tmpdir, "diversity_report.json")
+            csv_path = os.path.join(tmpdir, "diversity_report.csv")
+
+            # Round 1: Evaluate Folder A
+            round1 = [{
+                "run_name": "Run_A",
+                "image_reward_max": 0.85,
+                "vendi_score_mean": 2.1,
+                "evaluated_prompts": 100
+            }]
+            acc1 = save_and_merge_reports(round1, output_json=json_path, output_csv=csv_path, create_timestamped_copy=False)
+            self.assertEqual(len(acc1), 1)
+
+            # Round 2: Evaluate Folder B (New run)
+            round2 = [{
+                "run_name": "Run_B",
+                "image_reward_max": 0.95,
+                "vendi_score_mean": 3.4,
+                "evaluated_prompts": 100
+            }]
+            acc2 = save_and_merge_reports(round2, output_json=json_path, output_csv=csv_path, create_timestamped_copy=False)
+            self.assertEqual(len(acc2), 2, "Round 2 must accumulate both Run_A and Run_B")
+
+            # Round 3: Re-evaluate Folder A with updated score (Deduplication)
+            round3 = [{
+                "run_name": "Run_A",
+                "image_reward_max": 0.89, # updated
+                "vendi_score_mean": 2.3,
+                "evaluated_prompts": 553
+            }]
+            acc3 = save_and_merge_reports(round3, output_json=json_path, output_csv=csv_path, create_timestamped_copy=False)
+            self.assertEqual(len(acc3), 2, "Must not duplicate Run_A")
+            run_a_updated = next(r for r in acc3 if r["run_name"] == "Run_A")
+            self.assertEqual(run_a_updated["image_reward_max"], 0.89)
+            self.assertEqual(run_a_updated["evaluated_prompts"], 553)
 
 
 if __name__ == "__main__":

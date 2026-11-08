@@ -17,6 +17,8 @@ import os
 import glob
 import json
 import time
+import math
+import re
 import argparse
 from typing import List, Dict, Any, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -409,6 +411,9 @@ class DiversityEvaluator:
             "image_reward_mean": float(np.mean(reward_mean_list)) if reward_mean_list else None,
         }
         
+        # Parse and enrich structured setting parameters
+        summary.update(parse_run_settings(dataset.run_name, sample_n))
+        
         if verbose:
             print(f"  🏁 Đánh giá xong {dataset.run_name} trong {elapsed:.2f}s:")
             if summary['image_reward_max'] is not None:
@@ -427,34 +432,197 @@ class DiversityEvaluator:
 # 4. MARKDOWN & JSON COMPARISON REPORTERS
 # ==============================================================================
 
+def parse_run_settings(run_name: str, num_particles: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Parses systematic run name into structured hyperparameter columns.
+    Extracts: method, backbone, particles, sigma, M, anneal, guidance.
+    """
+    settings = {
+        "method": "Custom",
+        "backbone": "SD15",
+        "particles": num_particles if num_particles is not None else 4,
+        "sigma": "—",
+        "M": "—",
+        "anneal": "Không",
+        "guidance": "None",
+    }
+    
+    # 1. Method
+    if "RSSMC" in run_name or "RS_SMC" in run_name:
+        settings["method"] = "RS-SMC (Ours)"
+    elif "SMC" in run_name:
+        settings["method"] = "Vanilla SMC"
+    elif "LiDAR" in run_name:
+        settings["method"] = "LiDAR"
+        
+    # 2. Backbone
+    if "SDXL" in run_name or "sdxl" in run_name:
+        settings["backbone"] = "SDXL"
+    elif "SD15" in run_name or "sd15" in run_name:
+        settings["backbone"] = "SD15"
+        
+    # 3. Particles N
+    match_n = re.search(r"[-_]N(\d+)", run_name)
+    if match_n:
+        settings["particles"] = int(match_n.group(1))
+    elif num_particles is not None:
+        settings["particles"] = num_particles
+        
+    # 4. Sigma
+    match_sig = re.search(r"[-_]sig([0-9\.]+)", run_name)
+    if match_sig:
+        try:
+            settings["sigma"] = float(match_sig.group(1))
+        except ValueError:
+            settings["sigma"] = match_sig.group(1)
+            
+    # 5. M (Monte Carlo samples)
+    match_m = re.search(r"[-_]M(\d+)", run_name)
+    if match_m:
+        settings["M"] = int(match_m.group(1))
+        
+    # 6. Anneal
+    if "anneal" in run_name.lower():
+        settings["anneal"] = "Có"
+    else:
+        settings["anneal"] = "Không" if settings["method"] == "RS-SMC (Ours)" else "—"
+        
+    # 7. Guidance
+    if "RSLiDAR" in run_name or "RS_LiDAR" in run_name:
+        settings["guidance"] = "RS-LiDAR"
+    elif "LiDAR" in run_name:
+        settings["guidance"] = "LiDAR"
+        
+    return settings
+
+
 def format_markdown_table(summaries: List[Dict[str, Any]]) -> str:
     """Formats multiple evaluation results into a clean GitHub Markdown comparison table."""
     lines = []
-    lines.append("| STT | Phương Pháp / Thư Mục | Hạt ($N$) | ImageReward (↑) | Vendi Score (↑) | Pairwise LPIPS (↑) | CLIP Dist (↑) | Prompts |")
-    lines.append("| :-: | :--- | :-: | :-: | :-: | :-: | :-: | :-: |")
+    lines.append("| STT | Phương Pháp | $N$ | $\\sigma$ | $M$ | Anneal | ImageReward (↑) | Vendi Score (↑) | Pairwise LPIPS (↑) | CLIP Dist (↑) | Prompts | Thư Mục |")
+    lines.append("| :-: | :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :--- |")
     
     for idx, s in enumerate(summaries, 1):
         if "error" in s:
-            lines.append(f"| {idx} | `{s['run_name']}` | — | ERROR: {s['error']} | — | — | — | 0 |")
+            lines.append(f"| {idx} | `{s['run_name']}` | — | — | — | — | ERROR: {s['error']} | — | — | — | 0 | `{s['run_name']}` |")
             continue
             
         r_name = s['run_name']
-        # Shorten long run names for readability
-        if len(r_name) > 40:
-            short_name = r_name[:37] + "..."
-        else:
-            short_name = r_name
+        if "method" not in s:
+            s.update(parse_run_settings(r_name, s.get('num_particles')))
             
-        n_part = s.get('num_particles', '—')
+        method = s.get('method', 'Custom')
+        n_part = s.get('particles', s.get('num_particles', '—'))
+        sigma = s.get('sigma', '—')
+        m_val = s.get('M', '—')
+        anneal = s.get('anneal', '—')
+        
+        sigma_str = f"{sigma:.2f}" if isinstance(sigma, float) else str(sigma)
+        
         ir_str = f"**`{s['image_reward_max']:.4f}`**" if s.get('image_reward_max') is not None else "—"
         vs_str = f"**`{s['vendi_score_mean']:.3f}`** / {n_part}" if s.get('vendi_score_mean') is not None else "—"
         lpips_str = f"`{s['lpips_mean']:.4f}`" if s.get('lpips_mean') is not None else "—"
         clip_str = f"`{s['clip_dist_mean']:.4f}`" if s.get('clip_dist_mean') is not None else "—"
         n_prompts = s.get('evaluated_prompts', 0)
         
-        lines.append(f"| **{idx}** | `{short_name}` | $N={n_part}$ | {ir_str} | {vs_str} | {lpips_str} | {clip_str} | {n_prompts} |")
+        if len(r_name) > 38:
+            short_name = r_name[:17] + "..." + r_name[-17:]
+        else:
+            short_name = r_name
+            
+        lines.append(
+            f"| **{idx}** | **{method}** | {n_part} | {sigma_str} | {m_val} | {anneal} | "
+            f"{ir_str} | {vs_str} | {lpips_str} | {clip_str} | {n_prompts} | `{short_name}` |"
+        )
         
     return "\n".join(lines)
+
+
+def save_and_merge_reports(
+    new_summaries: List[Dict[str, Any]],
+    output_json: Optional[str] = None,
+    output_csv: Optional[str] = None,
+    create_timestamped_copy: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    Saves and merges evaluation results with existing report files on Drive/disk.
+    - Incremental Accumulation: Preserves all previous run settings and evaluations.
+    - Deduplication: If the same run_name is evaluated again, updates it with the latest data.
+    - Timestamped Snapshot: Automatically saves a timestamped backup in a 'history/' folder.
+    
+    Returns:
+        List[Dict[str, Any]]: Complete accumulated list of all runs.
+    """
+    merged_dict = {}
+    
+    # 1. Load existing JSON if present
+    if output_json and os.path.exists(output_json):
+        try:
+            with open(output_json, "r", encoding="utf-8") as jf:
+                existing_data = json.load(jf)
+                if isinstance(existing_data, list):
+                    for item in existing_data:
+                        if isinstance(item, dict) and "run_name" in item:
+                            merged_dict[item["run_name"]] = item
+            print(f"🔄 [Smart Accumulator]: Đã tải {len(merged_dict)} kết quả tích lũy từ file báo cáo cũ.")
+        except Exception as e:
+            print(f"⚠️ [Smart Accumulator]: Không thể nạp JSON cũ ({e}), sẽ tạo mới.")
+            
+    # 2. Merge new summaries (updating existing or appending new)
+    for s in new_summaries:
+        if "run_name" in s:
+            if "method" not in s:
+                s.update(parse_run_settings(s["run_name"], s.get("num_particles")))
+            merged_dict[s["run_name"]] = s
+            
+    accumulated_list = list(merged_dict.values())
+    
+    # Sort accumulated runs cleanly (by method, particles, then run_name)
+    accumulated_list.sort(key=lambda x: (
+        str(x.get("method", "")), 
+        int(x.get("particles", 0)) if str(x.get("particles", "")).isdigit() else 0, 
+        str(x.get("run_name", ""))
+    ))
+    
+    # 3. Save Master JSON
+    if output_json:
+        os.makedirs(os.path.dirname(os.path.abspath(output_json)), exist_ok=True)
+        with open(output_json, "w", encoding="utf-8") as jf:
+            json.dump(accumulated_list, jf, indent=4)
+        print(f"💾 [Master JSON]: Đã lưu {len(accumulated_list)} kết quả tích lũy tại: {output_json}")
+        
+    # 4. Save Master CSV & Timestamped Snapshot
+    if output_csv:
+        import pandas as pd
+        out_dir = os.path.dirname(os.path.abspath(output_csv))
+        os.makedirs(out_dir, exist_ok=True)
+        
+        # Define clean column order
+        priority_cols = [
+            "run_name", "method", "backbone", "particles", "sigma", "M", "anneal", "guidance",
+            "image_reward_max", "image_reward_mean",
+            "vendi_score_mean", "vendi_score_std",
+            "lpips_mean", "lpips_std",
+            "clip_dist_mean", "clip_dist_std",
+            "evaluated_prompts", "eval_time_sec", "run_path"
+        ]
+        
+        df = pd.DataFrame(accumulated_list)
+        ordered_cols = [c for c in priority_cols if c in df.columns] + [c for c in df.columns if c not in priority_cols]
+        df = df[ordered_cols]
+        df.to_csv(output_csv, index=False)
+        print(f"💾 [Master CSV]: Đã lưu bảng tổng hợp tích lũy tại: {output_csv}")
+        
+        # 5. Save Timestamped Snapshot to history/
+        if create_timestamped_copy:
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            history_dir = os.path.join(out_dir, "history")
+            os.makedirs(history_dir, exist_ok=True)
+            ts_csv = os.path.join(history_dir, f"diversity_summary_{timestamp}.csv")
+            df.to_csv(ts_csv, index=False)
+            print(f"🕒 [Snapshot Backup]: Đã lưu bản sao lưu lịch sử tại: {ts_csv}")
+            
+    return accumulated_list
 
 
 def auto_resolve_target_dir(dir_query: str, base_drive: Optional[str] = None) -> str:
@@ -525,21 +693,17 @@ def evaluate_multiple_folders(
     print(md_table + "\n")
     print("=" * 78)
     
-    # Save outputs if specified
-    if output_json:
-        os.makedirs(os.path.dirname(os.path.abspath(output_json)), exist_ok=True)
-        with open(output_json, "w", encoding="utf-8") as f:
-            json.dump(summaries, f, indent=4)
-        print(f"💾 Đã lưu kết quả chi tiết JSON tại: {output_json}")
-        
-    if output_csv:
-        import pandas as pd
-        os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
-        df = pd.DataFrame(summaries)
-        df.to_csv(output_csv, index=False)
-        print(f"💾 Đã lưu bảng tóm tắt CSV tại: {output_csv}")
-        
-    return summaries
+    # Save & Merge outputs if specified (Smart Accumulator Mode)
+    if output_json or output_csv:
+        all_accumulated = save_and_merge_reports(
+            new_summaries=summaries,
+            output_json=output_json,
+            output_csv=output_csv,
+            create_timestamped_copy=True
+        )
+        return all_accumulated
+    else:
+        return summaries
 
 
 # ==============================================================================
