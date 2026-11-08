@@ -488,7 +488,7 @@
                 <div class="grid-col" style="border-left: 4px solid #06b6d4;">
                     <div class="grid-col-title">Tier 4: Flow Matching Generalization (blueprint.md)</div>
                     <p style="font-size: 0.85rem; color: var(--text-secondary);">
-                        Generalizes lookahead guidance to <strong>Rectified Flow models (SD3, FLUX.1)</strong> via CondOT Stein score-velocity Tweedie duality (<strong>Theorem 7</strong>), eliminating the boundary \(\mathcal{O}(t^{-3})\) numerical singularity via the parabolic posterior damper \(\omega(t) = t(1-t)\) and proving strict 16-channel VAE invariance.
+                        Generalizes lookahead guidance to <strong>Rectified Flow models (SD3, FLUX.1)</strong> via direct velocity guidance (<strong>Theorem 7</strong>) \(\Delta \mathbf{v}_t = -\frac{s_{\text{flow}}}{t} \sum_k (w_k^r - w_k)\hat{\mathbf{z}}_{0,k}\), eradicating the ad-hoc parabolic damper and proving strict 16-channel VAE invariance.
                     </p>
                 </div>
             </div>
@@ -767,7 +767,7 @@
             <div class="card-header">
                 <div>
                     <h2 class="card-title">5. Contribution C: RS-FlowLiDAR for Rectified Flows & Flow Matching</h2>
-                    <div class="card-subtitle">CondOT Stein score-velocity duality and singularity-free parabolic posterior damper</div>
+                    <div class="card-subtitle">Direct Lookahead Velocity Guidance and complete elimination of ad-hoc parabolic damper</div>
                 </div>
                 <span class="badge badge-cyan">Contribution C</span>
             </div>
@@ -778,24 +778,21 @@
 
             <details open id="theorem-7">
                 <summary>
-                    <span>Theorem 7: CondOT Velocity Duality, Reflow Stability & Parabolic Damper \(\omega(t) = t(1-t)\)</span>
+                    <span>Theorem 7: Direct Velocity Guidance & Flow Matching Stability</span>
                     <span class="badge badge-cyan">Singularity-Free</span>
                 </summary>
                 <div class="details-content">
                     <div class="formula-box cyan">
-                        <div class="formula-title">CondOT Score-Velocity Duality</div>
+                        <div class="formula-title">Direct Lookahead Velocity Guidance (Flow Matching)</div>
                         \[
-                        \mathbf{v}_t(\mathbf{z}_t) = \mathbb{E}[\boldsymbol{\epsilon} - \mathbf{z}_0 \mid \mathbf{z}_t] = \frac{\mathbf{z}_t}{1 - t} + \frac{t}{1 - t} \nabla_{\mathbf{z}_t} \log p_t(\mathbf{z}_t)
-                        \]
-                        \[
-                        \Delta \mathbf{v}_t^{\text{exact}}(\mathbf{z}_t) = -\frac{t}{1 - t} \nabla_{\mathbf{z}_t} \hat{r}_t^{\lambda, \sigma}(\mathbf{z}_t, \mathbf{c})
+                        \Delta \mathbf{v}_t(\mathbf{z}_t) = - \frac{s_{\text{flow}}}{t} \sum_{k=1}^K (w_k^r - w_k) \hat{\mathbf{z}}_{0,k}
                         \]
                     </div>
                     <div class="formula-box green">
-                        <div class="formula-title">The Parabolic Posterior-Variance Damper \(\omega(t) = t(1-t)\)</div>
-                        Unregularized velocity shifts scale as \(\mathcal{O}\left(\frac{1}{t(1-t)}\right)\), blowing up at \(t \to 1\) (noise horizon) and \(t \to 0\) (data manifold). Multiplying by \(\omega(t) \triangleq t(1-t)\) yields the <strong>Singularity-Free RS-FlowLiDAR Velocity Field</strong>:
+                        <div class="formula-title">Complete Elimination of Ad-Hoc Parabolic Damper</div>
+                        The ad-hoc factor \(\omega(t) = t(1-t)\) arose from converting diffusion spatial score into relative displacement \(\frac{\mathbf{z}_t - (1-t)\hat{\mathbf{z}}_{0,k}}{t(1-t)}\). Direct clean lookahead guidance divides strictly by \(t\), eliminating \((1-t)\) entirely. Boundary stability at \(t \to 0\) is naturally governed by the Fast-Path window \(t \in [0.20, 0.98]\) and numerical floor \(t_{\text{safe}} = \max(t, 0.05)\):
                         \[
-                        \mathbf{v}_t^{\text{steered}}(\mathbf{z}_t, t, \mathbf{c}) = \mathbf{v}_\theta(\mathbf{z}_t, t, \mathbf{c}) - s_{\text{flow}} \sum_{k=1}^n \left( w_k^{r, \sigma} - w_k \right) \left( (1 - t)\hat{\mathbf{z}}_0^{(k)} - \mathbf{z}_t \right)
+                        \mathbf{z}_{t - \Delta t} = \mathbf{z}_t - \Delta t \left( \mathbf{v}_{\text{pred}} + \Delta \mathbf{v}_t \right)
                         \]
                     </div>
                     <p>
@@ -1331,8 +1328,8 @@ def compute_entropic_antithetic_rewards(rewards_mc, sigma=1.0, beta_risk=0.5):
     w_diff = (torch.softmax(log_tilted, dim=-1) - torch.softmax(log_base, dim=-1)).unsqueeze(-1)
     mean_shift = torch.sum(w_diff * diff, dim=1) # [B, D]
     
-    # Theorem 7 Singularity-Free Parabolic Damper: omega(t) = t*(1-t) cancels 1/(t*(1-t))
-    velocity_shift = -s_flow * mean_shift
+    # Theorem 7 Direct Lookahead Velocity Guidance: delta_v = - (s_flow / t) * sum( (w_r - w) * z0 )
+    velocity_shift = -(s_flow / max(sigma_t, 0.05)) * z0_shift
     return velocity_shift.view_as(z_t)</code></pre>
                 </div>
             </details>
@@ -1462,7 +1459,7 @@ def compute_entropic_antithetic_rewards(rewards_mc, sigma=1.0, beta_risk=0.5):
                             <li><strong>Định lý 5.1:</strong> Half-Sum \(\bar{r}_k = \frac{r_{k,+} + r_{k,-}}{2}\), Half-Difference \(\widehat{G}_k^2 = \frac{(r_{k,+} - r_{k,-})^2}{4 \sigma^2}\).</li>
                             <li><strong>Định lý 5.2:</strong> Entropic Risk penalty \(-\frac{\beta_{\text{risk}}}{2 M} \widehat{\text{Var}}(r)\) với \(\beta_{\text{risk}} = 0.5\).</li>
                             <li><strong>Định lý 6:</strong> Thước đo Lipschitz địa phương \(\Lambda_j = \sqrt{\sigma_j^2 + \kappa L_j^2 + \epsilon}\), Smooth Tchebycheff \(\tau_p = 2.0\).</li>
-                            <li><strong>Định lý 7:</strong> Parabolic Damper \(\omega(t) = t(1-t)\) với Tweedie CondOT \(\hat{z}_0 = z_t - t v_\theta\).</li>
+                            <li><strong>Định lý 7:</strong> Direct Velocity Guidance \(\Delta \mathbf{v}_t = - \frac{s_{\text{flow}}}{t} \sum_k (w_k^r - w_k) \hat{\mathbf{z}}_{0,k}\) và Fast-Path \([0.20, 0.98]\).</li>
                             <li><strong>Double-Counting Lemma:</strong> \(\Phi_t^{\text{residual}} = V_t^{\text{SMC}} - \eta_{\text{drift}} \rho_t V_t^{\text{LiDAR}}\) với \(\eta_{\text{drift}} = 0.4\).</li>
                         </ul>
                     </div>
@@ -1658,7 +1655,7 @@ def compute_entropic_antithetic_rewards(rewards_mc, sigma=1.0, beta_risk=0.5):
                     <tr>
                         <td><strong>Table C (Flow SOTA)</strong></td>
                         <td>FLUX.1-schnell / SD3</td>
-                        <td>28-step Rectified Flow with Parabolic Damper \(\omega(t)\) & \(\Sigma_{\text{VAE}}^{-1}\)</td>
+                        <td>28-step Rectified Flow with Direct Velocity Guidance & \(\Sigma_{\text{VAE}}^{-1}\)</td>
                         <td><strong>~2.5 h</strong></td>
                         <td>ImageReward: <span class="highlight-win">&gt; 0.85</span>, Aesthetic: <span class="highlight-win">&gt; 6.4</span></td>
                     </tr>
@@ -1704,11 +1701,11 @@ def compute_entropic_antithetic_rewards(rewards_mc, sigma=1.0, beta_risk=0.5):
             </details>
 
             <details>
-                <summary>Q4: Why does RS-FlowLiDAR require the parabolic damper omega(t) = t(1-t)?</summary>
+                <summary>Q4: How does RS-FlowLiDAR achieve stable guidance without an ad-hoc parabolic damper?</summary>
                 <div class="details-content">
-                    <strong>Reviewer's Premise:</strong> Why can't we directly apply diffusion guidance formulas to Rectified Flow models like SD3 and FLUX?
+                    <strong>Reviewer's Premise:</strong> Why doesn't Flow Matching require the ad-hoc damper \(\omega(t) = t(1-t)\) that was previously proposed?
                     <br><br>
-                    <strong>Our Defense:</strong> Under CondOT paths \(x_t = (1-t)x_0 + t\epsilon\), unregularized velocity shifts scale as \(\mathcal{O}\left(\frac{1}{t(1-t)}\right)\), blowing up at both \(t \to 1\) (noise horizon, causing wild trajectory divergence) and \(t \to 0\) (clean manifold, destroying textures). \(\omega(t) = t(1-t)\) provides analytical \(C^\infty\) damping, bounding drift across the entire ODE path.
+                    <strong>Our Defense:</strong> The parabolic damper was an algebraic trick from converting diffusion spatial score into displacement \(\frac{\mathbf{z}_t - (1-t)\hat{\mathbf{z}}_{0,k}}{t(1-t)}\). When formulated directly in velocity space \(\mathbf{v}_t = \frac{d\mathbf{z}_t}{dt}\), guidance is simply \(\Delta \mathbf{v}_t = -\frac{s_{\text{flow}}}{t} \sum_k (w_k^r - w_k)\hat{\mathbf{z}}_{0,k}\), scaling inversely with \(t\) without any \((1-t)\) singularity. The Fast-Path window \(t \in [0.20, 0.98]\) and numerical floor \(t_{\text{safe}} = \max(t, 0.05)\) guarantee absolute boundary stability.
                 </div>
             </details>
 
@@ -1796,7 +1793,7 @@ def compute_entropic_antithetic_rewards(rewards_mc, sigma=1.0, beta_risk=0.5):
                 </div>
                 <div class="checklist-item">
                     <span class="check-box pending">⏳</span>
-                    <div><strong>Task 1.4 (Week 2 — Pre-spec & Code):</strong> Write interface contract, then implement <code>rs_flow_lidar.py</code> (Contribution C, CondOT Tweedie bridge \(\hat{z}_0 = z_t - t v_\theta\) and parabolic damper \(\omega(t) = t(1-t)\) with 16-channel VAE normalization).</div>
+                    <div><strong>Task 1.4 (Week 2 — Pre-spec & Code):</strong> Write interface contract, then implement <code>rs_flow_lidar.py</code> (Contribution C, Direct Velocity Guidance \(\Delta \mathbf{v}_t = -\frac{s_{\text{flow}}}{t} \sum_k (w_k^r - w_k)\hat{\mathbf{z}}_{0,k}\) with 16-channel VAE normalization).</div>
                 </div>
                 <div class="checklist-item">
                     <span class="check-box pending">⏳</span>

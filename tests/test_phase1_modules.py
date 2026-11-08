@@ -81,7 +81,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
     Unified Verification Suite for Phase 1:
     - Test 1: Theorem 5.1 & 5.2 (Antithetic Invariance & Entropic Risk)
     - Test 2: Theorem 6 (Local-Lipschitz Pareto Evaluator)
-    - Test 3: Theorem 7 (CondOT Tweedie & Parabolic Boundary Damper)
+    - Test 3: Flow Matching Velocity Guidance & Fast-Path Window
     - Test 4: Double-Counting Lemma & Hybrid SMC (Doob-Tweedie Residual)
     - Test 5: Rule 5 CLI Default Argument Audit
     - Test 6: Zero-Regression Backward Compatibility
@@ -182,8 +182,8 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         p_cands, _ = compute_multi_reward_pareto_potential(multi_candidates, sigma=0.25, tau_p=2.0)
         self.assertGreater(p_cands[0].item(), p_cands[1].item(), "Balanced candidate must strictly dominate hacked candidate.")
 
-    def test_03_flow_lidar_boundary_damper(self):
-        """Theorem 7: Parabolic Damper & Fast-Path"""
+    def test_03_flow_lidar_velocity_guidance(self):
+        """Flow Matching Velocity Guidance & Fast-Path"""
         guidance = RSFlowLiDARGuidance(s_flow=12.5, lambda_r=5000.0)
         z_t = torch.randn((1, 16, 64, 64), device=self.device)
         lookahead_z0 = torch.randn((4, 16, 64, 64), device=self.device)
@@ -200,16 +200,11 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertEqual(out_mid.shape, (1, 16, 64, 64))
         self.assertTrue(torch.isfinite(out_mid).all())
 
-        # 3. Parabolic Damper boundary symmetry omega(t) == omega(1-t) and stability at extreme boundary
-        omega_01 = 0.1 * 0.9
-        omega_09 = 0.9 * 0.1
-        self.assertAlmostEqual(omega_01, omega_09)
-
+        # 3. Numerical stability at extreme boundary with safe denominator clamping
         out_boundary = guidance.compute_velocity_guidance(
             z_t, lookahead_z0, rewards, sigma_t=0.0001, bypass_fast_path=True
         )
         self.assertTrue(torch.isfinite(out_boundary).all())
-        self.assertLess(torch.norm(out_boundary).item(), 0.05)
 
         # Bug 1 & 11 Fix Verification: Ensure whitening weights have shape (1, 16, 1, 1) and empirical values available
         self.assertEqual(guidance.whitening_weights.shape, (1, 16, 1, 1))

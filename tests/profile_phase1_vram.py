@@ -82,7 +82,7 @@ def run_vram_profiler(is_sdxl=False):
             perturbed = generate_smoothed_pixel_batch(z_t, sigma=1.0, M=4)
             # 2. Entropic Reward
             r_stats = compute_entropic_antithetic_rewards(rewards)
-            # 3. Flow Damper
+            # 3. Flow Velocity Guidance
             delta_v = flow_guidance.compute_velocity_guidance(z_t, lookahead_z0, r_stats["r_corrected"], sigma_t)
             # 4. Hybrid SMC (Doob-Tweedie)
             phi, _ = smc_engine.compute_step(lookahead_z0, lookahead_z0, r_stats["r_corrected"], seed_int=42, rho_t=rho_t, reward_fn=dummy_reward_fn)

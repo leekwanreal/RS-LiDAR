@@ -202,7 +202,7 @@ To elevate the paper from a borderline heuristic to a **theoretically rigorous, 
 │     & Entropic Risk (ĐL 5)   │       │     Harmonization (ĐL 6)     │       │     Rectified Flow (ĐL 7)    │
 ├──────────────────────────────┤       ├──────────────────────────────┤       ├──────────────────────────────┤
 │ • Odd-order cancel O(M^-2)   │       │ • Prevents 58x norm collapse │       │ • CondOT Tweedie Bridge      │
-│ • Half-Sum & Half-Difference │       │ • Dynamic Lipschitz scale    │       │ • Parabolic Damper t*(1-t)   │
+│ • Half-Sum & Half-Difference │       │ • Dynamic Lipschitz scale    │       │ • Direct Velocity Guidance   │
 │ • Donsker-Varadhan tail risk │       │ • Smooth Tchebycheff Soft-Min│       │ • 16-ch VAE Latent Normaliz. │
 └──────────────┬───────────────┘       └──────────────┬───────────────┘       └──────────────┬───────────────┘
                │                                      │                                      │
@@ -300,18 +300,15 @@ Standard lookahead guidance fails catastrophically on Rectified Flows because:
    Under the linear displacement interpolant $z_t = (1-t) x_0 + t x_1$, the instantaneous clean data projection is given by:
    $$\hat{z}_0(z_t, t) = z_t - t v_\theta(z_t, t)$$
    which maps directly to clean latent space at any time $t \in (0, 1)$.
-2. **Singularity-Free Parabolic Damped Velocity Guidance**:
-   The tilted velocity field guiding towards reward $R_\sigma$ is formulated as:
+2. **Direct Lookahead Velocity Guidance for Flow Matching**:
+   The tilted velocity field guiding towards reward $R_\sigma$ is formulated directly in terms of clean lookahead latents:
    $$v^*(z_t, t) = v_\theta(z_t, t) + \Delta v_t$$
-   where the lookahead guidance shift $\Delta v_t$ is modulated by the **Parabolic Damper** $\omega(t) = t(1-t)$:
-   $$\Delta v_t = -s_{\text{flow}} \cdot \omega(t) \cdot \sum_{k=1}^K \left[ w_k^{\text{tilted}} - w_k^{\text{base}} \right] \frac{z_t - (1-t) \hat{z}_{0, k}}{\sigma_t^2}$$
-   where $\sigma_t = \max(t, 0.15)$.
-   *Proof of Singularity Cancellation*:
-   The raw score function behaves as $\nabla_{z_t} \log p(z_t|z_0) \sim \frac{1}{t(1-t)}$ as $t \to 0^+$ or $t \to 1^-$.
-   Multiplying by the parabolic damper $\omega(t) = t(1-t)$ yields:
-   $$\lim_{t \to 0^+} \omega(t) \nabla_{z_t} \log p_t = \lim_{t \to 0^+} t(1-t) \cdot \frac{\mathcal{O}(1)}{t(1-t)} = \mathcal{O}(1)$$
-   $$\lim_{t \to 1^-} \omega(t) \nabla_{z_t} \log p_t = \lim_{t \to 1^-} t(1-t) \cdot \frac{\mathcal{O}(1)}{t(1-t)} = \mathcal{O}(1)$$
-   The guidance velocity $\Delta v_t$ vanishes smoothly at both boundaries $t=0$ and $t=1$, eliminating all numerical instabilities without arbitrary heuristic clipping.
+   where the guidance velocity shift $\Delta v_t$ is:
+   $$\Delta v_t = -\frac{s_{\text{flow}}}{t} \sum_{k=1}^K \left[ w_k^{\text{tilted}} - w_k^{\text{base}} \right] \hat{z}_{0, k}$$
+   where the weights are:
+   $$w_k^{\text{tilted}} \propto \exp\left( \lambda R(\hat{z}_{0, k}) - \frac{\|z_t - (1-t) \hat{z}_{0, k}\|_{\Sigma}^2}{2 t^2} \right), \quad w_k^{\text{base}} \propto \exp\left( - \frac{\|z_t - (1-t) \hat{z}_{0, k}\|_{\Sigma}^2}{2 t^2} \right)$$
+   *Physical Meaning*:
+   Unlike Diffusion score which divides by variance $\sigma_t^2 = t^2$ as a spatial density gradient, Flow Matching guidance acts directly on velocity $v = \frac{dx}{dt}$, which scales inversely with time $t$. The ad-hoc "Parabolic Damper" $\omega(t) = t(1-t)$ is completely eliminated because there is no $(1-t)$ singularity in the direct clean formulation. At fine-grained boundary steps ($t < 0.20$), lookahead guidance turns off via the Fast-Path window $t \in [0.20, 0.98]$ with a numerical safety floor $t_{\text{safe}} = \max(t, 0.05)$.
 3. **16-Channel Latent Space Whitening**:
    For FLUX.1 and SD3, latents reside in a 16-channel VAE space where latent variance across channels varies by up to 12×. We apply diagonal whitening:
    $$\tilde{z}_t = \Sigma_{\text{VAE}}^{-1/2} z_t$$
@@ -595,11 +592,10 @@ def compute_rs_flow_lidar_velocity_guidance(
     w_base = torch.softmax(log_base, dim=-1)
     w_diff = (w_tilted - w_base).unsqueeze(-1) # [B, K, 1]
     
-    mean_shift = torch.sum(w_diff * diff, dim=1) # [B, D]
-    
-    # Theorem 7 Parabolic Damper: omega(t) = t * (1 - t) cancels boundary singularity
-    omega_t = sigma_t * (1.0 - sigma_t)
-    velocity_shift = -s_flow * omega_t * mean_shift
+    # Direct Lookahead Velocity Guidance: \Delta v_t = - (s_flow / t) * sum( (w_r - w) * z_{0,k} )
+    z0_shift = torch.sum(w_diff * z0_w_flat.unsqueeze(0), dim=1) # [B, D]
+    t_val = max(sigma_t, 0.05)
+    velocity_shift = -(s_flow / t_val) * z0_shift
     
     return velocity_shift.view_as(z_t)
 ```
@@ -677,7 +673,7 @@ When submitted to ICML 2027, reviewers will likely challenge the paper on specif
 
 | # | Expected Reviewer Attack | Theoretical / Empirical Defense | Formal Proof Location |
 | :-: | :--- | :--- | :--- |
-| **1** | *"Random smoothing is a standard technique; applying it to LiDAR is an incremental combination."* | We do not apply naive smoothing; we prove an exact **$O(M^{-2})$ variance cancellation rate** via Dual-Order Antithetic decomposition, prove Donsker-Varadhan entropic risk optimality, and establish the first **CondOT parabolic damper** for Rectified Flows. | Theorem 5.1 & Theorem 7 |
+| **1** | *"Random smoothing is a standard technique; applying it to LiDAR is an incremental combination."* | We do not apply naive smoothing; we prove an exact **$O(M^{-2})$ variance cancellation rate** via Dual-Order Antithetic decomposition, prove Donsker-Varadhan entropic risk optimality, and establish the first **Direct Lookahead Velocity Guidance** for Rectified Flows. | Theorem 5.1 & Theorem 7 |
 | **2** | *"Evaluating $M$ smoothed samples increases inference latency by $M \times$."* | **No latency increase in Stage 2**: DPM-8 latents from Stage 1 are 100% reused via `--reuse_latents_from`. In Stage 1, $M=4$ evaluations are parallelized inside a single batched tensor `[M*N, C, H, W]`, adding $<12\%$ wall-clock overhead on A100. | Table 2 Profiling Benchmarks |
 | **3** | *"Why not just train/fine-tune the model with DPO or PPO instead of test-time steering?"* | Offline RL fine-tuning causes **catastrophic forgetting**, mode collapse, and cannot dynamically swap or compose reward models at test-time. Our framework is **100% training-free, zero-VRAM overhead**, and plugs into pre-trained models instantaneously. | Section 1 (Introduction) |
 | **4** | *"In Table 8, why did past SMC fail to scale well with particles ($N=2 \to 0.354$)?"* | We identify and formally prove the **Double-Counting Drift Lemma**: unadjusted SMC weights double-count lookahead drift forces. Our **Doob-Tweedie Innovation Residual $\Phi_t^{\text{residual}}$** subtracts expected drift, pushing $N=2$ reward past **$0.450$**. | Section 3.4 & Lemma 2 |
@@ -702,7 +698,7 @@ Please conduct an exhaustive, peer-review level scientific audit of this paper f
 1. THEORETICAL SANITY CHECK OF THEOREMS 1–7:
    - Audit the mathematical rigor of Theorem 5.1 (Half-Sum / Half-Difference second-order variance cancellation). Does the Taylor expansion hold under standard C^3 assumptions? Is the O(M^-2) rate exact?
    - Verify the Donsker-Varadhan cumulant expansion in Theorem 5.2. Is the variance penalty term -(\beta / 2M) Var(r) mathematically consistent with the entropic risk measure?
-   - Check Theorem 7 (CondOT Parabolic Damper \omega(t) = t(1-t)). Does it completely cancel the marginal score boundary singularity as t -> 0 and t -> 1 without introducing secondary discontinuities?
+   - Check Theorem 7 (Direct Lookahead Velocity Guidance \Delta v_t = - \frac{s_{\text{flow}}}{t} \sum_k (w_k^r - w_k) \hat{z}_{0,k}). Does it properly scale velocity inversely with time t and operate stably within [0.20, 0.98]?
 
 2. DOUBLE-COUNTING DRIFT LEMMA (SECTION 3.4):
    - Scrutinize the Doob-Tweedie Innovation Residual \Phi_t^{residual} = V^{SMC} - \eta \rho_t V^{LiDAR}.

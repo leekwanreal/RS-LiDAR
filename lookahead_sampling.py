@@ -400,7 +400,8 @@ def main(args):
             pass
 
     # set output directory
-    prefix = f"{args.seed}_{args.num_particles}_{args.num_inference_steps}"
+    model_prefix = "FLUX_" if "flux" in args.model_name.lower() else ""
+    prefix = f"{model_prefix}{args.seed}_{args.num_particles}_{args.num_inference_steps}"
     if getattr(args, "use_smoothing", False):
         if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" or getattr(args, "use_crn", False):
             suffix = "_crn"
@@ -576,7 +577,7 @@ def main(args):
             if "xl" in args.model_name or "XL" in args.model_name:
                 latents = latents.to(torch.float32)
 
-            if "FLUX" in args.model_name:
+            if "flux" in args.model_name.lower():
                 latents_unpacked = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
                 latents_unpacked = (latents_unpacked / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
                 vae_batch_size = 1
@@ -616,7 +617,7 @@ def main(args):
                     sigma_lo = getattr(args, "sigma_low", 0.25)
 
                     if is_stratified:
-                        if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                        if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
                             u_p1 = torch.randn_like(scaled_latents)
                             u_p2 = torch.randn_like(scaled_latents)
                         else:
@@ -624,7 +625,7 @@ def main(args):
                             u_p2 = torch.randn_like(decoded_tensor)
                         u_half_list = None
                     elif is_antithetic:
-                        if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                        if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
                             u_half_list = [torch.randn_like(scaled_latents) for _ in range(half_M)]
                         else:
                             u_half_list = [torch.randn_like(decoded_tensor) for _ in range(half_M)]
@@ -632,7 +633,7 @@ def main(args):
                         u_half_list = None
 
                     for m_idx in range(args.num_mc_samples):
-                        if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                        if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
                             if is_stratified:
                                 if m_idx == 0: noise = u_p1 * sigma_hi
                                 elif m_idx == 1: noise = -u_p1 * sigma_hi
@@ -743,7 +744,7 @@ def main(args):
                 num_mc = args.num_mc_samples
                 n_particles = decoded_tensor.shape[0]
                 with torch.inference_mode():
-                    if args.smoothing_domain == "latent" and "FLUX" not in args.model_name:
+                    if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
                         if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
                             noisy_lat_list = [scaled_latents + torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma for _ in range(num_mc)]
                             noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)

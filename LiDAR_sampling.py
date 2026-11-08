@@ -186,15 +186,18 @@ def main(args):
         pipe = FKDStableDiffusionXL.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
         )
-    # elif "black-forest-labs/FLUX.1-dev" in args.model_name:
-    #     print("Using FLUX")
-    #     pipe = FluxPipeline_LiDAR.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=torch.bfloat16)
+    elif "black-forest-labs/FLUX.1-dev" in args.model_name or "flux" in args.model_name.lower():
+        print("🚀 Using FLUX.1 with RS-FlowLiDAR Guidance")
+        from fkd_diffusers.fkd_pipeline_flux import FluxPipeline_LiDAR
+        pipe = FluxPipeline_LiDAR.from_pretrained(
+            "black-forest-labs/FLUX.1-dev", torch_dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+        )
 
     else:
         pipe = FKDStableDiffusion.from_pretrained(
             args.model_name, torch_dtype=torch.float16
         )
-    if "FLUX" not in args.model_name:
+    if "flux" not in args.model_name.lower():
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
     # set device (preserve assigned device cuda:actual_gpu_id)
@@ -210,7 +213,13 @@ def main(args):
     if args.run_name:
         output_dir = os.path.join(args.output_dir, args.run_name)
     else:
-        model_tag = "SDXL" if "xl" in args.model_name.lower() else "SD15"
+        if "flux" in args.model_name.lower():
+            model_tag = "FLUX"
+        elif "xl" in args.model_name.lower():
+            model_tag = "SDXL"
+        else:
+            model_tag = "SD15"
+
         if args.use_smc:
             crn_suffix = "_crn" if getattr(args, "smc_use_crn", False) else ""
             anneal_suffix = "_anneal" if getattr(args, "smc_anneal_sigma", False) else ""
@@ -222,7 +231,10 @@ def main(args):
             if args.use_rag:
                 method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
         elif args.use_rag:
-            method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
+            if model_tag == "FLUX":
+                method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_sflow{args.s_flow}"
+            else:
+                method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
         else:
             method_tag = f"{model_tag}_BoN_N{args.num_particles}" if args.num_particles > 1 else f"{model_tag}_Vanilla_N1"
 
@@ -348,6 +360,7 @@ def main(args):
             resampling_t_end=args.resample_t_end,
             guidance_reward_fn=args.guidance_reward_fn,
             potential_type=args.potential_type,
+            s_flow=getattr(args, "s_flow", 12.5),
         )
 
         start_time = datetime.now()
