@@ -250,12 +250,12 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         sys.argv = ["lookahead_sampling.py"]
         args_lookahead = get_lookahead_args()
 
-        self.assertEqual(args_lookahead.noise_mode, "independent_antithetic")
+        self.assertEqual(args_lookahead.noise_mode, "independent_iid")
         self.assertEqual(args_lookahead.M, 4)
         self.assertEqual(args_lookahead.num_mc_samples, 4)
         self.assertEqual(args_lookahead.sigma_high, 1.0)
         self.assertEqual(args_lookahead.sigma_low, 0.25)
-        self.assertEqual(args_lookahead.beta_risk, 0.5)
+        self.assertEqual(args_lookahead.beta_risk, 0.0)
         self.assertEqual(args_lookahead.eta_drift, 0.4)
         self.assertEqual(args_lookahead.alpha_couple, 0.7)
         self.assertEqual(args_lookahead.s_flow, 12.5)
@@ -270,11 +270,11 @@ class TestPhase1UnifiedModules(unittest.TestCase):
 
         sys.argv = ["LiDAR_sampling.py"]
         args_lidar = get_lidar_args()
-        self.assertEqual(args_lidar.noise_mode, "independent_antithetic")
+        self.assertEqual(args_lidar.noise_mode, "independent_iid")
         self.assertEqual(args_lidar.M, 4)
         self.assertEqual(args_lidar.sigma_high, 1.0)
         self.assertEqual(args_lidar.sigma_low, 0.25)
-        self.assertEqual(args_lidar.beta_risk, 0.5)
+        self.assertEqual(args_lidar.beta_risk, 0.0)
         self.assertEqual(args_lidar.eta_drift, 0.4)
         self.assertEqual(args_lidar.alpha_couple, 0.7)
         self.assertEqual(args_lidar.s_flow, 12.5)

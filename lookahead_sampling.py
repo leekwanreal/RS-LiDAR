@@ -158,12 +158,13 @@ def generate_smoothed_pixel_batch(
 def compute_entropic_antithetic_rewards(
     rewards_mc: torch.Tensor,
     sigma: float = 1.0,
-    beta_risk: float = 0.5,
-    noise_mode: str = "independent_antithetic",
+    beta_risk: float = 0.0,
+    noise_mode: str = "independent_iid",
     **kwargs
 ) -> Dict[str, torch.Tensor]:
     """
-    Phân rã Half-Sum / Half-Difference (Theorem 5.1) và tính Donsker-Varadhan Entropic Risk (Theorem 5.2).
+    Tính toán kỳ vọng reward làm trơn (Randomized Smoothing).
+    Mặc định sử dụng I.I.D thuần túy: r_corrected = r_mean (không áp dụng beta_risk).
     """
     # Ép kiểu FP32 để chống tràn số / sai số
     r_fp32 = rewards_mc.to(torch.float32)
@@ -175,13 +176,13 @@ def compute_entropic_antithetic_rewards(
         mean_hi = 0.5 * (r_hi_pos + r_hi_neg)
         diff_hi = 0.5 * (r_hi_pos - r_hi_neg)
         grad_energy_hi = diff_hi ** 2
-        r_hi_corr = mean_hi - (beta_risk / 4.0) * grad_energy_hi
+        r_hi_corr = mean_hi - (beta_risk / 4.0) * grad_energy_hi if beta_risk != 0.0 else mean_hi
 
         r_lo_pos, r_lo_neg = r_fp32[2], r_fp32[3]
         mean_lo = 0.5 * (r_lo_pos + r_lo_neg)
         diff_lo = 0.5 * (r_lo_pos - r_lo_neg)
         grad_energy_lo = diff_lo ** 2
-        r_lo_corr = mean_lo - (beta_risk / 4.0) * grad_energy_lo
+        r_lo_corr = mean_lo - (beta_risk / 4.0) * grad_energy_lo if beta_risk != 0.0 else mean_lo
 
         r_corrected = 0.5 * (r_hi_corr + r_lo_corr)
         grad_energy_sq = 0.5 * (grad_energy_hi + grad_energy_lo)
@@ -195,10 +196,10 @@ def compute_entropic_antithetic_rewards(
         }
 
     if noise_mode != "independent_antithetic" or M % 2 != 0:
-        # Fallback chuẩn nếu không phải antithetic hoặc M lẻ
+        # Mặc định I.I.D (independent_iid) hoặc fallback chuẩn: r_corrected = r_mean
         r_mean = r_fp32.mean(dim=0)
         variance = r_fp32.var(dim=0, unbiased=True) if M > 1 else torch.zeros_like(r_mean)
-        r_corrected = r_mean - (beta_risk / (2.0 * float(M))) * variance
+        r_corrected = r_mean if beta_risk == 0.0 else (r_mean - (beta_risk / (2.0 * float(M))) * variance)
         grad_energy_sq = variance / (sigma ** 2 + 1e-8)
         return {
             "r_corrected": r_corrected.to(rewards_mc.dtype),
@@ -217,10 +218,10 @@ def compute_entropic_antithetic_rewards(
     grad_energy_sq = torch.mean(pair_diffs ** 2, dim=0) / (sigma ** 2 + 1e-8)
     curv_var = pair_sums.var(dim=0, unbiased=True) if half_M >= 2 else torch.zeros_like(grad_energy_sq)
 
-    # Định lý 5.2: Phạt Donsker-Varadhan Entropic Risk
+    # Định lý 5.2: Phạt Donsker-Varadhan Entropic Risk (nếu beta_risk > 0, mặc định beta_risk = 0.0 không phạt)
     total_var = (sigma ** 2) * grad_energy_sq + curv_var
     r_mean = r_fp32.mean(dim=0)  # Tương đương pair_sums.mean(dim=0)
-    r_corrected = r_mean - (beta_risk / (2.0 * float(M))) * total_var
+    r_corrected = r_mean if beta_risk == 0.0 else (r_mean - (beta_risk / (2.0 * float(M))) * total_var)
 
     return {
         "r_corrected": r_corrected.to(rewards_mc.dtype),
@@ -403,13 +404,12 @@ def main(args):
     model_prefix = "FLUX_" if "flux" in args.model_name.lower() else ""
     prefix = f"{model_prefix}{args.seed}_{args.num_particles}_{args.num_inference_steps}"
     if getattr(args, "use_smoothing", False):
-        if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" or getattr(args, "use_crn", False):
+        if getattr(args, "noise_mode", "independent_iid") == "coupled_crn" or getattr(args, "use_crn", False):
             suffix = "_crn"
-        elif getattr(args, "noise_mode", "") == "independent_iid":
+        elif getattr(args, "noise_mode", "independent_iid") == "independent_iid":
             suffix = "_iid"
         else:
-            beta_str = f"_beta{args.beta_risk}" if getattr(args, "beta_risk", 0.0) != 0.0 else ""
-            suffix = f"_antithetic{beta_str}"
+            suffix = f"_{getattr(args, 'noise_mode', 'iid')}"
         prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}{suffix}"
     if getattr(args, "run_name", None):
         output_dir = os.path.join(args.output_dir, args.run_name)
@@ -490,7 +490,7 @@ def main(args):
                                 mismatch_reasons.append(f"noise_mode: '{cached_mode}' != '{args.noise_mode}'")
                             if cached_sig is not None and abs(cached_sig - args.sigma) > 1e-4:
                                 mismatch_reasons.append(f"sigma: {cached_sig} != {args.sigma}")
-                            if cached_beta is not None and abs(cached_beta - getattr(args, "beta_risk", 0.5)) > 1e-4:
+                            if cached_beta is not None and getattr(args, "beta_risk", 0.0) != 0.0 and abs(cached_beta - getattr(args, "beta_risk", 0.0)) > 1e-4:
                                 mismatch_reasons.append(f"beta_risk: {cached_beta} != {args.beta_risk}")
 
                             if mismatch_reasons:
@@ -696,8 +696,8 @@ def main(args):
                         entropic_res = compute_entropic_antithetic_rewards(
                             scores_mat,
                             sigma=args.sigma,
-                            beta_risk=getattr(args, "beta_risk", 0.5),
-                            noise_mode=getattr(args, "noise_mode", "independent_antithetic"),
+                            beta_risk=getattr(args, "beta_risk", 0.0),
+                            noise_mode=getattr(args, "noise_mode", "independent_iid"),
                             sigma_high=getattr(args, "sigma_high", 1.0),
                             sigma_low=getattr(args, "sigma_low", 0.25)
                         )
@@ -795,8 +795,8 @@ def main(args):
                         entropic_res = compute_entropic_antithetic_rewards(
                             scores_mat,
                             sigma=args.sigma,
-                            beta_risk=getattr(args, "beta_risk", 0.5),
-                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
+                            beta_risk=getattr(args, "beta_risk", 0.0),
+                            noise_mode=getattr(args, "noise_mode", "independent_iid")
                         )
                         smoothed_scores = entropic_res["r_corrected"].tolist()
                         scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
@@ -850,8 +850,8 @@ def main(args):
                 "num_mc_samples": args.num_mc_samples,
                 "domain": args.smoothing_domain,
                 "mode": "loop" if use_loop else "vectorized",
-                "noise_mode": getattr(args, "noise_mode", "independent_antithetic"),
-                "beta_risk": getattr(args, "beta_risk", 0.5),
+                "noise_mode": getattr(args, "noise_mode", "independent_iid"),
+                "beta_risk": getattr(args, "beta_risk", 0.0),
                 "use_crn": getattr(args, "use_crn", False) or (getattr(args, "noise_mode", "") == "coupled_crn"),
                 "reused_latents_from": reused_latent_file,
             }
@@ -973,8 +973,7 @@ def get_args():
     parser.add_argument("--reuse_latents_from", type=str, default=None, help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
     parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
     parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers (CRN): broadcast a single noise sample across all N particles within each prompt to eliminate inter-particle ranking variance")
-    parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode: 'independent_antithetic' (Theorem 5.1), 'independent_iid', or 'coupled_crn' (legacy)")
-    parser.add_argument("--beta_risk", type=float, default=0.5, help="Entropic risk penalty parameter beta (Theorem 5.2, default: 0.5; 0.0 disables risk penalty)")
+    parser.add_argument("--noise_mode", type=str, default="independent_iid", choices=["independent_iid", "independent_antithetic", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode: 'independent_iid' (default), 'independent_antithetic', or 'coupled_crn' (legacy)")
     parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
     parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
     parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
@@ -985,10 +984,17 @@ def get_args():
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
     args = parser.parse_args()
 
+    # Xóa sổ hoàn toàn beta_risk: cố định = 0.0 để r_corrected = r_mean (I.I.D thuần túy)
+    args.beta_risk = 0.0
+
     if getattr(args, "use_crn", False) or getattr(args, "noise_mode", "") == "coupled_crn":
         args.noise_mode = "coupled_crn"
-        if not any(arg.startswith("--beta_risk") for arg in sys.argv):
-            args.beta_risk = 0.0
+
+    # Auto-dispatch num_particles to 3 for FLUX if not specified on CLI (Table 3 Ground Truth)
+    if "flux" in args.model_name.lower():
+        if not any(arg.startswith("--num_particles") for arg in sys.argv):
+            args.num_particles = 3
+            print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 3 for FLUX Phase 1 lookahead pool (Table 3 standard).")
 
     args.M = args.num_mc_samples
 

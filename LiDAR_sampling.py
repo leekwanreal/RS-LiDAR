@@ -162,7 +162,11 @@ def main(args):
 
     is_flux = ("flux" in args.model_name.lower())
     if is_flux:
-        if "--s_flow" not in sys.argv and getattr(args, "s_flow", 12.5) == 12.5:
+        # Cưỡng chế Phase 2 FLUX sinh 1 ảnh duy nhất (batch_size = 1) để bảo vệ VRAM A100 (~21.2 GiB)
+        if not any(arg.startswith("--num_particles") for arg in sys.argv):
+            args.num_particles = 1
+            print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 1 for FLUX Phase 2 (Table 3 standard, keeps VRAM at ~21.2 GiB).")
+        if "--s_flow" not in sys.argv and getattr(args, "s_flow", 12.5) == 12.5 and getattr(args, "method", None) != "RS-FlowLiDAR":
             args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX
         if args.guidance_start is None:
             args.guidance_start = 1.0
@@ -510,8 +514,8 @@ def get_args():
     parser.add_argument("--smc_sigma", type=float, default=0.25, help="Gaussian noise standard deviation for RS-SMC (default: 0.25)")
     parser.add_argument("--smc_num_mc_samples", "--smc_M", dest="smc_num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M for RS-SMC (default: 4)")
     parser.add_argument("--M", dest="M", type=int, default=None, help="Alias for number of MC samples M")
-    parser.add_argument("--noise_mode", type=str, default="independent_antithetic", choices=["independent_antithetic", "independent_iid", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode")
-    parser.add_argument("--beta_risk", type=float, default=0.5, help="Entropic risk penalty parameter beta (Theorem 5.2, default: 0.5)")
+    parser.add_argument("--noise_mode", type=str, default="independent_iid", choices=["independent_iid", "independent_antithetic", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode: 'independent_iid' (default), 'independent_antithetic', or 'coupled_crn'")
+    parser.add_argument("--method", type=str, default=None, choices=["LiDAR", "RS-FlowLiDAR", "Vanilla"], help="High-level method preset: 'LiDAR' (Table 3), 'RS-FlowLiDAR' (Continuous), or 'Vanilla'")
     parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
     parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
     parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
@@ -587,6 +591,26 @@ def get_args():
         args.use_smc_smoothing = True
     if args.use_smc_smoothing:
         args.use_smc = True
+
+    # Xóa sổ hoàn toàn beta_risk: cố định = 0.0
+    args.beta_risk = 0.0
+
+    # Xử lý preset --method cho LiDAR vs RS-FlowLiDAR vs Vanilla
+    if args.method == "LiDAR":
+        args.use_rag = True
+        args.s_flow = 40.0
+        args.guidance_start = 1.0
+        args.guidance_end = 0.95
+        args.use_smc = False
+    elif args.method == "RS-FlowLiDAR":
+        args.use_rag = True
+        args.s_flow = 12.5
+        args.guidance_start = 0.98
+        args.guidance_end = 0.20
+    elif args.method == "Vanilla":
+        args.use_rag = False
+        args.s_flow = 0.0
+        args.use_smc = False
 
     # Auto-dispatch scale and sigma for SDXL vs SD 1.5
     if "xl" in args.model_name.lower():
