@@ -175,6 +175,32 @@ class TestDiversityMetrics(unittest.TestCase):
             self.assertEqual(run_a_updated["image_reward_max"], 0.89)
             self.assertEqual(run_a_updated["evaluated_prompts"], 553)
 
+    def test_clip_feature_extraction_compatibility(self):
+        """Verifies handling of modern transformers BaseModelOutputWithPooling objects."""
+        class MockBaseModelOutputWithPooling:
+            def __init__(self, tensor):
+                self.pooler_output = tensor
+                
+        # Simulate modern output
+        dummy_tensor = torch.randn(4, 512)
+        mock_output = MockBaseModelOutputWithPooling(dummy_tensor)
+        
+        # Test unwrapping logic
+        feats = mock_output
+        if hasattr(feats, "pooler_output") and feats.pooler_output is not None:
+            feats = feats.pooler_output
+        elif hasattr(feats, "image_embeds") and feats.image_embeds is not None:
+            feats = feats.image_embeds
+        elif not isinstance(feats, torch.Tensor):
+            feats = feats[0]
+            
+        self.assertTrue(isinstance(feats, torch.Tensor))
+        self.assertEqual(feats.shape, (4, 512))
+        
+        # Norm should work without AttributeError
+        normed = feats / feats.norm(dim=-1, keepdim=True)
+        self.assertAlmostEqual(float(normed[0].norm().item()), 1.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -379,6 +379,13 @@ class DiversityEvaluator:
                 inputs = self.clip_processor(images=item.pil_images, return_tensors="pt").to(self.device)
                 with torch.inference_mode():
                     feats = self.clip_model.get_image_features(**inputs)
+                    # Support both modern transformers (BaseModelOutputWithPooling) and legacy tensor output
+                    if hasattr(feats, "pooler_output") and feats.pooler_output is not None:
+                        feats = feats.pooler_output
+                    elif hasattr(feats, "image_embeds") and feats.image_embeds is not None:
+                        feats = feats.image_embeds
+                    elif not isinstance(feats, torch.Tensor):
+                        feats = feats[0]
                     feats = feats / feats.norm(dim=-1, keepdim=True)
                     embs = feats.cpu().numpy()
                     
