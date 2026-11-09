@@ -166,8 +166,8 @@ def main(args):
         if not any(arg.startswith("--num_particles") for arg in sys.argv):
             args.num_particles = 1
             print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 1 for FLUX Phase 2 (Table 3 standard, keeps VRAM at ~21.2 GiB).")
-        if "--s_flow" not in sys.argv and getattr(args, "s_flow", 12.5) == 12.5 and getattr(args, "method", None) != "RS-FlowLiDAR":
-            args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX
+        if "--s_flow" not in sys.argv and getattr(args, "s_flow", 12.5) == 12.5:
+            args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX (identical for LiDAR and RS-FlowLiDAR)
         if args.guidance_start is None:
             args.guidance_start = 1.0
         if args.guidance_end is None:
@@ -596,17 +596,13 @@ def get_args():
     args.beta_risk = 0.0
 
     # Xử lý preset --method cho LiDAR vs RS-FlowLiDAR vs Vanilla
-    if args.method == "LiDAR":
+    # Lưu ý: Cấu hình Phase 2 (s_flow = 40.0, cửa sổ [1.0, 0.95]) của RS-FlowLiDAR giống hệt 100% với LiDAR
+    if args.method in ["LiDAR", "RS-FlowLiDAR"]:
         args.use_rag = True
         args.s_flow = 40.0
         args.guidance_start = 1.0
         args.guidance_end = 0.95
         args.use_smc = False
-    elif args.method == "RS-FlowLiDAR":
-        args.use_rag = True
-        args.s_flow = 12.5
-        args.guidance_start = 0.98
-        args.guidance_end = 0.20
     elif args.method == "Vanilla":
         args.use_rag = False
         args.s_flow = 0.0
