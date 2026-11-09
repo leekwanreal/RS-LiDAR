@@ -70,13 +70,9 @@ def plot_single_sigma_3panel(s2_target, out_folder):
     ax_a.set_title(f"Panel A: Worst-Case Bound ($L_{{\\max}}$, $\\sigma={s2_target}$)", fontsize=13, fontweight="bold", pad=12)
     ax_a.set_xticks(indices)
     ax_a.set_xticklabels(available_models, fontsize=11, fontweight="bold")
+    ax_a.set_ylim(0, max(l_max_v_list) * 1.08)
     ax_a.legend(frameon=True, fontsize=11)
     ax_a.grid(True, linestyle="--", alpha=0.5, axis="y")
-
-    for i in range(len(available_models)):
-        y_pos = max(l_max_v_list[i], l_max_rs_list[i]) * 1.03
-        ax_a.annotate(f"{ratios[i]:.2f}x ↓", xy=(indices[i] + width/2, l_max_rs_list[i]),
-                     xytext=(indices[i], y_pos), ha="center", fontsize=11, fontweight="bold", color="#1D3557")
 
     # Panel B: Phân phối KDE
     ax_b = axes[1]
