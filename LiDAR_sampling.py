@@ -168,15 +168,12 @@ def main(args):
             print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 1 for FLUX Phase 2 (Table 3 standard, keeps VRAM at ~21.2 GiB).")
         if "--s_flow" not in sys.argv:
             args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX (identical for LiDAR and RS-FlowLiDAR)
-        if args.guidance_start is None:
-            args.guidance_start = 1.0
-        if args.guidance_end is None:
-            args.guidance_end = 0.95
-    else:
-        if args.guidance_start is None:
-            args.guidance_start = 0.98
-        if args.guidance_end is None:
-            args.guidance_end = 0.20
+
+    # Cửa sổ thời gian dẫn đường Flow Matching mặc định luôn là [1.0, 0.95] (chuẩn Table 3)
+    if args.guidance_start is None:
+        args.guidance_start = 1.0
+    if args.guidance_end is None:
+        args.guidance_end = 0.95
 
     if args.use_smc:
         assert args.resample_frequency > 0
