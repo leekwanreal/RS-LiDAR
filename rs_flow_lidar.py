@@ -10,7 +10,7 @@ class RSFlowLiDARGuidance:
 
     def __init__(
         self, 
-        s_flow: float = 12.5, 
+        s_flow: float = 40.0, 
         lambda_r: float = 5000.0, 
         whitening_weights: Optional[torch.Tensor] = None,
         t_start: float = 0.98,
@@ -20,11 +20,11 @@ class RSFlowLiDARGuidance:
         Module điều khiển vận tốc Lookahead cho Rectified Flows (Flow Matching).
         
         Args:
-            s_flow: Hệ số khuếch đại vận tốc dẫn đường (default: 12.5; khuyên dùng 40.0 cho FLUX).
+            s_flow: Hệ số khuếch đại vận tốc dẫn đường (default: 40.0 chuẩn Table 3 cho FLUX).
             lambda_r: Độ nhạy nhiệt độ Softmax exponentiation cho reward (default: 5000.0).
             whitening_weights: Trọng số làm trắng latent space \Sigma^{-1/2} cho khoảng cách Mahalanobis.
-            t_start: Mốc thời gian bắt đầu lái (default: 0.98; khuyên dùng 1.0 cho FLUX).
-            t_end: Mốc thời gian ngắt lái (default: 0.20; khuyên dùng 0.95 cho FLUX Table 3).
+            t_start: Mốc thời gian bắt đầu lái (default: 0.98; được ghi đè bởi 1.0 cho FLUX Table 3).
+            t_end: Mốc thời gian ngắt lái (default: 0.20; được ghi đè bởi 0.95 cho FLUX Table 3).
         """
         self.s_flow = s_flow
         self.lambda_r = lambda_r

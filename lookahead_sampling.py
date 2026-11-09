@@ -978,7 +978,7 @@ def get_args():
     parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
     parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
     parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
-    parser.add_argument("--s_flow", type=float, default=12.5, help="Velocity guidance scale for Rectified Flows (default: 12.5)")
+    parser.add_argument("--s_flow", type=float, default=40.0, help="Velocity guidance scale for Rectified Flows (default: 40.0, Table 3 standard for FLUX)")
     parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
     parser.add_argument("--use_pareto", type=str2bool, nargs="?", const=True, default=False, help="Enable Local-Lipschitz Multi-Reward Pareto Evaluator (Theorem 6)")
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")

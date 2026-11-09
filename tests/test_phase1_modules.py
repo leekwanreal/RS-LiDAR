@@ -258,7 +258,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertEqual(args_lookahead.beta_risk, 0.0)
         self.assertEqual(args_lookahead.eta_drift, 0.4)
         self.assertEqual(args_lookahead.alpha_couple, 0.7)
-        self.assertEqual(args_lookahead.s_flow, 12.5)
+        self.assertEqual(args_lookahead.s_flow, 40.0)
         self.assertEqual(args_lookahead.pareto_rho, 0.5)
         self.assertFalse(args_lookahead.use_pareto)
 
@@ -277,7 +277,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertEqual(args_lidar.beta_risk, 0.0)
         self.assertEqual(args_lidar.eta_drift, 0.4)
         self.assertEqual(args_lidar.alpha_couple, 0.7)
-        self.assertEqual(args_lidar.s_flow, 12.5)
+        self.assertEqual(args_lidar.s_flow, 40.0)
         self.assertEqual(args_lidar.pareto_rho, 0.5)
         self.assertFalse(args_lidar.use_hybrid_smc)
 

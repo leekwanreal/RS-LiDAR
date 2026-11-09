@@ -166,7 +166,7 @@ def main(args):
         if not any(arg.startswith("--num_particles") for arg in sys.argv):
             args.num_particles = 1
             print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 1 for FLUX Phase 2 (Table 3 standard, keeps VRAM at ~21.2 GiB).")
-        if "--s_flow" not in sys.argv and getattr(args, "s_flow", 12.5) == 12.5:
+        if "--s_flow" not in sys.argv:
             args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX (identical for LiDAR and RS-FlowLiDAR)
         if args.guidance_start is None:
             args.guidance_start = 1.0
@@ -520,7 +520,7 @@ def get_args():
     parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
     parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
     parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
-    parser.add_argument("--s_flow", type=float, default=12.5, help="Velocity guidance scale for Rectified Flows (default: 12.5; auto-set to 40.0 for FLUX unless specified)")
+    parser.add_argument("--s_flow", type=float, default=40.0, help="Velocity guidance scale for Rectified Flows (default: 40.0, Table 3 standard for FLUX)")
     parser.add_argument("--guidance_start", type=float, default=None, help="Upper bound of guidance window for Flow Matching (default: 1.0 for FLUX Table 3 [0.95, 1.0])")
     parser.add_argument("--guidance_end", type=float, default=None, help="Lower bound of guidance window for Flow Matching (default: 0.95 for FLUX Table 3 [0.95, 1.0])")
     parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
