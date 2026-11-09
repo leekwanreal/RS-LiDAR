@@ -64,7 +64,7 @@ def plot_single_sigma_3panel(s2_target, out_folder):
 
     # Panel A: Bar chart L_max
     ax_a = axes[0]
-    ax_a.bar(indices - width/2, l_max_v_list, width, label="Vanilla LiDAR", color="#E63946", alpha=0.9, edgecolor="black")
+    ax_a.bar(indices - width/2, l_max_v_list, width, label="LiDAR", color="#E63946", alpha=0.9, edgecolor="black")
     ax_a.bar(indices + width/2, l_max_rs_list, width, label=f"RS-LiDAR (σ={s2_target})", color="#2A9D8F", alpha=0.9, edgecolor="black")
     ax_a.set_ylabel("Empirical Lipschitz Constant $L_{\\max}$", fontsize=12, fontweight="bold")
     ax_a.set_title(f"Panel A: Worst-Case Bound ($L_{{\\max}}$, $\\sigma={s2_target}$)", fontsize=13, fontweight="bold", pad=12)
@@ -89,7 +89,7 @@ def plot_single_sigma_3panel(s2_target, out_folder):
     max_x = max(np.percentile(v_slopes_pm, 98), np.percentile(rs_slopes_pm, 98)) * 1.2
     x_grid = np.linspace(0, max_x, 300)
 
-    ax_b.plot(x_grid, kde_v(x_grid), label="Vanilla (Heavy-tailed spikes)", color="#E63946", lw=2.5)
+    ax_b.plot(x_grid, kde_v(x_grid), label="LiDAR (Heavy-tailed spikes)", color="#E63946", lw=2.5)
     ax_b.fill_between(x_grid, kde_v(x_grid), color="#E63946", alpha=0.25)
     ax_b.plot(x_grid, kde_rs(x_grid), label=f"RS-LiDAR (σ={s2_target})", color="#2A9D8F", lw=2.5)
     ax_b.fill_between(x_grid, kde_rs(x_grid), color="#2A9D8F", alpha=0.35)
@@ -104,7 +104,7 @@ def plot_single_sigma_3panel(s2_target, out_folder):
     ax_c.scatter(v_slopes_pm, rs_slopes_pm, color="#2A9D8F", alpha=0.6, edgecolors="none", s=28, label=f"Pairs (σ={s2_target})")
     diag_max = max(max(v_slopes_pm), max(rs_slopes_pm)) * 1.05
     ax_c.plot([0, diag_max], [0, diag_max], linestyle="--", color="#E63946", lw=2, label="Parity ($y = x$)")
-    ax_c.set_xlabel("Vanilla Slope ($|\\Delta R| / \\|\\Delta x\\|_2$)", fontsize=12, fontweight="bold")
+    ax_c.set_xlabel("LiDAR Slope ($|\\Delta R| / \\|\\Delta x\\|_2$)", fontsize=12, fontweight="bold")
     ax_c.set_ylabel(f"RS-LiDAR Slope ($\\sigma={s2_target}$)", fontsize=12, fontweight="bold")
     ax_c.set_title(f"Panel C: Pairwise Slope Contraction ($\\sigma={s2_target}$)", fontsize=13, fontweight="bold", pad=12)
     ax_c.legend(frameon=True, fontsize=10)
