@@ -18,28 +18,28 @@
 
 ---
 
-## 2. Bảng Số Liệu Thực Nghiệm Đối Chiếu (Ground Truth Benchmark Matrix)
+## 2. Bảng Số Liệu Thực Nghiệm Đối Chiếu (Ground Truth Benchmark Matrix - ImageReward)
 
-> *Ghi chú: Toàn bộ các ô số liệu dưới đây đang để trống để cập nhật 100% từ kết quả đo đạc thực tế của bạn trên Colab, tuyệt đối không điền số phỏng đoán.*
+> *Ghi chú: Thử nghiệm bóc tách này đo lường chuyên biệt chỉ số **ImageReward**. Toàn bộ các ô bên dưới đang để trống để cập nhật 100% từ kết quả đo đạc thực tế của bạn trên Colab.*
 
-| STT | Phương pháp Lập Lịch (`schedule`) | Tham số Cấu hình | ImageReward$^\uparrow$ | CLIP Score$^\uparrow$ | HPSv2$^\uparrow$ | GenEval$^\uparrow$ | Trạng thái đo đạc |
-| :-: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **1** | **Vanilla SMC (Không làm mượt)** | $\sigma = 0.0$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Baseline SMC gốc |
-| **2** | **Static $\sigma$ (Cố định)** | $\sigma(t) = 1.0$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
-| **3** | **Linear Annealing (Tuyến tính)** | $\sigma(t) \propto t$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
-| **4** | **Cosine Annealing (Cosine)** | $\sigma(t) \propto \frac{1}{2}(1 + \cos(\pi t))$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
-| **5** | **Tweedie Annealing** | $\sigma(t) \propto \psi(t)$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| STT | Phương pháp / Cách Thêm Nhiễu | Tham số Cấu hình | ImageReward$^\uparrow$ | $\Delta$ vs Baseline | Trạng thái đo đạc |
+| :-: | :--- | :---: | :---: | :---: | :--- |
+| **1** | **Vanilla SMC (Không làm mượt)** | $\sigma = 0.0$ | *[Chờ số liệu]* | Baseline | Baseline SMC gốc |
+| **2** | **Static $\sigma$ (Cố định)** | $\sigma(t) = \text{const}$ | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| **3** | **Linear Annealing (Tuyến tính)** | $\sigma(t) \propto t$ | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| **4** | **Cosine Annealing (Cosine)** | $\sigma(t) \propto \frac{1}{2}(1 + \cos(\pi t))$ | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| **5** | **Tweedie Annealing** | $\sigma(t) \propto \psi(t)$ | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
 
 ---
 
-## 3. Phân Tích Độ Lệch & Tác Động Khoa Học (Delta Analysis)
+## 3. Phân Tích Độ Lệch & Tác Động Khoa Học (Delta Analysis - ImageReward)
 
-| Cấu hình So Sánh | $\Delta$ ImageReward vs Vanilla | $\Delta$ ImageReward vs Tweedie | $\Delta$ GenEval vs Vanilla | Cơ chế / Nhận xét |
-| :--- | :---: | :---: | :---: | :--- |
-| **Static $\sigma$** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
-| **Linear Schedule** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
-| **Cosine Schedule** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
-| **Tweedie Annealing** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| Cấu hình So Sánh | $\Delta$ ImageReward vs Vanilla | $\Delta$ ImageReward vs Tweedie | Cơ chế / Nhận xét |
+| :--- | :---: | :---: | :--- |
+| **Static $\sigma$** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| **Linear Schedule** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| **Cosine Schedule** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| **Tweedie Annealing** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
 
 ---
 
