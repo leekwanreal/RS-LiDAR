@@ -25,9 +25,10 @@
 | STT | Phương pháp / Cách Thêm Nhiễu | File Kết Quả (`json`) | Mean ImageReward$^\uparrow$ | Best-of-$N$ (Max)$^\uparrow$ | Std $\pm$ | Min | $\Delta$ Mean vs Vanilla | $\Delta$ BoN vs Vanilla |
 | :-: | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
 | **1** | **Vanilla SMC (Không làm mượt)** | `smc_4.json` | **`0.6652`** | `0.7400` | $\pm 0.0732$ | 0.5803 | Baseline | Baseline |
-| **2** | **RS-SMC (Tweedie Posterior)** | `rssmc_4.json` | **`0.7437`** | `0.8163` | $\pm 0.0729$ | 0.6559 | **$+0.0785$** (+11.8\%) | **$+0.0763$** (+10.3\%) |
-| **3** | **RS-SMC (Cosine Annealing)** | `rssmc_4_cosine.json` | **`0.7795`** | `0.8523` | $\pm 0.0750$ | 0.6891 | **$+0.1143$** (+17.2\%) | **$+0.1123$** (+15.2\%) |
-| **4** | **RS-SMC (Linear Annealing)** | `rssmc_4_linear.json` | **`0.8097`** | **`0.8794`** | $\pm 0.0704$ | 0.7260 | **$+0.1445$** (+21.7\%) | **$+0.1394$** (+18.8\%) |
+| **2** | **RS-SMC (Static $\sigma$ Cố Định)** | *(Chờ đo đạc)* | *[Để trống]* | *[Để trống]* | *[Để trống]* | *[Để trống]* | *[Chờ đo đạc]* | *[Chờ đo đạc]* |
+| **3** | **RS-SMC (Tweedie Posterior)** | `rssmc_4.json` | **`0.7437`** | `0.8163` | $\pm 0.0729$ | 0.6559 | **$+0.0785$** (+11.8\%) | **$+0.0763$** (+10.3\%) |
+| **4** | **RS-SMC (Cosine Annealing)** | `rssmc_4_cosine.json` | **`0.7795`** | `0.8523` | $\pm 0.0750$ | 0.6891 | **$+0.1143$** (+17.2\%) | **$+0.1123$** (+15.2\%) |
+| **5** | **RS-SMC (Linear Annealing)** | `rssmc_4_linear.json` | **`0.8097`** | **`0.8794`** | $\pm 0.0704$ | 0.7260 | **$+0.1445$** (+21.7\%) | **$+0.1394$** (+18.8\%) |
 
 ---
 
@@ -38,7 +39,8 @@
 | **Linear Annealing** | **`0.8097`** | **$+0.1445$ (+21.7\%)** | **$+0.0660$ (+8.9\%)** | 🥇 **Hạng 1 (Đỉnh cao)** | Duy trì vùng mượt vừa phải đủ lâu ở các bước trung gian ($t \in [700, 300]$), bảo toàn độ đa dạng các hạt trước khi cố định bố cục |
 | **Cosine Annealing** | **`0.7795`** | **$+0.1143$ (+17.2\%)** | **$+0.0358$ (+4.8\%)** | 🥈 **Hạng 2** | Suy giảm mượt mà không đột ngột, giúp các hạt chuyển tiếp êm từ thăm dò sang tinh chỉnh |
 | **Tweedie Posterior** | **`0.7437`** | **$+0.0785$ (+11.8\%)** | Baseline ($0.0000$) | 🥉 **Hạng 3** | Triệt tiêu sai số độ cong Hessian giải tích; tuy nhiên phương sai Tweedie $\psi(t)$ giảm nhanh khiến $\sigma$ co cụm sớm ở $N=4$ |
-| **Vanilla SMC** | `0.6652` | Baseline ($0.0000$) | $-0.0785$ (-10.6\%) | 4 (Thấp nhất) | Không làm mượt; dễ bị particle collapse do gai reward cục bộ |
+| **Static $\sigma$ Cố Định** | *[Để trống]* | *[Chờ đo]* | *[Chờ đo]* | *(Chờ đo)* | Giữ nguyên $\sigma(t) = \text{const}$ qua mọi bước; chờ số liệu thực tế từ bạn |
+| **Vanilla SMC** | `0.6652` | Baseline ($0.0000$) | $-0.0785$ (-10.6\%) | 5 (Thấp nhất) | Không làm mượt; dễ bị particle collapse do gai reward cục bộ |
 
 ---
 
