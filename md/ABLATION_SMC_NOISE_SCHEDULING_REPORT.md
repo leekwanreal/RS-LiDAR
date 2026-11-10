@@ -20,24 +20,26 @@
 
 ## 2. Bảng Số Liệu Thực Nghiệm Đối Chiếu (Ground Truth Benchmark Matrix)
 
-| STT | Phương pháp Lập Lịch (`schedule`) | Tham số Cấu hình | ImageReward$^\uparrow$ | CLIP Score$^\uparrow$ | HPSv2$^\uparrow$ | GenEval$^\uparrow$ | Nhận xét & Đánh giá |
+> *Ghi chú: Toàn bộ các ô số liệu dưới đây đang để trống để cập nhật 100% từ kết quả đo đạc thực tế của bạn trên Colab, tuyệt đối không điền số phỏng đoán.*
+
+| STT | Phương pháp Lập Lịch (`schedule`) | Tham số Cấu hình | ImageReward$^\uparrow$ | CLIP Score$^\uparrow$ | HPSv2$^\uparrow$ | GenEval$^\uparrow$ | Trạng thái đo đạc |
 | :-: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **1** | **Vanilla SMC (Không làm mượt)** | $\sigma = 0.0$ | `0.7400` | `0.2780` | `0.2678` | -- | Baseline SMC gốc của paper |
-| **2** | **Static $\sigma$ (Cố định)** | $\sigma(t) = 1.0$ (const) | *(Đang cập nhật)* | *(Đang cập nhật)* | *(Đang cập nhật)* | *(Đang cập nhật)* | Bị over-smoothing ở bước cuối |
-| **3** | **Linear Annealing (Tuyến tính)** | $\sigma(t) \propto t$ | *(Đang cập nhật)* | *(Đang cập nhật)* | *(Đang cập nhật)* | *(Đang cập nhật)* | Suy giảm đều theo timestep |
-| **4** | **Cosine Annealing (Cosine)** | $\sigma(t) \propto \frac{1}{2}(1 + \cos(\pi t))$ | *(Đang cập nhật)* | *(Đang cập nhật)* | *(Đang cập nhật)* | *(Đang cập nhật)* | Suy giảm chậm ở 2 đầu |
-| **5** | **Tweedie Annealing (Đề xuất)** | $\sigma(t) \propto \psi(t)$ | **`0.9149`** | **`0.2785`** | **`0.2683`** | -- | 🏆 **Chuẩn đề xuất ICML 2027** |
+| **1** | **Vanilla SMC (Không làm mượt)** | $\sigma = 0.0$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Baseline SMC gốc |
+| **2** | **Static $\sigma$ (Cố định)** | $\sigma(t) = 1.0$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| **3** | **Linear Annealing (Tuyến tính)** | $\sigma(t) \propto t$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| **4** | **Cosine Annealing (Cosine)** | $\sigma(t) \propto \frac{1}{2}(1 + \cos(\pi t))$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
+| **5** | **Tweedie Annealing** | $\sigma(t) \propto \psi(t)$ | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | Chờ số liệu Colab |
 
 ---
 
 ## 3. Phân Tích Độ Lệch & Tác Động Khoa Học (Delta Analysis)
 
-| Cấu hình So Sánh | $\Delta$ ImageReward vs Vanilla | $\Delta$ ImageReward vs Tweedie | $\Delta$ GenEval vs Vanilla | Cơ chế Tác động |
+| Cấu hình So Sánh | $\Delta$ ImageReward vs Vanilla | $\Delta$ ImageReward vs Tweedie | $\Delta$ GenEval vs Vanilla | Cơ chế / Nhận xét |
 | :--- | :---: | :---: | :---: | :--- |
-| **Static $\sigma$** | -- | -- | -- | Over-smoothing khi $t \to 0$ làm mất độ nét chi tiết |
-| **Linear Schedule** | -- | -- | -- | Tuyến tính hóa không khớp với tốc độ SNR của SDE |
-| **Cosine Schedule** | -- | -- | -- | Giữ $\sigma$ lớn quá lâu ở giai đoạn giữa trajectory |
-| **Tweedie Annealing** | **$+0.1749$ ($+23.6\%$)** | **$0.0000$ (Đỉnh cao)** | -- | Triệt tiêu chuẩn xác sai số độ cong bậc hai |
+| **Static $\sigma$** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| **Linear Schedule** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| **Cosine Schedule** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
+| **Tweedie Annealing** | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ số liệu]* | *[Chờ phân tích thực nghiệm]* |
 
 ---
 
@@ -56,3 +58,4 @@
 
 ## 5. Kết Luận Cho Bài Báo ICML 2027
 Tài liệu này đóng vai trò là bằng chứng thực nghiệm trực giao cho **Section 5 (Ablation on Particle Annealing Schedules)**, chứng minh rằng việc mô hình hóa động học theo phương sai Tweedie vượt trội hơn hẳn các heuristics hình học cổ điển (Linear, Cosine).
+
