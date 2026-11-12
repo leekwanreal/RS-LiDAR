@@ -39,8 +39,6 @@ try:
 except Exception:
     pass
 
-from diffusers import DDIMScheduler
-
 from fkd_diffusers.rewards import (
     do_clip_score,
     do_clip_score_diversity,
@@ -54,6 +52,7 @@ def get_model(model_name):
     """
     Get the FKD-supported model based on the model name.
     """
+    from diffusers import DDIMScheduler
     if model_name == "stable-diffusion-xl":
         try:
             from fkd_pipeline_sdxl import FKDStableDiffusionXL
