@@ -274,11 +274,17 @@ def main(args):
     metrics_to_compute = args.metrics_to_compute.split("#")
 
     # cache metric fns
-    do_eval(
-        prompt=["test"],
-        images=[Image.new("RGB", (224, 224))],
-        metrics_to_compute=metrics_to_compute,
-    )
+    if do_eval is not None:
+        do_eval(
+            prompt=["test"],
+            images=[Image.new("RGB", (224, 224))],
+            metrics_to_compute=metrics_to_compute,
+        )
+    else:
+        raise RuntimeError(
+            "❌ Không thể nạp hàm đánh giá `do_eval` từ fks_utils! "
+            "Vui lòng kiểm tra lại log cảnh báo phía trên để khắc phục thư viện phụ thuộc."
+        )
     metrics_arr = {
         metric: dict(mean=0, max=0, min=0, std=0) for metric in metrics_to_compute
     }

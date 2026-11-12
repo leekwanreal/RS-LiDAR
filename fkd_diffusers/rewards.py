@@ -42,12 +42,15 @@ except ImportError:
 
 try:
     from fkd_diffusers.image_reward_utils import rm_load
-except ImportError:
+except (ImportError, Exception):
     try:
         from image_reward_utils import rm_load
-    except ImportError:
-        import ImageReward as RM
-        rm_load = RM.load
+    except (ImportError, Exception):
+        try:
+            import ImageReward as RM
+            rm_load = RM.load
+        except (ImportError, Exception):
+            rm_load = None
 
 # Stores the reward models
 REWARDS_DICT = {
@@ -190,7 +193,19 @@ def do_image_reward(*, images, prompts, diff=False):
 
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["ImageReward"] is None:
-        REWARDS_DICT["ImageReward"] = rm_load("ImageReward-v1.0", device=dev)
+        if rm_load is None:
+            try:
+                from fkd_diffusers.image_reward_utils import rm_load as _rm_load
+                rm_load_fn = _rm_load
+            except Exception:
+                try:
+                    import ImageReward as RM
+                    rm_load_fn = RM.load
+                except Exception:
+                    raise ImportError("ImageReward chưa được cài đặt. Hãy cài đặt: pip install image-reward")
+        else:
+            rm_load_fn = rm_load
+        REWARDS_DICT["ImageReward"] = rm_load_fn("ImageReward-v1.0", device=dev)
 
     if diff:
         image_reward_result = REWARDS_DICT["ImageReward"].differentiable_score_batched(prompts, images)
