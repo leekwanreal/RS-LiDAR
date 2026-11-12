@@ -70,31 +70,35 @@ try:
 except Exception:
     pass
 
+import sys
+sys.path.append("fkd_diffusers")
+
 try:
     from diffusers import DDIMScheduler, UNet2DConditionModel
-
-    import sys
-    sys.path.append("fkd_diffusers")
-
-    try:
-        from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
-        from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
-    except ImportError:
-        FKDStableDiffusionXL = FKDStableDiffusion = None
-
-    try:
-        from fks_utils import do_eval
-    except ImportError:
-        do_eval = None
-
-    try:
-        from lookahead_datasets import gen_lookahead_samples
-    except ImportError:
-        gen_lookahead_samples = None
 except ImportError:
     DDIMScheduler = UNet2DConditionModel = None
+
+try:
+    from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
+    from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+except ImportError:
     FKDStableDiffusionXL = FKDStableDiffusion = None
-    do_eval = gen_lookahead_samples = None
+
+try:
+    from fks_utils import do_eval
+except Exception as e:
+    import traceback
+    print(f"⚠️ Cảnh báo nạp do_eval (LiDAR_sampling): {e}")
+    traceback.print_exc()
+    do_eval = None
+
+try:
+    from lookahead_datasets import gen_lookahead_samples
+except Exception as e:
+    import traceback
+    print(f"⚠️ Cảnh báo nạp lookahead_datasets (LiDAR_sampling): {e}")
+    traceback.print_exc()
+    gen_lookahead_samples = None
 
 from rs_smc_engine import HarmonizedRSLiDARSMCEngine
 

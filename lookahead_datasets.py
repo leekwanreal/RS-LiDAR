@@ -9,7 +9,10 @@ from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normal
 from tqdm import tqdm
 from transformers import BertTokenizer
 import random
-import clip
+try:
+    import clip
+except ImportError:
+    clip = None
 
 
 def makedir(path):
