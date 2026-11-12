@@ -91,7 +91,10 @@ sys.path.append("fkd_diffusers")
 
 try:
     from fks_utils import do_eval
-except ImportError:
+except ImportError as e:
+    import traceback
+    print(f"⚠️ Cảnh báo nạp do_eval: {e}")
+    traceback.print_exc()
     do_eval = None
 from typing import Dict, List, Optional, Tuple
 

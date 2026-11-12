@@ -41,9 +41,6 @@ except Exception:
 
 from diffusers import DDIMScheduler
 
-from fkd_pipeline_sdxl import FKDStableDiffusionXL
-from fkd_pipeline_sd import FKDStableDiffusion
-
 from fkd_diffusers.rewards import (
     do_clip_score,
     do_clip_score_diversity,
@@ -58,12 +55,28 @@ def get_model(model_name):
     Get the FKD-supported model based on the model name.
     """
     if model_name == "stable-diffusion-xl":
+        try:
+            from fkd_pipeline_sdxl import FKDStableDiffusionXL
+        except ImportError:
+            from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
         pipeline = FKDStableDiffusionXL.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16)
     elif model_name == "stable-diffusion-v1-5":
+        try:
+            from fkd_pipeline_sd import FKDStableDiffusion
+        except ImportError:
+            from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
         pipeline = FKDStableDiffusion.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16)
     elif model_name == "stable-diffusion-v1-4":
+        try:
+            from fkd_pipeline_sd import FKDStableDiffusion
+        except ImportError:
+            from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
         pipeline = FKDStableDiffusion.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16)
     elif model_name == "stable-diffusion-2-1":
+        try:
+            from fkd_pipeline_sd import FKDStableDiffusion
+        except ImportError:
+            from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
         pipeline = FKDStableDiffusion.from_pretrained("stabilityai/stable-diffusion-2-1", torch_dtype=torch.float16)
     else:
         raise ValueError(f"Unknown model name: {model_name}")

@@ -76,11 +76,21 @@ try:
     import sys
     sys.path.append("fkd_diffusers")
 
-    from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
-    from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+    try:
+        from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
+        from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+    except ImportError:
+        FKDStableDiffusionXL = FKDStableDiffusion = None
 
-    from fks_utils import do_eval
-    from lookahead_datasets import gen_lookahead_samples
+    try:
+        from fks_utils import do_eval
+    except ImportError:
+        do_eval = None
+
+    try:
+        from lookahead_datasets import gen_lookahead_samples
+    except ImportError:
+        gen_lookahead_samples = None
 except ImportError:
     DDIMScheduler = UNet2DConditionModel = None
     FKDStableDiffusionXL = FKDStableDiffusion = None
