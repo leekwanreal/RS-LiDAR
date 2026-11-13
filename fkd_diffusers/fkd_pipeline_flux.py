@@ -58,7 +58,6 @@ class FluxPipeline_LiDAR(FluxPipeline):
         transformer: Any = None,
         image_encoder: Any = None,
         feature_extractor: Any = None,
-        **kwargs
     ):
         if hasattr(super(), "__init__") and scheduler is not None and transformer is not None:
             try:
@@ -72,7 +71,6 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     transformer=transformer,
                     image_encoder=image_encoder,
                     feature_extractor=feature_extractor,
-                    **kwargs
                 )
             except Exception:
                 pass
