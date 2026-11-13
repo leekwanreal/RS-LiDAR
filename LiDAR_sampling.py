@@ -212,6 +212,14 @@ def main(args):
 
     # set device (preserve assigned device cuda:actual_gpu_id)
     pipe = pipe.to(device)
+    if "flux" in args.model_name.lower():
+        for sub_name in ["transformer", "text_encoder_2", "text_encoder", "vae", "image_encoder"]:
+            sub = getattr(pipe, sub_name, None)
+            if sub is not None and hasattr(sub, "to"):
+                try:
+                    sub.to(device)
+                except Exception:
+                    pass
     if hasattr(pipe, "enable_vae_slicing"):
         try:
             pipe.enable_vae_slicing()

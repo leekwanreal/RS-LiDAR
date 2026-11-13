@@ -90,6 +90,49 @@ class FluxPipeline_LiDAR(FluxPipeline):
             pass
         return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
 
+    def to(self, *args, **kwargs):
+        r"""
+        Cưỡng chế chuyển toàn bộ sub-modules của FLUX (transformer, text encoders, vae)
+        lên đúng accelerator device (cuda) và dtype mong muốn.
+        """
+        device = None
+        dtype = None
+        if len(args) == 1:
+            if isinstance(args[0], torch.dtype):
+                dtype = args[0]
+            else:
+                device = args[0]
+        elif len(args) >= 2:
+            if isinstance(args[0], torch.dtype):
+                dtype = args[0]
+                device = args[1]
+            else:
+                device = args[0]
+                dtype = args[1]
+        device = kwargs.get("device", device)
+        dtype = kwargs.get("dtype", dtype)
+
+        target_device = torch.device(device) if device is not None else getattr(self, "device", None)
+        
+        for sub_name in ["transformer", "text_encoder", "text_encoder_2", "vae", "image_encoder"]:
+            sub = getattr(self, sub_name, None)
+            if sub is not None and isinstance(sub, torch.nn.Module):
+                try:
+                    if target_device is not None and dtype is not None:
+                        sub.to(device=target_device, dtype=dtype)
+                    elif target_device is not None:
+                        sub.to(device=target_device)
+                    elif dtype is not None:
+                        sub.to(dtype=dtype)
+                except Exception:
+                    pass
+
+        try:
+            super().to(*args, **kwargs)
+        except Exception:
+            pass
+        return self
+
     @torch.no_grad()
     def __call__(
         self,
@@ -212,7 +255,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
         num_channels = 16
         latent_h = height // 8
         latent_w = width // 8
-        device = getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        device = getattr(self, "_execution_device", getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu")))
 
         # Mã hóa Prompt Embeddings cho FLUX nếu có encoder
         text_ids = None
@@ -234,6 +277,14 @@ class FluxPipeline_LiDAR(FluxPipeline):
                         prompt_embeds, pooled_prompt_embeds = enc_out
             except Exception as e:
                 pass
+
+        # Đảm bảo device đồng bộ cho embeddings
+        if prompt_embeds is not None and hasattr(prompt_embeds, "to"):
+            prompt_embeds = prompt_embeds.to(device=device)
+        if pooled_prompt_embeds is not None and hasattr(pooled_prompt_embeds, "to"):
+            pooled_prompt_embeds = pooled_prompt_embeds.to(device=device)
+        if text_ids is not None and hasattr(text_ids, "to"):
+            text_ids = text_ids.to(device=device)
 
         # Chuẩn bị Latents chuẩn xác cho FLUX
         if latents is None:
@@ -260,6 +311,9 @@ class FluxPipeline_LiDAR(FluxPipeline):
         else:
             latents = latents.to(device=device)
 
+        if latent_image_ids is not None and hasattr(latent_image_ids, "to"):
+            latent_image_ids = latent_image_ids.to(device=device)
+
         # Chuẩn bị Lookahead tensors
         if lookahead_latents is not None:
             lookahead_latents = lookahead_latents.to(device=device, dtype=latents.dtype)
@@ -284,79 +338,94 @@ class FluxPipeline_LiDAR(FluxPipeline):
         # -------------------------------------------------------------
         # Vòng lặp giải vi phân Euler ngược thời gian (t = 1.0 -> 0.0)
         # -------------------------------------------------------------
-        for i, t in enumerate(timesteps[:-1]):
-            t_curr = t.item() if isinstance(t, torch.Tensor) else float(t)
-            t_next = timesteps[i + 1].item() if isinstance(timesteps[i + 1], torch.Tensor) else float(timesteps[i + 1])
-            dt = t_curr - t_next  # dt > 0
+        sched = getattr(self, "scheduler", None)
+        sched_order = getattr(sched, "order", 1) if sched is not None else 1
+        num_warmup_steps = max(len(timesteps) - num_inference_steps * sched_order, 0) if sched is not None else 0
+        has_prog = hasattr(self, "progress_bar")
 
-            # 1. Dự đoán vận tốc mô hình v_pred (CFG)
-            # v_pred = v_uncond + guidance_scale * (v_text - v_uncond)
-            # Với FLUX: biến đổi qua DiT transformer
-            if hasattr(self, "transformer"):
-                # Mô hình FLUX có sẵn transformer
-                # Chuyển đổi latents nếu cần đóng gói (pack)
-                if hasattr(self, "_pack_latents") and latents.ndim == 4:
-                    packed_latents = self._pack_latents(latents, batch_size, num_channels, latent_h, latent_w)
-                else:
-                    packed_latents = latents
-                
-                # Gọi transformer nếu đầy đủ điều kiện embeddings
-                if prompt_embeds is not None and callable(self.transformer):
-                    try:
-                        guidance_vec = torch.tensor([guidance_scale], device=device).expand(latents.shape[0]) if (hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False)) else None
-                        t_input = t / 1000.0 if (isinstance(t, torch.Tensor) and t.max() > 1.0) or (isinstance(t, (int, float)) and t > 1.0) else t
-                        if not isinstance(t_input, torch.Tensor):
-                            t_input = torch.tensor([t_input], device=device).expand(latents.shape[0])
-                        v_pred = self.transformer(
-                            hidden_states=packed_latents,
-                            timestep=t_input,
-                            guidance=guidance_vec,
-                            pooled_projections=pooled_prompt_embeds,
-                            encoder_hidden_states=prompt_embeds,
-                            txt_ids=text_ids,
-                            img_ids=latent_image_ids,
-                            return_dict=False,
-                        )[0]
-                    except Exception:
+        def _run_denoising_loop(prog_bar=None):
+            nonlocal latents
+            for i, t in enumerate(timesteps):
+                t_curr = t.item() if isinstance(t, torch.Tensor) else float(t)
+                t_next = timesteps[i + 1].item() if (i + 1 < len(timesteps) and isinstance(timesteps[i + 1], torch.Tensor)) else (float(timesteps[i + 1]) if i + 1 < len(timesteps) else 0.0)
+                dt = t_curr - t_next  # dt > 0
+
+                # 1. Dự đoán vận tốc mô hình v_pred (CFG)
+                # Với FLUX: biến đổi qua DiT transformer
+                if hasattr(self, "transformer"):
+                    # Chuyển đổi latents nếu cần đóng gói (pack)
+                    if hasattr(self, "_pack_latents") and latents.ndim == 4:
+                        packed_latents = self._pack_latents(latents, batch_size, num_channels, latent_h, latent_w)
+                    else:
+                        packed_latents = latents
+
+                    # Chuẩn bị timestep và guidance vector chuẩn FLUX
+                    if prompt_embeds is not None and callable(self.transformer):
+                        try:
+                            guidance_vec = torch.tensor([guidance_scale], device=latents.device, dtype=torch.float32).expand(latents.shape[0]) if (hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False)) else None
+                            timestep_input = t.expand(latents.shape[0]).to(latents.dtype) if isinstance(t, torch.Tensor) else torch.tensor([t], device=latents.device, dtype=latents.dtype).expand(latents.shape[0])
+                            t_scaled = timestep_input / 1000.0 if timestep_input.max() > 1.0 else timestep_input
+
+                            v_pred = self.transformer(
+                                hidden_states=packed_latents,
+                                timestep=t_scaled,
+                                guidance=guidance_vec,
+                                pooled_projections=pooled_prompt_embeds,
+                                encoder_hidden_states=prompt_embeds,
+                                txt_ids=text_ids,
+                                img_ids=latent_image_ids,
+                                return_dict=False,
+                            )[0]
+                        except Exception as e:
+                            print(f"⚠️ [Transformer Step {i}] Forward warning: {e}")
+                            v_pred = packed_latents
+                    else:
                         v_pred = packed_latents
                 else:
-                    v_pred = packed_latents # Fallback an toàn nếu chạy mock
-            else:
-                v_pred = torch.zeros_like(latents)
+                    v_pred = torch.zeros_like(latents)
 
-            # 2. Tính toán Vector Gia Số Vận Tốc Lái Lookahead (LiDAR / RS-LiDAR)
-            if (lookahead_latents is not None and rewards is not None and 
-                t_end <= t_curr <= t_start):
-                
-                # Đảm bảo latents ở dạng 4D [B, 16, H, W] khi tính guidance
-                spatial_latents = latents
-                if hasattr(self, "_unpack_latents") and latents.ndim == 3:
-                    spatial_latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 16))
+                # 2. Tính toán Vector Gia Số Vận Tốc Lái Lookahead (LiDAR / RS-LiDAR)
+                t_norm = t_curr / 1000.0 if t_curr > 1.0 else t_curr
+                if (lookahead_latents is not None and rewards is not None and 
+                    t_end <= t_norm <= t_start):
+                    
+                    spatial_latents = latents
+                    if hasattr(self, "_unpack_latents") and latents.ndim == 3:
+                        spatial_latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 16))
 
-                delta_v = self.flow_guidance_module.compute_velocity_guidance(
-                    z_t=spatial_latents,
-                    lookahead_z0=lookahead_latents,
-                    smoothed_rewards=rewards,
-                    sigma_t=t_curr,
-                    t_start=t_start,
-                    t_end=t_end,
-                )
-                
-                # Nếu latents ở dạng 3D packed, đóng gói lại delta_v tương ứng
-                if hasattr(self, "_pack_latents") and latents.ndim == 3:
-                    delta_v_packed = self._pack_latents(delta_v, batch_size, num_channels, latent_h, latent_w)
-                    v_pred = v_pred + delta_v_packed
+                    delta_v = self.flow_guidance_module.compute_velocity_guidance(
+                        z_t=spatial_latents,
+                        lookahead_z0=lookahead_latents,
+                        smoothed_rewards=rewards,
+                        sigma_t=t_norm,
+                        t_start=t_start,
+                        t_end=t_end,
+                    )
+                    
+                    if hasattr(self, "_pack_latents") and latents.ndim == 3:
+                        delta_v_packed = self._pack_latents(delta_v, batch_size, num_channels, latent_h, latent_w)
+                        v_pred = v_pred + delta_v_packed
+                    else:
+                        v_pred = v_pred + delta_v
+
+                # 3. Bước cập nhật tích phân Euler hoặc qua Scheduler
+                if sched is not None and hasattr(sched, "step"):
+                    try:
+                        latents = sched.step(v_pred, t, latents, return_dict=False)[0]
+                    except Exception:
+                        latents = latents - dt * v_pred
                 else:
-                    v_pred = v_pred + delta_v
-
-            # 3. Bước cập nhật tích phân Euler hoặc qua Scheduler
-            if hasattr(self, "scheduler") and hasattr(self.scheduler, "step"):
-                try:
-                    latents = self.scheduler.step(v_pred, t, latents, return_dict=False)[0]
-                except Exception:
                     latents = latents - dt * v_pred
-            else:
-                latents = latents - dt * v_pred
+
+                if prog_bar is not None and hasattr(prog_bar, "update"):
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % sched_order == 0):
+                        prog_bar.update()
+
+        if has_prog:
+            with self.progress_bar(total=len(timesteps)) as progress_bar:
+                _run_denoising_loop(progress_bar)
+        else:
+            _run_denoising_loop(None)
 
         # Giải mã ảnh sạch ở bước cuối
         if hasattr(self, "_unpack_latents") and latents.ndim == 3:
