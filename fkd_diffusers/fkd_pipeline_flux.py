@@ -158,9 +158,52 @@ class FluxPipeline_LiDAR(FluxPipeline):
 
         device = getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
+        # Chuẩn bị sigmas và mu cho dynamic shifting trong FLUX scheduler
+        sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
+        if hasattr(self, "scheduler") and hasattr(self.scheduler, "config"):
+            if getattr(self.scheduler.config, "use_flow_sigmas", False):
+                sigmas = None
+
+        mu = None
+        if hasattr(self, "scheduler") and hasattr(self.scheduler, "config") and getattr(self.scheduler.config, "use_dynamic_shifting", False):
+            image_seq_len = (height // 16) * (width // 16)
+            base_seq_len = getattr(self.scheduler.config, "base_image_seq_len", 256)
+            max_seq_len = getattr(self.scheduler.config, "max_image_seq_len", 4096)
+            base_shift = getattr(self.scheduler.config, "base_shift", 0.5)
+            max_shift = getattr(self.scheduler.config, "max_shift", 1.15)
+            try:
+                from diffusers.pipelines.flux.pipeline_flux import calculate_shift
+                mu = calculate_shift(
+                    image_seq_len,
+                    base_seq_len=base_seq_len,
+                    max_seq_len=max_seq_len,
+                    base_shift=base_shift,
+                    max_shift=max_shift,
+                )
+            except Exception:
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+
         # Khởi tạo timesteps theo chuẩn FlowMatchEulerDiscreteScheduler
         if hasattr(self, "scheduler") and hasattr(self.scheduler, "set_timesteps"):
-            self.scheduler.set_timesteps(num_inference_steps, device=device)
+            try:
+                from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps
+                timesteps, num_inference_steps = retrieve_timesteps(
+                    self.scheduler,
+                    num_inference_steps,
+                    device,
+                    sigmas=sigmas,
+                    mu=mu,
+                )
+            except Exception:
+                try:
+                    self.scheduler.set_timesteps(num_inference_steps, device=device, sigmas=sigmas, mu=mu)
+                except TypeError:
+                    try:
+                        self.scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
+                    except TypeError:
+                        self.scheduler.set_timesteps(num_inference_steps, device=device)
             timesteps = self.scheduler.timesteps
         elif timesteps is None:
             timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1, device=device)
