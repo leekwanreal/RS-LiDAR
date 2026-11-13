@@ -11,6 +11,11 @@ In transformers >= 4.40, apply_chunking_to_forward, find_pruneable_heads_and_ind
 and prune_linear_layer were relocated to transformers.pytorch_utils or deprecated.
 This module guarantees these symbols exist on both transformers.modeling_utils
 and transformers.pytorch_utils regardless of the installed transformers version.
+
+Additionally, in modern transformers (>= 4.45 / 5.x), BertTokenizer removed the legacy
+attribute `additional_special_tokens_ids`. ImageReward's BLIP/blip.py accesses
+`tokenizer.additional_special_tokens_ids[0]`. This module dynamically provides
+compatibility descriptors for `additional_special_tokens` and `additional_special_tokens_ids`.
 """
 
 def patch_transformers_for_imagereward():
@@ -90,5 +95,48 @@ def patch_transformers_for_imagereward():
     if hasattr(transformers, "pytorch_utils") and not hasattr(transformers.pytorch_utils, "prune_linear_layer"):
         transformers.pytorch_utils.prune_linear_layer = transformers.modeling_utils.prune_linear_layer
 
+    # 4. Tokenizer additional_special_tokens & additional_special_tokens_ids
+    try:
+        from transformers import PreTrainedTokenizerBase
+
+        def _get_additional_special_tokens_ids(self):
+            if hasattr(self, "extra_special_tokens_ids"):
+                return self.extra_special_tokens_ids
+            if hasattr(self, "extra_special_tokens"):
+                return [self.convert_tokens_to_ids(t) for t in self.extra_special_tokens]
+            if hasattr(self, "_extra_special_tokens"):
+                return [self.convert_tokens_to_ids(getattr(t, "content", str(t))) for t in self._extra_special_tokens]
+            if hasattr(self, "additional_special_tokens"):
+                return [self.convert_tokens_to_ids(t) for t in self.additional_special_tokens]
+            return []
+
+        def _get_additional_special_tokens(self):
+            if hasattr(self, "extra_special_tokens"):
+                return self.extra_special_tokens
+            if hasattr(self, "_extra_special_tokens"):
+                return [getattr(t, "content", str(t)) for t in self._extra_special_tokens]
+            return []
+
+        prop_ids = property(_get_additional_special_tokens_ids)
+        prop_tokens = property(_get_additional_special_tokens)
+
+        if not hasattr(PreTrainedTokenizerBase, "additional_special_tokens_ids"):
+            setattr(PreTrainedTokenizerBase, "additional_special_tokens_ids", prop_ids)
+        if not hasattr(PreTrainedTokenizerBase, "additional_special_tokens"):
+            setattr(PreTrainedTokenizerBase, "additional_special_tokens", prop_tokens)
+
+        try:
+            from transformers import BertTokenizer
+            if not hasattr(BertTokenizer, "additional_special_tokens_ids"):
+                setattr(BertTokenizer, "additional_special_tokens_ids", prop_ids)
+            if not hasattr(BertTokenizer, "additional_special_tokens"):
+                setattr(BertTokenizer, "additional_special_tokens", prop_tokens)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 # Run patch upon module import
 patch_transformers_for_imagereward()
+
+

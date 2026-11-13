@@ -362,10 +362,12 @@ def main(args):
         base_model_id = "black-forest-labs/FLUX.1-dev"
         repo_name = "ByteDance/Hyper-SD"
         ckpt_name = "Hyper-FLUX.1-dev-8steps-lora.safetensors"
+        print(f"📦 Đang nạp mô hình Lookahead FLUX ({base_model_id}) và LoRA 8-step ({repo_name}/{ckpt_name})...")
         pipe = FluxPipeline.from_pretrained(base_model_id, token=os.environ.get("HF_TOKEN", True))
         pipe.load_lora_weights(hf_hub_download(repo_name, ckpt_name))
         pipe.fuse_lora(lora_scale=0.125)
         pipe.to(device, dtype=torch.float16)
+        print("✅ Đã nạp thành công FLUX Lookahead Pipeline & hợp nhất LoRA!")
 
     # set device
     if torch.cuda.is_available():
@@ -409,12 +411,14 @@ def main(args):
     metrics_to_compute = args.metrics_to_compute.split("#")
 
     # cache metric fns
+    print(f"🎯 Đang khởi tạo và làm ấm hàm đánh giá chất lượng ({args.metrics_to_compute})...")
     if do_eval is not None:
         do_eval(
             prompt=["test"],
             images=[Image.new("RGB", (224, 224))],
             metrics_to_compute=metrics_to_compute,
         )
+        print("✅ Hàm đánh giá chất lượng đã sẵn sàng!")
     else:
         raise RuntimeError(
             "❌ Không thể nạp hàm đánh giá `do_eval` từ fks_utils! "

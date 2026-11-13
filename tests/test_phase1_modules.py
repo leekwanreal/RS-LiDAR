@@ -355,6 +355,21 @@ class TestPhase1UnifiedModules(unittest.TestCase):
                 # Free loop references
                 del perturbed, r_mc, r_stats, potentials, delta_v, phi_res, v_smc
 
+    def test_08_transformers_compatibility_patch(self):
+        """ImageReward & Transformers Universal Compatibility Patch Verification"""
+        from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
+        patch_transformers_for_imagereward()
+
+        import transformers
+        self.assertTrue(hasattr(transformers.modeling_utils, "apply_chunking_to_forward"))
+        self.assertTrue(hasattr(transformers.modeling_utils, "find_pruneable_heads_and_indices"))
+        self.assertTrue(hasattr(transformers.modeling_utils, "prune_linear_layer"))
+
+        from transformers import PreTrainedTokenizerBase
+        self.assertTrue(hasattr(PreTrainedTokenizerBase, "additional_special_tokens_ids"))
+        self.assertTrue(hasattr(PreTrainedTokenizerBase, "additional_special_tokens"))
+
+
 
 if __name__ == "__main__":
     suite = unittest.TestLoader().loadTestsFromTestCase(TestPhase1UnifiedModules)
