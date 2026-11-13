@@ -193,6 +193,11 @@ def do_image_reward(*, images, prompts, diff=False):
 
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["ImageReward"] is None:
+        try:
+            from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
+            patch_transformers_for_imagereward()
+        except Exception:
+            pass
         if rm_load is None:
             try:
                 from fkd_diffusers.image_reward_utils import rm_load as _rm_load
