@@ -197,12 +197,17 @@ def do_image_reward(*, images, prompts, diff=False):
             try:
                 from fkd_diffusers.image_reward_utils import rm_load as _rm_load
                 rm_load_fn = _rm_load
-            except Exception:
+            except Exception as e1:
                 try:
                     import ImageReward as RM
                     rm_load_fn = RM.load
-                except Exception:
-                    raise ImportError("ImageReward chưa được cài đặt. Hãy cài đặt: pip install image-reward")
+                except Exception as e2:
+                    raise ImportError(
+                        f"ImageReward chưa được nạp thành công. Lỗi chi tiết:\n"
+                        f"- Từ fkd_diffusers: {e1}\n"
+                        f"- Từ ImageReward: {e2}\n"
+                        f"Vui lòng đảm bảo đã cài đặt: pip install --no-build-isolation git+https://github.com/openai/CLIP.git && pip install image-reward"
+                    ) from e2
         else:
             rm_load_fn = rm_load
         REWARDS_DICT["ImageReward"] = rm_load_fn("ImageReward-v1.0", device=dev)
