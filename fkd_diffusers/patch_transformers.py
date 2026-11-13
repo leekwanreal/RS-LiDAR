@@ -129,6 +129,49 @@ def patch_transformers_for_imagereward():
     except Exception:
         pass
 
+    # 4. Universal PreTrainedModel Compatibility for Transformers >= 5 (all_tied_weights_keys & get_head_mask)
+    try:
+        if not hasattr(mu.PreTrainedModel, "all_tied_weights_keys"):
+            @property
+            def all_tied_weights_keys(self):
+                if not hasattr(self, "_all_tied_weights_keys_cached"):
+                    if hasattr(self, "get_expanded_tied_weights_keys"):
+                        try:
+                            self._all_tied_weights_keys_cached = self.get_expanded_tied_weights_keys(all_submodels=True)
+                        except Exception:
+                            self._all_tied_weights_keys_cached = {}
+                    elif hasattr(self, "_tied_weights_keys"):
+                        self._all_tied_weights_keys_cached = dict(getattr(self, "_tied_weights_keys", {}))
+                    else:
+                        self._all_tied_weights_keys_cached = {}
+                return self._all_tied_weights_keys_cached
+
+            @all_tied_weights_keys.setter
+            def all_tied_weights_keys(self, val):
+                self._all_tied_weights_keys_cached = val
+
+            mu.PreTrainedModel.all_tied_weights_keys = all_tied_weights_keys
+
+        if not hasattr(mu.PreTrainedModel, "get_head_mask"):
+            def get_head_mask(self, head_mask, num_hidden_layers: int, is_attention_chunked: bool = False):
+                if head_mask is not None:
+                    if head_mask.dim() == 1:
+                        head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                        head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+                    elif head_mask.dim() == 2:
+                        head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+                    dtype = getattr(self, "dtype", torch.float32)
+                    head_mask = head_mask.to(dtype=dtype)
+                else:
+                    head_mask = [None] * num_hidden_layers
+                return head_mask
+
+            mu.PreTrainedModel.get_head_mask = get_head_mask
+            if hasattr(mu, "ModuleUtilsMixin"):
+                mu.ModuleUtilsMixin.get_head_mask = get_head_mask
+    except Exception:
+        pass
+
 # Run patch upon module import
 patch_transformers_for_imagereward()
 
