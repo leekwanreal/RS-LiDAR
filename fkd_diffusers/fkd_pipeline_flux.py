@@ -199,7 +199,18 @@ class FluxPipeline_LiDAR(FluxPipeline):
         self.flow_guidance_module.s_flow = s_flow
         self.flow_guidance_module.lambda_r = lmbda
 
-        device = getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        # Xác định device và dtype chuẩn xác từ transformer hoặc VAE
+        if hasattr(self, "transformer") and self.transformer is not None and hasattr(self.transformer, "parameters") and len(list(self.transformer.parameters())) > 0:
+            trans_param = next(self.transformer.parameters())
+            device = trans_param.device
+            dtype = trans_param.dtype
+        elif hasattr(self, "vae") and self.vae is not None and hasattr(self.vae, "parameters") and len(list(self.vae.parameters())) > 0:
+            vae_param = next(self.vae.parameters())
+            device = vae_param.device
+            dtype = vae_param.dtype
+        else:
+            device = getattr(self, "_execution_device", getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu")))
+            dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32
 
         # Chuẩn bị sigmas và mu cho dynamic shifting trong FLUX scheduler
         sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
@@ -255,7 +266,6 @@ class FluxPipeline_LiDAR(FluxPipeline):
         num_channels = 16
         latent_h = height // 8
         latent_w = width // 8
-        device = getattr(self, "_execution_device", getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu")))
 
         # Mã hóa Prompt Embeddings cho FLUX nếu có encoder
         text_ids = None
@@ -278,11 +288,11 @@ class FluxPipeline_LiDAR(FluxPipeline):
             except Exception as e:
                 pass
 
-        # Đảm bảo device đồng bộ cho embeddings
+        # Đảm bảo device và dtype đồng bộ cho embeddings
         if prompt_embeds is not None and hasattr(prompt_embeds, "to"):
-            prompt_embeds = prompt_embeds.to(device=device)
+            prompt_embeds = prompt_embeds.to(device=device, dtype=dtype)
         if pooled_prompt_embeds is not None and hasattr(pooled_prompt_embeds, "to"):
-            pooled_prompt_embeds = pooled_prompt_embeds.to(device=device)
+            pooled_prompt_embeds = pooled_prompt_embeds.to(device=device, dtype=dtype)
         if text_ids is not None and hasattr(text_ids, "to"):
             text_ids = text_ids.to(device=device)
 
@@ -295,7 +305,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
                         num_channels_latents=num_channels,
                         height=height,
                         width=width,
-                        dtype=prompt_embeds.dtype if prompt_embeds is not None else torch.float32,
+                        dtype=dtype,
                         device=device,
                         generator=generator,
                         latents=latents,
@@ -305,18 +315,18 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     else:
                         latents = lat_res
                 except Exception:
-                    latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32)
+                    latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=dtype)
             else:
-                latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32)
+                latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=dtype)
         else:
-            latents = latents.to(device=device)
+            latents = latents.to(device=device, dtype=dtype)
 
         if latent_image_ids is not None and hasattr(latent_image_ids, "to"):
             latent_image_ids = latent_image_ids.to(device=device)
 
         # Chuẩn bị Lookahead tensors
         if lookahead_latents is not None:
-            lookahead_latents = lookahead_latents.to(device=device, dtype=latents.dtype)
+            lookahead_latents = lookahead_latents.to(device=device, dtype=dtype)
         if rewards is not None:
             if not isinstance(rewards, torch.Tensor):
                 rewards = torch.tensor(rewards, device=device, dtype=torch.float32)
@@ -352,7 +362,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
 
                 # 1. Dự đoán vận tốc mô hình v_pred (CFG)
                 # Với FLUX: biến đổi qua DiT transformer
-                if hasattr(self, "transformer"):
+                if hasattr(self, "transformer") and self.transformer is not None:
                     # Chuyển đổi latents nếu cần đóng gói (pack)
                     if hasattr(self, "_pack_latents") and latents.ndim == 4:
                         packed_latents = self._pack_latents(latents, batch_size, num_channels, latent_h, latent_w)
@@ -360,25 +370,31 @@ class FluxPipeline_LiDAR(FluxPipeline):
                         packed_latents = latents
 
                     # Chuẩn bị timestep và guidance vector chuẩn FLUX
-                    if prompt_embeds is not None and callable(self.transformer):
-                        try:
-                            guidance_vec = torch.tensor([guidance_scale], device=latents.device, dtype=torch.float32).expand(latents.shape[0]) if (hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False)) else None
-                            timestep_input = t.expand(latents.shape[0]).to(latents.dtype) if isinstance(t, torch.Tensor) else torch.tensor([t], device=latents.device, dtype=latents.dtype).expand(latents.shape[0])
-                            t_scaled = timestep_input / 1000.0 if timestep_input.max() > 1.0 else timestep_input
+                    trans_param = next(self.transformer.parameters(), None) if hasattr(self.transformer, "parameters") else None
+                    t_dev = trans_param.device if trans_param is not None else device
+                    t_dtype = trans_param.dtype if trans_param is not None else dtype
 
-                            v_pred = self.transformer(
-                                hidden_states=packed_latents,
-                                timestep=t_scaled,
-                                guidance=guidance_vec,
-                                pooled_projections=pooled_prompt_embeds,
-                                encoder_hidden_states=prompt_embeds,
-                                txt_ids=text_ids,
-                                img_ids=latent_image_ids,
-                                return_dict=False,
-                            )[0]
-                        except Exception as e:
-                            print(f"⚠️ [Transformer Step {i}] Forward warning: {e}")
-                            v_pred = packed_latents
+                    packed_latents = packed_latents.to(device=t_dev, dtype=t_dtype)
+                    p_emb = prompt_embeds.to(device=t_dev, dtype=t_dtype) if prompt_embeds is not None else None
+                    pooled_emb = pooled_prompt_embeds.to(device=t_dev, dtype=t_dtype) if pooled_prompt_embeds is not None else None
+                    txt_ids = text_ids.to(device=t_dev) if text_ids is not None else None
+                    img_ids = latent_image_ids.to(device=t_dev) if latent_image_ids is not None else None
+
+                    if p_emb is not None and callable(self.transformer):
+                        guidance_vec = torch.tensor([guidance_scale], device=t_dev, dtype=torch.float32).expand(latents.shape[0]) if (hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False)) else None
+                        timestep_input = t.expand(latents.shape[0]).to(device=t_dev, dtype=t_dtype) if isinstance(t, torch.Tensor) else torch.tensor([t], device=t_dev, dtype=t_dtype).expand(latents.shape[0])
+                        t_scaled = timestep_input / 1000.0 if timestep_input.max() > 1.0 else timestep_input
+
+                        v_pred = self.transformer(
+                            hidden_states=packed_latents,
+                            timestep=t_scaled,
+                            guidance=guidance_vec,
+                            pooled_projections=pooled_emb,
+                            encoder_hidden_states=p_emb,
+                            txt_ids=txt_ids,
+                            img_ids=img_ids,
+                            return_dict=False,
+                        )[0]
                     else:
                         v_pred = packed_latents
                 else:
@@ -404,9 +420,9 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     
                     if hasattr(self, "_pack_latents") and latents.ndim == 3:
                         delta_v_packed = self._pack_latents(delta_v, batch_size, num_channels, latent_h, latent_w)
-                        v_pred = v_pred + delta_v_packed
+                        v_pred = v_pred + delta_v_packed.to(dtype=v_pred.dtype, device=v_pred.device)
                     else:
-                        v_pred = v_pred + delta_v
+                        v_pred = v_pred + delta_v.to(dtype=v_pred.dtype, device=v_pred.device)
 
                 # 3. Bước cập nhật tích phân Euler hoặc qua Scheduler
                 if sched is not None and hasattr(sched, "step"):
@@ -431,15 +447,21 @@ class FluxPipeline_LiDAR(FluxPipeline):
         if hasattr(self, "_unpack_latents") and latents.ndim == 3:
             latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 16))
 
-        if hasattr(self, "vae"):
-            scaled_latents = (latents / self.vae.config.scaling_factor) + getattr(self.vae.config, "shift_factor", 0.0)
+        if hasattr(self, "vae") and self.vae is not None:
+            vae_param = next(self.vae.parameters(), None) if hasattr(self.vae, "parameters") else None
+            vae_dev = vae_param.device if vae_param is not None else device
+            vae_dtype = vae_param.dtype if vae_param is not None else dtype
+
+            scaling = getattr(self.vae.config, "scaling_factor", 0.3611) if hasattr(self.vae, "config") else 0.3611
+            shift = getattr(self.vae.config, "shift_factor", 0.1159) if hasattr(self.vae, "config") else 0.1159
+            scaled_latents = ((latents / scaling) + shift).to(device=vae_dev, dtype=vae_dtype)
             decoded_chunks = []
             for idx in range(scaled_latents.shape[0]):
                 chunk = scaled_latents[idx : idx + 1]
                 dec = self.vae.decode(chunk, return_dict=False)[0]
                 decoded_chunks.append(dec)
             decoded_tensor = torch.cat(decoded_chunks, dim=0)
-            if hasattr(self, "image_processor"):
+            if hasattr(self, "image_processor") and self.image_processor is not None:
                 images = self.image_processor.postprocess(decoded_tensor, output_type=output_type)
             else:
                 images = decoded_tensor
