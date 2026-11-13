@@ -44,13 +44,53 @@ class FluxPipeline_LiDAR(FluxPipeline):
     Kết hợp đồng bộ với Classifier-Free Guidance (CFG) và bộ giải Euler lùi thời gian.
     """
 
-    def __init__(self, *args, **kwargs):
-        if hasattr(super(), "__init__"):
+    _optional_components = ["image_encoder", "feature_extractor"]
+    model_cpu_offload_seq = "text_encoder->text_encoder_2->image_encoder->transformer->vae"
+
+    def __init__(
+        self,
+        scheduler: Any = None,
+        vae: Any = None,
+        text_encoder: Any = None,
+        tokenizer: Any = None,
+        text_encoder_2: Any = None,
+        tokenizer_2: Any = None,
+        transformer: Any = None,
+        image_encoder: Any = None,
+        feature_extractor: Any = None,
+        **kwargs
+    ):
+        if hasattr(super(), "__init__") and scheduler is not None and transformer is not None:
             try:
-                super().__init__(*args, **kwargs)
+                super().__init__(
+                    scheduler=scheduler,
+                    vae=vae,
+                    text_encoder=text_encoder,
+                    tokenizer=tokenizer,
+                    text_encoder_2=text_encoder_2,
+                    tokenizer_2=tokenizer_2,
+                    transformer=transformer,
+                    image_encoder=image_encoder,
+                    feature_extractor=feature_extractor,
+                    **kwargs
+                )
             except Exception:
                 pass
         self.flow_guidance_module = RSFlowLiDARGuidance(s_flow=12.5, lambda_r=5000.0)
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            from diffusers import FluxPipeline
+            if cls is not FluxPipeline and issubclass(cls, FluxPipeline):
+                pipe = FluxPipeline.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+                pipe.__class__ = cls
+                if not hasattr(pipe, "flow_guidance_module"):
+                    pipe.flow_guidance_module = RSFlowLiDARGuidance(s_flow=12.5, lambda_r=5000.0)
+                return pipe
+        except Exception:
+            pass
+        return super().from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
 
     @torch.no_grad()
     def __call__(
