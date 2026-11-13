@@ -169,6 +169,63 @@ def patch_transformers_for_imagereward():
             mu.PreTrainedModel.get_head_mask = get_head_mask
             if hasattr(mu, "ModuleUtilsMixin"):
                 mu.ModuleUtilsMixin.get_head_mask = get_head_mask
+
+        # Polyfill for invert_attention_mask (removed from PreTrainedModel in modern transformers)
+        def invert_attention_mask(self, encoder_attention_mask):
+            if encoder_attention_mask.dim() == 3:
+                extended_mask = encoder_attention_mask[:, None, :, :]
+            elif encoder_attention_mask.dim() == 2:
+                extended_mask = encoder_attention_mask[:, None, None, :]
+            else:
+                extended_mask = encoder_attention_mask
+            dtype = getattr(self, "dtype", torch.float32)
+            extended_mask = extended_mask.to(dtype=dtype)
+            try:
+                min_val = torch.finfo(dtype).min
+            except Exception:
+                min_val = -10000.0
+            return (1.0 - extended_mask) * min_val
+
+        if not hasattr(mu.PreTrainedModel, "invert_attention_mask"):
+            mu.PreTrainedModel.invert_attention_mask = invert_attention_mask
+        if hasattr(mu, "ModuleUtilsMixin") and not hasattr(mu.ModuleUtilsMixin, "invert_attention_mask"):
+            mu.ModuleUtilsMixin.invert_attention_mask = invert_attention_mask
+
+        try:
+            from transformers.models.bert.modeling_bert import BertModel
+            if not hasattr(BertModel, "invert_attention_mask"):
+                BertModel.invert_attention_mask = invert_attention_mask
+        except Exception:
+            pass
+
+        try:
+            import ImageReward.models.BLIP.med as blip_med
+            if hasattr(blip_med, "BertModel") and not hasattr(blip_med.BertModel, "invert_attention_mask"):
+                blip_med.BertModel.invert_attention_mask = invert_attention_mask
+        except Exception:
+            pass
+
+        # Polyfill for get_extended_attention_mask if missing
+        def get_extended_attention_mask(self, attention_mask, input_shape=None, device=None, dtype=None):
+            if attention_mask.dim() == 3:
+                extended_mask = attention_mask[:, None, :, :]
+            elif attention_mask.dim() == 2:
+                extended_mask = attention_mask[:, None, None, :]
+            else:
+                extended_mask = attention_mask
+            if dtype is None:
+                dtype = getattr(self, "dtype", torch.float32)
+            extended_mask = extended_mask.to(dtype=dtype)
+            try:
+                min_val = torch.finfo(dtype).min
+            except Exception:
+                min_val = -10000.0
+            return (1.0 - extended_mask) * min_val
+
+        if not hasattr(mu.PreTrainedModel, "get_extended_attention_mask"):
+            mu.PreTrainedModel.get_extended_attention_mask = get_extended_attention_mask
+        if hasattr(mu, "ModuleUtilsMixin") and not hasattr(mu.ModuleUtilsMixin, "get_extended_attention_mask"):
+            mu.ModuleUtilsMixin.get_extended_attention_mask = get_extended_attention_mask
     except Exception:
         pass
 

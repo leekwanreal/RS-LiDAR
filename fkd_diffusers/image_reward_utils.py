@@ -23,6 +23,11 @@ if "wandb" not in sys.modules:
 
 from PIL import Image
 import ImageReward as RM
+try:
+    from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
+    patch_transformers_for_imagereward()
+except Exception:
+    pass
 
 
 '''
