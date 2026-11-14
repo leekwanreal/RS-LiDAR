@@ -419,8 +419,11 @@ class FluxPipeline_LiDAR(FluxPipeline):
         has_prog = hasattr(self, "progress_bar")
 
         # Thiết lập begin_index cho scheduler (chuẩn Diffusers FluxPipeline)
-        if sched is not None and hasattr(sched, "set_begin_index"):
-            sched.set_begin_index(0)
+        if sched is not None:
+            if hasattr(sched, "_step_index"):
+                sched._step_index = None
+            if hasattr(sched, "set_begin_index"):
+                sched.set_begin_index(0)
 
         def _run_denoising_loop(prog_bar=None):
             nonlocal latents

@@ -285,6 +285,28 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         # Khẳng định _current_timestep đã được dọn sạch về None
         self.assertIsNone(pipe._current_timestep)
 
+    def test_07_multiple_prompts_scheduler_step_index_reset(self):
+        """Khẳng định: Chạy liên tiếp nhiều prompts không bị lỗi IndexError ở scheduler (step_index được reset)."""
+        pipe = FluxPipeline_LiDAR()
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0, use_dynamic_shifting=True)
+
+        pipe.transformer = MagicMock()
+        pipe.transformer.config.guidance_embeds = False
+        pipe.transformer.parameters.return_value = [torch.nn.Parameter(torch.zeros(1))]
+        pipe.transformer.side_effect = lambda **kwargs: (torch.zeros_like(kwargs["hidden_states"]),)
+        pipe.encode_prompt = MagicMock(return_value=(torch.zeros(1, 10, 64), torch.zeros(1, 10), torch.zeros(10, 3)))
+
+        fkd_args = {"use_rag": True, "top_k": 1, "s_flow": 0.0}
+
+        # Prompt 0
+        out0 = pipe(prompt="prompt 0", prompt_idx=0, num_inference_steps=28, fkd_args=fkd_args, output_type="latent")
+        self.assertIsNotNone(out0)
+
+        # Prompt 1: Trước fix, step_index là 28 nên sched.step ném IndexError ở ngay bước 0!
+        out1 = pipe(prompt="prompt 1", prompt_idx=1, num_inference_steps=28, fkd_args=fkd_args, output_type="latent")
+        self.assertIsNotNone(out1)
+        self.assertEqual(pipe.scheduler.step_index, 28)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
