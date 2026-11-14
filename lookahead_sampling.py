@@ -507,7 +507,10 @@ def main(args):
                 latents = latents.to(torch.float32)
 
             if is_flux:
-                latents = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
+                # Fresh pipeline output is packed [N, 4096, 64]; latent.pt reused via --reuse_latents_from
+                # was saved already unpacked [N, 16, 128, 128] and must not be unpacked again.
+                if latents.ndim == 3:
+                    latents = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
                 scaled_latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
                 vae_batch_size = 1
                 decoded_chunks = []
