@@ -1,12 +1,20 @@
-"""
-Feynman-Kac Diffusion (FKD) steering mechanism implementation.
+"""Feynman-Kac (FK) steering with randomized-smoothing rewards (RS-SMC).
+
+`FKD.resample` is called after every denoising step. At the resampling steps it decodes the Tweedie
+estimates x0_hat of the N particles, scores them, and resamples particles with weights
+exp(lmbda * potential) (FK steering, Singhal et al. 2025).
+
+With `use_smc_smoothing=True` (RS-SMC) the reward of a particle is the randomized-smoothing estimate
+    R_sigma(x0_hat) = (1/M) * sum_m R(clip(D(x0_hat) + sigma(t) * u_m, -1, 1)),
+where `get_effective_smc_sigma` gives the smoothing radius sigma(t): constant, or annealed over the
+resampling window (`tweedie_analytical`, `cosine`, `linear`).
 """
 
-import torch
 from enum import Enum
+from typing import Any, Callable, Optional, Tuple
+
 import numpy as np
-from typing import Callable, Optional, Tuple, Any, Union, List
-import logging
+import torch
 
 
 class PotentialType(Enum):
@@ -17,23 +25,30 @@ class PotentialType(Enum):
 
 
 class FKD:
-    """
-    Implements the FKD steering mechanism. Should be initialized along the diffusion process. .resample() should be invoked at each diffusion timestep.
-    See FKD fkd_pipeline_sdxl
+    """FK steering state for one batch of particles; call `.resample()` at every diffusion step.
+
     Args:
-        potential_type: Type of potential function must be one of PotentialType.
-        lmbda: Lambda hyperparameter controlling weight scaling.
-        num_particles: Number of particles to maintain in the population.
-        adaptive_resampling: Whether to perform adaptive resampling.
-        resample_frequency: Frequency (in timesteps) to perform resampling.
-        resampling_t_start: Timestep to start resampling.
-        resampling_t_end: Timestep to stop resampling.
-        time_steps: Total number of timesteps in the sampling process.
-        reward_fn: Function to compute rewards from decoded latents.
-        reward_min_value: Minimum value for rewards (default: 0.0). Important for the Max potential type.
-        latent_to_decode_fn: Function to decode latents to images, relevant for latent diffusion models (default: identity function).
-        device: Device on which computations will be performed (default: CUDA).
-        **kwargs: Additional keyword arguments, unused.
+        potential_type: one of `PotentialType` ("diff", "max", "add", "rt").
+        lmbda: inverse temperature of the resampling weights.
+        num_particles: number of particles N.
+        adaptive_resampling: resample only when the effective sample size drops below N / 2.
+        resample_frequency, resampling_t_start, resampling_t_end: resampling step grid.
+        time_steps: total number of sampling steps.
+        reward_fn: maps decoded images [N, 3, H, W] in [-1, 1] to rewards [N].
+        reward_min_value: initial reward of every particle (relevant for the "max" potential).
+        latent_to_decode_fn: decodes Tweedie latents to images.
+        device: device of the reward state.
+        use_smc_smoothing: score particles with the smoothed reward (RS-SMC).
+        smc_sigma, smc_num_mc_samples: smoothing radius sigma and Monte Carlo samples M.
+        smc_use_crn: share each noise draw across particles (common random numbers).
+        smc_smoothing_mode: "loop" over M, or "vectorized" (all M * N images at once).
+        smc_anneal_sigma, smc_anneal_schedule, smc_sigma_min: sigma(t) schedule (see
+            `get_effective_smc_sigma`); "sqrt_noise" and "tweedie_snr" are aliases of "tweedie_analytical".
+        smc_terminal_resample: also resample at the last step.
+        scheduler: diffusion scheduler (its `alphas_cumprod` / `timesteps` drive "tweedie_analytical").
+        **kwargs: `FK_lmbda`, `FK_resample_t_start`, `FK_resample_t_end` override the corresponding
+            arguments; `use_rs_smc`, `smc_M`, `sigma`, `num_mc_samples`, `terminal_resample` are aliases.
+            Other keys (the full CLI `fkd_args` dict is passed) are ignored.
     """
 
     def __init__(
@@ -54,7 +69,6 @@ class FKD:
         use_smc_smoothing: bool = False,
         smc_sigma: float = 0.25,
         smc_num_mc_samples: int = 4,
-        smc_smoothing_domain: str = "image",
         smc_use_crn: bool = False,
         smc_smoothing_mode: str = "loop",
         smc_anneal_sigma: bool = False,
@@ -64,29 +78,21 @@ class FKD:
         scheduler: Optional[Any] = None,
         **kwargs,
     ) -> None:
-        # Support FK_ prefixed argument overrides from CLI
-        if "FK_lmbda" in kwargs and kwargs["FK_lmbda"] is not None:
+        if kwargs.get("FK_lmbda") is not None:
             lmbda = kwargs["FK_lmbda"]
-        if "FK_resample_t_start" in kwargs and kwargs["FK_resample_t_start"] is not None:
+        if kwargs.get("FK_resample_t_start") is not None:
             resampling_t_start = kwargs["FK_resample_t_start"]
-        if "FK_resample_t_end" in kwargs and kwargs["FK_resample_t_end"] is not None:
+        if kwargs.get("FK_resample_t_end") is not None:
             resampling_t_end = kwargs["FK_resample_t_end"]
 
-        # Support RS-SMC aliases from CLI / kwargs
-        if "use_rs_smc" in kwargs and kwargs["use_rs_smc"] is not None:
+        if kwargs.get("use_rs_smc") is not None:
             use_smc_smoothing = kwargs["use_rs_smc"]
-        if "smc_M" in kwargs and kwargs["smc_M"] is not None:
+        if kwargs.get("smc_M") is not None:
             smc_num_mc_samples = kwargs["smc_M"]
-        if "sigma" in kwargs and kwargs["sigma"] is not None and "smc_sigma" not in kwargs:
+        if kwargs.get("sigma") is not None:
             smc_sigma = kwargs["sigma"]
-        if "num_mc_samples" in kwargs and kwargs["num_mc_samples"] is not None and "smc_num_mc_samples" not in kwargs:
+        if kwargs.get("num_mc_samples") is not None:
             smc_num_mc_samples = kwargs["num_mc_samples"]
-        if "smc_anneal_sigma" in kwargs and kwargs["smc_anneal_sigma"] is not None:
-            smc_anneal_sigma = kwargs["smc_anneal_sigma"]
-        if "smc_anneal_schedule" in kwargs and kwargs["smc_anneal_schedule"] is not None:
-            smc_anneal_schedule = kwargs["smc_anneal_schedule"]
-        if "smc_sigma_min" in kwargs and kwargs["smc_sigma_min"] is not None:
-            smc_sigma_min = kwargs["smc_sigma_min"]
 
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -102,121 +108,83 @@ class FKD:
 
         self.reward_fn = reward_fn
         self.latent_to_decode_fn = latent_to_decode_fn
-        self.scheduler = scheduler or kwargs.get("scheduler", None)
+        self.scheduler = scheduler
 
-        # RS-SMC Hyperparameters
         self.use_smc_smoothing = use_smc_smoothing
         self.smc_sigma = smc_sigma
         self.smc_num_mc_samples = smc_num_mc_samples
-        self.smc_smoothing_domain = smc_smoothing_domain
         self.smc_use_crn = smc_use_crn
         self.smc_smoothing_mode = smc_smoothing_mode
         self.smc_anneal_sigma = smc_anneal_sigma
         self.smc_anneal_schedule = smc_anneal_schedule
         self.smc_sigma_min = smc_sigma_min
-        self.smc_terminal_resample = kwargs.get(
-            "smc_terminal_resample",
-            kwargs.get("terminal_resample", smc_terminal_resample),
-        )
+        self.smc_terminal_resample = kwargs.get("terminal_resample", smc_terminal_resample)
 
-        # Hybrid SMC / Harmonized Engine (Task 1.5)
-        self.use_hybrid_smc = kwargs.get("use_hybrid_smc", False)
-        if self.use_hybrid_smc:
-            from rs_smc_engine import HarmonizedRSLiDARSMCEngine
-            self.smc_engine = HarmonizedRSLiDARSMCEngine(
-                sigma_high=kwargs.get("sigma_high", 1.0),
-                sigma_smc=kwargs.get("sigma_smc", kwargs.get("sigma_low", kwargs.get("smc_sigma", 0.25))),
-                beta_risk=kwargs.get("beta_risk", 0.5),
-                eta_drift=kwargs.get("eta_drift", 0.4),
-                alpha_couple=kwargs.get("alpha_couple", 0.7)
-            )
-        else:
-            self.smc_engine = None
-
-        # Initialize device and population reward state
         self.device = device
-
-        # initial rewards
-        self.population_rs = (
-            torch.ones(self.num_particles, device=self.device) * reward_min_value
-        )
+        self.population_rs = torch.ones(self.num_particles, device=self.device) * reward_min_value
         self.product_of_potentials = torch.ones(self.num_particles).to(self.device)
 
     def get_effective_smc_sigma(self, sampling_idx: int) -> float:
+        """Smoothing radius sigma(t) used by RS-SMC at sampling step `sampling_idx`.
+
+        Without annealing this is the constant `smc_sigma`. With annealing, sigma(t) = smc_sigma * decay(t)
+        on the resampling window [t_start, t_end] (decay from 1 to 0), floored by `smc_sigma_min`, and the
+        floor (0 by default) from t_end and at the last step:
+          - tweedie_analytical: decay = (psi_t - psi_end) / (psi_start - psi_end), psi_t = sqrt((1 - abar_t) / abar_t)
+            the noise-to-signal scale of the Tweedie estimate (falls back to progress^2 without a scheduler);
+          - cosine: 0.5 * (1 + cos(pi * (1 - progress)));  linear: progress,
+        where progress = (t_end - t) / (t_end - t_start) is clipped to [0, 1].
         """
-        Calculate the effective smoothing radius sigma(t) at the current diffusion sampling step.
-        If smc_anneal_sigma is False, returns constant self.smc_sigma (Zero Regression).
-        When smc_anneal_sigma is True, computes analytical annealed decay grounded in Tweedie posterior variance.
-        """
-        if not getattr(self, "smc_anneal_sigma", False):
+        if not self.smc_anneal_sigma:
             return float(self.smc_sigma)
 
-        t_start = getattr(self, "resampling_t_start", 20)
-        t_end = getattr(self, "resampling_t_end", 80)
+        t_start = self.resampling_t_start
+        t_end = self.resampling_t_end
         total_span = max(1, t_end - t_start)
 
-        # Terminal step (sampling_idx == time_steps - 1) or beyond t_end must be clean (zero-noise)
-        # to ensure Best-of-N final selection and completed samples are never corrupted by artificial noise.
+        # Final samples are scored without noise.
         if sampling_idx >= self.time_steps - 1 or sampling_idx >= t_end:
-            min_floor = float(getattr(self, "smc_sigma_min", 0.0) or 0.0)
-            return min_floor
+            return float(self.smc_sigma_min or 0.0)
 
-        # Progress from 1.0 (at t_start) down to 0.0 (at t_end)
         progress = float(np.clip((t_end - sampling_idx) / total_span, 0.0, 1.0))
+        schedule = self.smc_anneal_schedule
 
-        schedule = getattr(self, "smc_anneal_schedule", "tweedie_analytical")
-
-        # Optimal Schedule 1: Analytical Tweedie posterior standard deviation ratio
-        # Computed directly from scheduler.alphas_cumprod without any hard-coded constants!
         decay_factor = None
         if schedule in ["tweedie_analytical", "tweedie_snr", "sqrt_noise"]:
-            scheduler = getattr(self, "scheduler", None)
+            scheduler = self.scheduler
             if scheduler is not None and hasattr(scheduler, "alphas_cumprod") and hasattr(scheduler, "timesteps"):
-                try:
-                    timesteps = scheduler.timesteps
-                    if len(timesteps) > sampling_idx and len(timesteps) > t_start:
-                        curr_t = timesteps[sampling_idx]
-                        t_start_val = timesteps[t_start]
-                        t_end_val = timesteps[min(t_end, len(timesteps) - 1)]
+                timesteps = scheduler.timesteps
+                if len(timesteps) > sampling_idx and len(timesteps) > t_start:
+                    curr_t = timesteps[sampling_idx]
+                    t_start_val = timesteps[t_start]
+                    t_end_val = timesteps[min(t_end, len(timesteps) - 1)]
 
-                        a_curr = float(scheduler.alphas_cumprod[curr_t])
-                        a_start = float(scheduler.alphas_cumprod[t_start_val])
-                        a_end = float(scheduler.alphas_cumprod[t_end_val])
+                    a_curr = float(scheduler.alphas_cumprod[curr_t])
+                    a_start = float(scheduler.alphas_cumprod[t_start_val])
+                    a_end = float(scheduler.alphas_cumprod[t_end_val])
 
-                        psi_curr = np.sqrt(max(0.0, 1.0 - a_curr) / max(1e-8, a_curr))
-                        psi_start = np.sqrt(max(0.0, 1.0 - a_start) / max(1e-8, a_start))
-                        psi_end = np.sqrt(max(0.0, 1.0 - a_end) / max(1e-8, a_end))
+                    psi_curr = np.sqrt(max(0.0, 1.0 - a_curr) / max(1e-8, a_curr))
+                    psi_start = np.sqrt(max(0.0, 1.0 - a_start) / max(1e-8, a_start))
+                    psi_end = np.sqrt(max(0.0, 1.0 - a_end) / max(1e-8, a_end))
 
-                        decay_factor = float(np.clip((psi_curr - psi_end) / max(1e-6, psi_start - psi_end), 0.0, 1.0))
-                except Exception:
-                    decay_factor = None
+                    decay_factor = float(np.clip((psi_curr - psi_end) / max(1e-6, psi_start - psi_end), 0.0, 1.0))
 
             if decay_factor is None:
-                # Closed-form power law progress^2 matches Tweedie posterior variance ratio (1.0 -> 0.44 -> 0.11 -> 0.0)
                 decay_factor = float(progress ** 2.0)
         elif schedule == "cosine":
-            # Standard Cosine Annealing: smooth concave decay from 1.0 to 0.0 with zero derivatives at both ends
             decay_factor = float(0.5 * (1.0 + np.cos(np.pi * (1.0 - progress))))
         elif schedule == "linear":
-            # Linear decay from 1.0 to 0.0
             decay_factor = float(progress)
         else:
             decay_factor = float(progress ** 2.0)
 
         effective_sigma = float(self.smc_sigma * decay_factor)
-
-        # Apply user-specified minimum floor if provided
-        if getattr(self, "smc_sigma_min", None) is not None:
+        if self.smc_sigma_min is not None:
             effective_sigma = max(float(self.smc_sigma_min), effective_sigma)
-
         return effective_sigma
 
     def _evaluate_reward_batched(self, imgs: torch.Tensor, chunk_size: int = 128) -> torch.Tensor:
-        """
-        Safely evaluates rewards for large batches of images (e.g. M * N >= 128 or 256).
-        Chunks through self.reward_fn if the batch size exceeds chunk_size, with automatic
-        OOM catch and fallback, ensuring 0% OOM risk even with large particle counts on A100.
-        """
+        """Evaluate `reward_fn` on a large batch in chunks, halving the chunk size on CUDA OOM."""
         total = imgs.shape[0]
         if total <= chunk_size:
             try:
@@ -227,7 +195,6 @@ class FKD:
                     torch.cuda.empty_cache()
                 chunk_size = max(1, chunk_size // 2)
 
-        # Chunked evaluation
         rewards_list = []
         for i in range(0, total, chunk_size):
             chunk = imgs[i : i + chunk_size]
@@ -249,137 +216,75 @@ class FKD:
 
         return torch.cat(rewards_list, dim=0)
 
+    def _smoothed_rewards(self, population_images: torch.Tensor, sigma: float) -> torch.Tensor:
+        """RS-SMC reward: Monte Carlo mean of `reward_fn` on clip(images + sigma * u_m, -1, 1), m = 1..M."""
+        if sigma == 0:
+            # sigma(t) = 0 (annealed schedule): the M noisy copies would be identical.
+            return self.reward_fn(population_images.clamp(-1.0, 1.0))
+
+        shape = population_images.shape
+        if self.smc_smoothing_mode == "loop":
+            mc_rewards = []
+            with torch.inference_mode():
+                for _ in range(self.smc_num_mc_samples):
+                    if self.smc_use_crn:
+                        noise = torch.randn((1, *shape[1:]), device=population_images.device,
+                                            dtype=population_images.dtype) * sigma
+                    else:
+                        noise = torch.randn_like(population_images) * sigma
+                    noisy_imgs = (population_images + noise).clamp(-1.0, 1.0)
+                    mc_rewards.append(self.reward_fn(noisy_imgs))
+            return torch.stack(mc_rewards, dim=0).mean(dim=0)
+
+        with torch.inference_mode():
+            if self.smc_use_crn:
+                noise = torch.randn((self.smc_num_mc_samples, 1, *shape[1:]), device=population_images.device,
+                                    dtype=population_images.dtype) * sigma
+            else:
+                noise = torch.randn((self.smc_num_mc_samples, *shape), device=population_images.device,
+                                    dtype=population_images.dtype) * sigma
+            noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *shape[1:])
+            raw_rewards = self._evaluate_reward_batched(noisy_imgs)
+            return raw_rewards.view(self.smc_num_mc_samples, self.num_particles).mean(dim=0)
+
     def resample(
         self,
         *,
         sampling_idx: int,
         latents: torch.Tensor,
         x0_preds: torch.Tensor,
-        v_lidar: Optional[torch.Tensor] = None,
-        seed_int: Optional[Union[int, List[int], torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Perform resampling of particles if conditions are met.
-        Should be invoked at each timestep in the reverse diffusion process.
+        """Resample particles at the scheduled steps.
 
         Args:
-            sampling_idx: Current sampling index (timestep).
-            latents: Current noisy latents.
-            x0_preds: Predictions for x0 based on latents.
+            sampling_idx: current sampling step index.
+            latents: current noisy latents x_t [N, ...].
+            x0_preds: Tweedie estimates x0_hat of the particles [N, ...].
 
         Returns:
-            A tuple containing resampled latents and optionally resampled images.
+            (resampled latents, resampled decoded images), or (latents, None) at steps without resampling.
         """
-        # Check if resampling is within the allowed range and conditions
-        resampling_interval = np.arange(
-            self.resampling_t_start, self.resampling_t_end + 1, self.resample_frequency
-        )
-        if getattr(self, "smc_terminal_resample", True):
+        resampling_interval = np.arange(self.resampling_t_start, self.resampling_t_end + 1, self.resample_frequency)
+        if self.smc_terminal_resample:
             resampling_interval = np.append(resampling_interval, self.time_steps - 1)
 
         if sampling_idx not in resampling_interval:
             return latents, None
 
-        # Decode latents to population images and compute rewards
         population_images = self.latent_to_decode_fn(x0_preds)
 
-        if getattr(self, "use_hybrid_smc", False) and getattr(self, "smc_engine", None) is not None:
-            # Doob-Tweedie Innovation Residual and 64-bit Seed Replay (Theorem 5.2 / Lemma Double-Counting)
-            if self.scheduler is not None and hasattr(self.scheduler, "alphas_cumprod"):
-                alpha_bar_t = float(self.scheduler.alphas_cumprod[min(sampling_idx, len(self.scheduler.alphas_cumprod) - 1)])
-                alpha_bar_0 = float(self.scheduler.alphas_cumprod[0]) if len(self.scheduler.alphas_cumprod) > 0 else 1.0
-                rho_t = max(1e-4, alpha_bar_t / (alpha_bar_0 + 1e-8))
-            else:
-                rho_t = 1.0 - (sampling_idx / float(max(1, self.time_steps)))
-            
-            # Align v_lidar if passed from pipeline; otherwise fallback safely
-            if v_lidar is None:
-                if self.population_rs[0] > -90.0:
-                    v_lidar = self.population_rs
-                else:
-                    v_lidar = self.reward_fn(population_images)
-            else:
-                v_lidar = v_lidar.to(device=latents.device, dtype=torch.float32)
-
-            if seed_int is None or (isinstance(seed_int, (list, tuple)) and all(s is None for s in seed_int)):
-                seed_int = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
-            elif isinstance(seed_int, (list, tuple)):
-                default_seed = (int(sampling_idx) * 10007 + 42) & 0x7FFFFFFF
-                seed_int = [default_seed if s is None else (int(s.item() if hasattr(s, "item") else s) & 0x7FFFFFFF) for s in seed_int]
-
-            phi_residual, v_smc = self.smc_engine.compute_step(
-                x_t=latents,
-                tweedie_x0=population_images,
-                v_lidar=v_lidar,
-                seed_int=seed_int,
-                rho_t=rho_t,
-                reward_fn=self.reward_fn
-            )
-            rs_candidates = phi_residual
-        elif not getattr(self, "use_smc_smoothing", False):
-            # Vanilla SMC: Original raw reward evaluation (Zero Regression)
+        if not self.use_smc_smoothing:
             rs_candidates = self.reward_fn(population_images)
         else:
-            # RS-SMC: Randomized Smoothing over Tweedie estimate with dynamic sigma(t)
-            curr_sigma = self.get_effective_smc_sigma(sampling_idx)
-            if curr_sigma == 0:
-                # ZERO-NOISE ACCELERATION: When sigma(t) = 0 (e.g. at step >= 80 or terminal step 99 with Annealing),
-                # no noise is injected. Evaluating M identical copies is completely redundant.
-                # Evaluating population_images once directly saves M-fold compute and latency!
-                rs_candidates = self.reward_fn(population_images.clamp(-1.0, 1.0) if self.smc_smoothing_domain == "image" else population_images)
-            elif self.smc_smoothing_domain == "image":
-                if self.smc_smoothing_mode == "loop":
-                    mc_rewards = []
-                    with torch.inference_mode():
-                        for _ in range(self.smc_num_mc_samples):
-                            if self.smc_use_crn:
-                                noise = torch.randn((1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
-                            else:
-                                noise = torch.randn_like(population_images) * curr_sigma
-                            noisy_imgs = (population_images + noise).clamp(-1.0, 1.0)
-                            r_m = self.reward_fn(noisy_imgs)
-                            mc_rewards.append(r_m)
-                    rs_candidates = torch.stack(mc_rewards, dim=0).mean(dim=0)
-                else: # vectorized
-                    with torch.inference_mode():
-                        if self.smc_use_crn:
-                            noise = torch.randn((self.smc_num_mc_samples, 1, *population_images.shape[1:]), device=population_images.device, dtype=population_images.dtype) * curr_sigma
-                            noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
-                        else:
-                            noise = torch.randn((self.smc_num_mc_samples, *population_images.shape), device=population_images.device, dtype=population_images.dtype) * curr_sigma
-                            noisy_imgs = (population_images.unsqueeze(0) + noise).clamp(-1.0, 1.0).view(-1, *population_images.shape[1:])
-                        raw_rewards = self._evaluate_reward_batched(noisy_imgs)
-                        rs_candidates = raw_rewards.view(self.smc_num_mc_samples, self.num_particles).mean(dim=0)
-            elif self.smc_smoothing_domain == "latent":
-                mc_rewards = []
-                with torch.inference_mode():
-                    for _ in range(self.smc_num_mc_samples):
-                        if self.smc_use_crn:
-                            noise = torch.randn((1, *x0_preds.shape[1:]), device=x0_preds.device, dtype=x0_preds.dtype) * curr_sigma
-                        else:
-                            noise = torch.randn_like(x0_preds) * curr_sigma
-                        noisy_latents = x0_preds + noise
-                        noisy_imgs = self.latent_to_decode_fn(noisy_latents)
-                        r_m = self.reward_fn(noisy_imgs)
-                        mc_rewards.append(r_m)
-                rs_candidates = torch.stack(mc_rewards, dim=0).mean(dim=0)
-            else:
-                raise ValueError(f"Unknown smc_smoothing_domain: {self.smc_smoothing_domain}")
+            rs_candidates = self._smoothed_rewards(population_images, self.get_effective_smc_sigma(sampling_idx))
 
-        # Ensure device and dtype alignment
         if self.population_rs.device != rs_candidates.device or self.population_rs.dtype != rs_candidates.dtype:
             self.population_rs = self.population_rs.to(device=rs_candidates.device, dtype=rs_candidates.dtype)
         if self.product_of_potentials.device != rs_candidates.device:
             self.product_of_potentials = self.product_of_potentials.to(device=rs_candidates.device)
 
-        # Compute importance weights
-        if getattr(self, "use_hybrid_smc", False):
-            # Harmonized RS-Twisted-SMC: rs_candidates is ALREADY the Doob-Tweedie Innovation Residual phi_residual.
-            # Double-counting has been removed via Girsanov drift subtraction.
-            # Do NOT subtract self.population_rs to avoid double-subtraction.
-            w = torch.exp(self.lmbda * rs_candidates)
-            self.population_rs = v_smc.to(device=self.population_rs.device, dtype=self.population_rs.dtype)
-        elif self.potential_type == PotentialType.MAX:
+        # Potentials (importance weights).
+        if self.potential_type == PotentialType.MAX:
             rs_candidates = torch.max(rs_candidates, self.population_rs)
             w = torch.exp(self.lmbda * rs_candidates)
         elif self.potential_type == PotentialType.ADD:
@@ -405,115 +310,27 @@ class FKD:
         w[torch.isnan(w)] = 0.0
 
         if self.adaptive_resampling or sampling_idx == self.time_steps - 1:
-            # compute effective sample size
             normalized_w = w / w.sum()
             ess = 1.0 / (normalized_w.pow(2).sum())
 
             if ess < 0.5 * self.num_particles:
                 print(f"Resampling at timestep {sampling_idx} with ESS: {ess}")
-                # Resample indices based on weights
-                indices = torch.multinomial(
-                    w, num_samples=self.num_particles, replacement=True
-                )
+                indices = torch.multinomial(w, num_samples=self.num_particles, replacement=True)
                 resampled_latents = latents[indices]
-                if getattr(self, "use_hybrid_smc", False):
-                    self.population_rs = v_smc[indices].to(device=self.population_rs.device, dtype=self.population_rs.dtype)
-                else:
-                    self.population_rs = rs_candidates[indices]
-
-                # Resample population images
+                self.population_rs = rs_candidates[indices]
                 resampled_images = population_images[indices]
-
-                # Update product of potentials; used for max and add potentials
-                self.product_of_potentials = (
-                    self.product_of_potentials[indices] * w[indices]
-                )
+                # Product of potentials, used by the max / add / rt potentials.
+                self.product_of_potentials = self.product_of_potentials[indices] * w[indices]
             else:
-                # No resampling
                 resampled_images = population_images
                 resampled_latents = latents
-                if getattr(self, "use_hybrid_smc", False):
-                    self.population_rs = v_smc.to(device=self.population_rs.device, dtype=self.population_rs.dtype)
-                else:
-                    self.population_rs = rs_candidates
+                self.population_rs = rs_candidates
 
         else:
-            # Resample indices based on weights
-            indices = torch.multinomial(
-                w, num_samples=self.num_particles, replacement=True
-            )
+            indices = torch.multinomial(w, num_samples=self.num_particles, replacement=True)
             resampled_latents = latents[indices]
-            if getattr(self, "use_hybrid_smc", False):
-                self.population_rs = v_smc[indices].to(device=self.population_rs.device, dtype=self.population_rs.dtype)
-            else:
-                self.population_rs = rs_candidates[indices]
-
-            # Resample population images
+            self.population_rs = rs_candidates[indices]
             resampled_images = population_images[indices]
-
-            # Update product of potentials; used for max and add potentials
-            self.product_of_potentials = (
-                self.product_of_potentials[indices] * w[indices]
-            )
+            self.product_of_potentials = self.product_of_potentials[indices] * w[indices]
 
         return resampled_latents, resampled_images
-
-
-if __name__ == "__main__":
-
-    # Demonstration of FKD resampling step
-    import matplotlib.pyplot as plt
-    import random
-
-    # set seed
-    random.seed(0)
-
-    # 1x1 pixel images
-    num_particles = 8
-    x0s = torch.rand(num_particles, 1, 1)
-
-    # reward darker images
-    reward_function = lambda x: -0.5 * x.sum(dim=(1, 2))
-
-    # Define the FKD steering mechanism
-    fkds = FKD(
-        potential_type=PotentialType.DIFF,
-        lmbda=10.0,
-        num_particles=num_particles,
-        adaptive_resampling=False,
-        resample_frequency=1,
-        resampling_t_start=-1,
-        resampling_t_end=100,
-        time_steps=100,
-        reward_fn=lambda x: reward_function(x),
-        device=torch.device('cpu'),
-    )
-
-    # Define the sampling index
-    sampling_idx = 0
-
-    # Perform resampling
-    resampled_latents, resampled_images = fkds.resample(
-        sampling_idx=sampling_idx,
-        latents=x0s,
-        x0_preds=x0s,
-    )
-
-    plt.rc('text', usetex=True)
-    fig, axs = plt.subplots(2, num_particles)
-
-    axs[0, 0].set_title('Initial')
-    axs[1, 0].set_title('Resampled')
-
-    for i in range(num_particles):
-        axs[0, i].imshow(x0s[i].detach().numpy(), cmap='gray', vmin=0, vmax=1)
-        axs[1, i].imshow(
-            resampled_images[i].detach().numpy(), cmap='gray', vmin=0, vmax=1
-        )
-
-        axs[1, i].axis('off')
-        axs[0, i].axis('off')
-
-    out_path = 'resampled_examples.png'
-    plt.savefig(out_path)
-    print('Saved resampled examples to:', out_path)

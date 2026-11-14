@@ -1,92 +1,23 @@
-import os
+"""Unit tests for the RS-LiDAR building blocks: smoothing batches, entropic-risk aggregation,
+Pareto potential, FLUX velocity guidance, CLI defaults and the transformers patch."""
 import sys
-import time
 import unittest
+
+import numpy as np
 import torch
 
-# Ensure Diffusion-LiDAR-Sampling root is in sys.path
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
-
-from lookahead_sampling import (
-    generate_smoothed_pixel_batch,
-    compute_entropic_antithetic_rewards,
-    get_args as get_lookahead_args
-)
-from multi_reward_evaluator import (
-    compute_multi_reward_pareto_potential,
-    LocalLipschitzParetoEvaluator
-)
-from rs_flow_lidar import RSFlowLiDARGuidance
-from smc_engine import HarmonizedRSLiDARSMCEngine
 from LiDAR_sampling import get_args as get_lidar_args
-
-
-class MarkdownTestResult(unittest.TextTestResult):
-    """
-    Custom test result collector that prints a publication-grade Markdown table summary.
-    """
-    def __init__(self, stream, descriptions, verbosity):
-        super().__init__(stream, descriptions, verbosity)
-        self.records = []
-        self._test_start_time = 0.0
-
-    def startTest(self, test):
-        super().startTest(test)
-        self._test_start_time = time.perf_counter()
-
-    def addSuccess(self, test):
-        super().addSuccess(test)
-        elapsed = time.perf_counter() - self._test_start_time
-        doc = (test.shortDescription() or "").strip()
-        self.records.append((test._testMethodName, doc, "PASS", elapsed))
-
-    def addFailure(self, test, err):
-        super().addFailure(test, err)
-        elapsed = time.perf_counter() - self._test_start_time
-        doc = (test.shortDescription() or "").strip()
-        self.records.append((test._testMethodName, doc, "FAIL", elapsed))
-
-    def addError(self, test, err):
-        super().addError(test, err)
-        elapsed = time.perf_counter() - self._test_start_time
-        doc = (test.shortDescription() or "").strip()
-        self.records.append((test._testMethodName, doc, "ERROR", elapsed))
-
-
-class MarkdownTestRunner(unittest.TextTestRunner):
-    resultclass = MarkdownTestResult
-
-    def run(self, test):
-        result = super().run(test)
-        self.print_markdown_summary(result)
-        return result
-
-    def print_markdown_summary(self, result):
-        print("\n" + "=" * 96)
-        print("PHASE 1 UNIFIED VERIFICATION MATRIX (ICML 2027 MASTER DOSSIER AUDIT)")
-        print("=" * 96)
-        print(f"| {'Test Case ID':<44} | {'Audit Item / Theoretical Target':<32} | {'Status':<8} | {'Time (s)':<8} |")
-        print(f"|{'-' * 46}|{'-' * 34}|{'-' * 10}|{'-' * 10}|")
-        for name, doc, status, elapsed in result.records:
-            icon = "[PASS]" if status == "PASS" else "[FAIL]"
-            print(f"| {name:<44} | {doc[:32]:<32} | {icon:<8} | {elapsed:<8.3f} |")
-        print("=" * 96 + "\n")
+from lookahead_sampling import (
+    compute_entropic_antithetic_rewards,
+    generate_smoothed_pixel_batch,
+)
+from lookahead_sampling import get_args as get_lookahead_args
+from multi_reward_evaluator import compute_multi_reward_pareto_potential
+from rs_flow_lidar import RSFlowLiDARGuidance
 
 
 class TestPhase1UnifiedModules(unittest.TestCase):
-    """
-    Unified Verification Suite for Phase 1:
-    - Test 1: Theorem 5.1 & 5.2 (Antithetic Invariance & Entropic Risk)
-    - Test 2: Theorem 6 (Local-Lipschitz Pareto Evaluator)
-    - Test 3: Flow Matching Velocity Guidance & Fast-Path Window
-    - Test 4: Double-Counting Lemma & Hybrid SMC (Doob-Tweedie Residual)
-    - Test 5: Rule 5 CLI Default Argument Audit
-    - Test 6: Zero-Regression Backward Compatibility
-    - Test 7: Unified 50-Step E2E Stress-Test
-    """
+    """Antithetic / entropic risk, Pareto potential, FLUX velocity guidance, CLI defaults, compatibility."""
 
     def setUp(self):
         torch.manual_seed(42)
@@ -95,7 +26,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.M = 4
 
     def test_01_antithetic_shapes_and_invariance(self):
-        """Theorem 5.1 & 5.2: Symmetry & Entropic Risk"""
+        """Antithetic symmetry and entropic risk"""
         images_0 = torch.randn((self.N, self.C, self.H, self.W), device=self.device)
         
         # Shape check [M, N, C, H, W]
@@ -121,19 +52,18 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertLess(res_noisy["r_corrected"][0].item(), 10.0)
         self.assertGreaterEqual(res_noisy["grad_energy_sq"][0].item(), 0.0)
 
-        # Bug 7 Fix Verification: clamp_range=None for latent smoothing
+        # clamp_range=None leaves values outside [-1, 1] untouched.
         latents_large = torch.randn((self.N, 4, 64, 64), device=self.device) * 5.0
         perturbed_lat = generate_smoothed_pixel_batch(latents_large, sigma=0.25, M=self.M, clamp_range=None)
         self.assertTrue((perturbed_lat.abs() > 1.0).any(), "Latents must not be clamped to [-1, 1] when clamp_range=None.")
 
-        # Bug 5 Fix Verification: noise_mode fallback in entropic scorer
         r_mc_iid = torch.randn((self.M, self.N), device=self.device)
         res_iid = compute_entropic_antithetic_rewards(r_mc_iid, noise_mode="independent_iid")
         self.assertEqual(res_iid["r_corrected"].shape, (self.N,))
         self.assertGreaterEqual(res_iid["grad_energy_sq"].min().item(), 0.0)
 
     def test_02_pareto_normalization_and_monotonicity(self):
-        """Theorem 6: Lipschitz Scale & Soft-Min"""
+        """Pareto potential: Lipschitz scale and soft-min"""
         # Two objectives with 100x discrepancy: R1 in [0, 1], R2 in [0, 100]
         r_mc_1 = torch.tensor([
             [1.2, 0.8],
@@ -162,11 +92,11 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertGreater(lambda_1, 0.0)
         self.assertGreater(lambda_2, 0.0)
 
-        # Confirm 100x scale discrepancy is calibrated: ratio lambda_2 / lambda_1 ≈ 100
+        # The 100x scale discrepancy is calibrated: lambda_2 / lambda_1 ~ 100
         ratio = lambda_2 / lambda_1
         self.assertAlmostEqual(ratio, 100.0, places=1)
 
-        # Bug 9 Fix Verification: reward_weights support
+        # reward_weights support
         pot_w, diag_w = compute_multi_reward_pareto_potential(
             multi_rewards,
             reward_weights={"image_reward": 0.8, "large_metric": 0.2}
@@ -206,63 +136,23 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(out_boundary).all())
 
-        # Bug 1 & 11 Fix Verification: Ensure whitening weights have shape (1, 16, 1, 1) and empirical values available
-        self.assertEqual(guidance.whitening_weights.shape, (1, 16, 1, 1))
-        self.assertEqual(RSFlowLiDARGuidance.FLUX_EMPIRICAL_INV_STDS.shape, (16,))
-        self.assertGreater(RSFlowLiDARGuidance.FLUX_EMPIRICAL_INV_STDS[15].item(), 2.0)
-        guidance_flux = RSFlowLiDARGuidance(whitening_weights=RSFlowLiDARGuidance.FLUX_EMPIRICAL_INV_STDS)
-        self.assertGreater(guidance_flux.whitening_weights[0, 15, 0, 0].item(), 2.0)
-
-    def test_04_residual_smc_seed_replay(self):
-        """Double-Counting Lemma: Innovation Residual"""
-        engine = HarmonizedRSLiDARSMCEngine(
-            sigma_high=1.0,
-            sigma_smc=0.25,
-            beta_risk=0.5,
-            eta_drift=0.4,
-            alpha_couple=0.7
-        )
-        # Bug 2 Fix Verification: x_t is latent [N, 4, 64, 64], tweedie_x0 is image [N, 3, 512, 512]
-        x_t = torch.randn((self.N, 4, 64, 64), device=self.device)
-        tweedie_x0 = torch.randn((self.N, 3, 512, 512), device=self.device)
-        v_lidar = torch.tensor([2.0, 2.0, 2.0, 2.0], device=self.device)
-        mock_reward = lambda x: torch.ones(x.shape[0], device=self.device) * 3.0
-
-        # Exact Doob-Tweedie Innovation Residual calculation
-        # v_smc = 3.0 (since r_pos=r_neg=3.0, diff=0)
-        # phi_residual = 3.0 - (0.4 * 0.5 * 2.0) = 3.0 - 0.4 = 2.6
-        phi_res, v_smc = engine.compute_step(x_t, tweedie_x0, v_lidar, seed_int=42, rho_t=0.5, reward_fn=mock_reward)
-        self.assertEqual(phi_res.shape, (self.N,))
-        self.assertTrue(torch.allclose(phi_res, torch.tensor([2.6, 2.6, 2.6, 2.6])))
-
-        # 64-bit Seed Replay Determinism
-        phi_res_2, _ = engine.compute_step(x_t, tweedie_x0, v_lidar, seed_int=42, rho_t=0.5, reward_fn=mock_reward)
-        self.assertTrue(torch.equal(phi_res, phi_res_2))
-
-        # Resampling when ESS < 0.5 * N
-        log_weights = torch.tensor([10.0, 0.0, 0.0, -5.0], device=self.device)
-        _, log_weights_new, resampled = engine.resample_if_needed(log_weights, x_t)
-        self.assertTrue(resampled)
-        self.assertTrue(torch.all(log_weights_new == 0.0))
-
     def test_05_cli_arguments_audit(self):
-        """Rule 5: CLI Default Argument Audit"""
+        """CLI defaults"""
         sys.argv = ["lookahead_sampling.py"]
         args_lookahead = get_lookahead_args()
 
         self.assertEqual(args_lookahead.noise_mode, "independent_iid")
         self.assertEqual(args_lookahead.M, 4)
         self.assertEqual(args_lookahead.num_mc_samples, 4)
-        self.assertEqual(args_lookahead.sigma_high, 1.0)
-        self.assertEqual(args_lookahead.sigma_low, 0.25)
         self.assertEqual(args_lookahead.beta_risk, 0.0)
-        self.assertEqual(args_lookahead.eta_drift, 0.4)
-        self.assertEqual(args_lookahead.alpha_couple, 0.7)
-        self.assertEqual(args_lookahead.s_flow, 40.0)
         self.assertEqual(args_lookahead.pareto_rho, 0.5)
         self.assertFalse(args_lookahead.use_pareto)
 
-        # Bug 6 Fix Verification: --use_crn True automatically defaults beta_risk to 0.0 for legacy equivalence
+        sys.argv = ["lookahead_sampling.py", "--use_smoothing", "--noise_mode", "independent_antithetic",
+                    "--beta_risk", "0.5"]
+        self.assertEqual(get_lookahead_args().beta_risk, 0.5)
+
+        # --use_crn is a shorthand for --noise_mode coupled_crn.
         sys.argv = ["lookahead_sampling.py", "--use_crn", "True"]
         args_crn = get_lookahead_args()
         self.assertEqual(args_crn.noise_mode, "coupled_crn")
@@ -270,20 +160,12 @@ class TestPhase1UnifiedModules(unittest.TestCase):
 
         sys.argv = ["LiDAR_sampling.py"]
         args_lidar = get_lidar_args()
-        self.assertEqual(args_lidar.noise_mode, "independent_iid")
         self.assertEqual(args_lidar.M, 4)
-        self.assertEqual(args_lidar.sigma_high, 1.0)
-        self.assertEqual(args_lidar.sigma_low, 0.25)
-        self.assertEqual(args_lidar.beta_risk, 0.0)
-        self.assertEqual(args_lidar.eta_drift, 0.4)
-        self.assertEqual(args_lidar.alpha_couple, 0.7)
         self.assertEqual(args_lidar.s_flow, 40.0)
-        self.assertEqual(args_lidar.pareto_rho, 0.5)
-        self.assertFalse(args_lidar.use_hybrid_smc)
+        self.assertEqual(args_lidar.smc_anneal_schedule, "tweedie_analytical")
 
     def test_06_legacy_backward_compatibility(self):
-        """Rule 1 & 2: Bit-for-bit Backward Compatibility"""
-        # Fixed seed to ensure exact numerical reproducibility
+        """Coupled CRN batch matches the single-broadcast reference"""
         torch.manual_seed(2026)
         x = torch.randn((self.N, self.C, self.H, self.W), device=self.device)
 
@@ -303,8 +185,7 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         res_zero_beta = compute_entropic_antithetic_rewards(r_raw, beta_risk=0.0)
         self.assertTrue(torch.equal(res_zero_beta["r_corrected"], r_raw.mean(dim=0)))
 
-        # Bug 8 Fix Verification: Particle sorting synchronization
-        import numpy as np
+        # Per-particle statistics are sorted together with the rewards.
         results_mock = {
             "ImageReward": {
                 "result": [0.5, 0.9, 0.1, 0.7],
@@ -319,17 +200,13 @@ class TestPhase1UnifiedModules(unittest.TestCase):
         self.assertEqual(results_mock["ImageReward"]["grad_energy_sq"], [20.0, 40.0, 10.0, 30.0])
 
     def test_07_e2e_50_steps_loop(self):
-        """End-to-End Mock 50-Step Sampling Loop"""
+        """Mock 50-step loop over all modules"""
         z_t = torch.randn((1, self.C, self.H, self.W), device=self.device)
         lookahead_z0 = torch.randn((self.N, self.C, self.H, self.W), device=self.device)
-        tweedie_img = torch.randn((self.N, 3, 512, 512), device=self.device)
         flow_guidance = RSFlowLiDARGuidance(s_flow=12.5)
-        smc_engine = HarmonizedRSLiDARSMCEngine(alpha_couple=0.7)
-        dummy_reward_fn = lambda x: torch.randn(x.shape[0], device=self.device)
 
         for step in range(50):
             sigma_t = 1.0 - (step / 50.0)
-            rho_t = step / 50.0
 
             with torch.no_grad():
                 # 1. Antithetic batch perturbation
@@ -348,15 +225,11 @@ class TestPhase1UnifiedModules(unittest.TestCase):
                 delta_v = flow_guidance.compute_velocity_guidance(z_t, lookahead_z0, r_stats["r_corrected"], sigma_t)
                 self.assertEqual(delta_v.shape, z_t.shape)
 
-                # 5. Hybrid SMC step with realistic 3-channel Tweedie image
-                phi_res, v_smc = smc_engine.compute_step(lookahead_z0, tweedie_img, r_stats["r_corrected"], seed_int=42+step, rho_t=rho_t, reward_fn=dummy_reward_fn)
-                self.assertEqual(phi_res.shape, (self.N,))
-
                 # Free loop references
-                del perturbed, r_mc, r_stats, potentials, delta_v, phi_res, v_smc
+                del perturbed, r_mc, r_stats, potentials, delta_v
 
     def test_08_transformers_compatibility_patch(self):
-        """ImageReward & Transformers Universal Compatibility Patch Verification"""
+        """transformers compatibility patch for ImageReward"""
         from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
         patch_transformers_for_imagereward()
 
@@ -372,7 +245,4 @@ class TestPhase1UnifiedModules(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestPhase1UnifiedModules)
-    runner = MarkdownTestRunner(verbosity=2)
-    result = runner.run(suite)
-    sys.exit(0 if result.wasSuccessful() else 1)
+    unittest.main(verbosity=2)

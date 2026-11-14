@@ -1,0 +1,465 @@
+"""
+CPU mock tests for `experiments.landscape_slicing` (sensitive-prompt landscape slicing ablation).
+
+Covers, without a GPU or real models:
+1. Mock pipeline, VAE and ImageReward (lightweight fake tensors).
+2. Stratified prompt selection over the 6 GenEval categories.
+3. Phase-1 lookahead sampling and dual annotation (r_vanilla vs. r_RS).
+4. Phase-2 closed-form target steering (unsteered, LiDAR, RS-LiDAR).
+5. 1D directional landscape slicing and numerical secant derivatives |Df(alpha)|.
+6. Two simulated shards writing checkpoints.
+7. merge_shard_checkpoints: merging, top-5 ranking, ablation1_summary.csv,
+   ablation1_top5_divergence.csv, ablation1_metrics.json and the 5-column PNG panels.
+"""
+
+import os
+import sys
+import shutil
+import json
+import unittest
+from types import SimpleNamespace
+from PIL import Image
+import numpy as np
+import torch
+
+# Make the repository root importable
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.dirname(_current_dir)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+
+from experiments.landscape_slicing import (
+    load_stratified_prompts_per_category,
+    run_phase1_lookahead_dual_annotation,
+    run_phase2_target_steering,
+    compute_1d_landscape_profile,
+    compute_prompt_divergence_score,
+    merge_shard_checkpoints,
+    InMemoryLookaheadDataset,
+    extract_single_pil_image,
+)
+
+
+# ======================================================================================
+# MOCK COMPONENTS
+# ======================================================================================
+class MockScheduler:
+    def __init__(self):
+        self.config = {}
+
+    @classmethod
+    def from_config(cls, cfg):
+        return cls()
+
+
+class MockImageProcessor:
+    def postprocess(self, tensors, output_type="pil"):
+        # tensors: [B, 3, H, W] in [-1.0, 1.0]
+        pils = []
+        for i in range(tensors.shape[0]):
+            arr = (tensors[i].permute(1, 2, 0).detach().cpu().numpy() + 1.0) * 127.5
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+            pils.append(Image.fromarray(arr))
+        return pils
+
+
+class MockVAE:
+    def __init__(self):
+        self.config = SimpleNamespace(scaling_factor=0.18215)
+        self.dtype = torch.float32
+
+    def decode(self, latents, return_dict=False):
+        # latents: [B, 4, 64, 64] -> fake decoded [B, 3, 64, 64]
+        # Fake image whose colors depend on the latent
+        out = torch.sin(latents[:, :3, :, :]).clamp(-1.0, 1.0)
+        return (out,)
+
+
+class MockDiffusionPipeline:
+    def __init__(self):
+        self.scheduler = MockScheduler()
+        self.vae = MockVAE()
+        self.image_processor = MockImageProcessor()
+
+    def set_progress_bar_config(self, **kwargs):
+        pass
+
+    def __call__(self, prompt, num_inference_steps=5, guidance_scale=7.5, generator=None, output_type="pil", latents=None, fkd_args=None, **kwargs):
+        self.last_guidance_scale = guidance_scale
+        self.last_fkd_args = fkd_args
+        if isinstance(prompt, list):
+            b = len(prompt)
+        else:
+            b = 1
+
+        if output_type == "latent":
+            # Fake latents [B, 4, 64, 64]
+            if latents is not None:
+                imgs = latents
+            else:
+                imgs = torch.randn((b, 4, 64, 64), dtype=torch.float32)
+            return SimpleNamespace(images=imgs)
+
+        # Output PIL images
+        pils = []
+        for i in range(b):
+            # Different colors per branch (unsteered vs. LiDAR vs. RS-LiDAR)
+            if fkd_args is None or fkd_args.get("scale", 0.0) == 0.0:
+                color = (120, 120, 180)  # unsteered (light blue)
+            elif "vanilla" in str(fkd_args.get("rag_dataset", "")).lower() or fkd_args.get("lmbda", 0) > 0 and not getattr(fkd_args.get("rag_dataset"), "is_rs", False):
+                color = (220, 60, 60)    # LiDAR (red)
+            else:
+                color = (40, 180, 140)   # RS-LiDAR (teal)
+            pils.append(Image.new("RGB", (64, 64), color=color))
+
+        # Like FKDStableDiffusion, return tuple([StableDiffusionPipelineOutput(...)])
+        if fkd_args is not None:
+            return tuple([SimpleNamespace(images=pils)])
+
+        return SimpleNamespace(images=pils)
+
+
+class MockImageRewardModel:
+    def score(self, prompt, pil_image):
+        if not isinstance(pil_image, Image.Image):
+            raise TypeError(f"ImageReward scoring requires PIL.Image or str, got {type(pil_image)}")
+        # Fake score from the mean brightness and a prompt hash
+        arr = np.array(pil_image, dtype=np.float32) / 255.0
+        mean_val = float(np.mean(arr))
+        # Simulate a reward with local spikes for some prompts
+        p_hash = sum(ord(c) for c in str(prompt)) % 10
+        spike = 1.2 if (p_hash % 2 == 1 and mean_val > 0.5) else 0.0
+        return float(mean_val * 2.0 - 0.5 + spike)
+
+
+# ======================================================================================
+# TEST CASES
+# ======================================================================================
+class TestAblation1Mock(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = os.path.join(_current_dir, "results", "test_ablation1_mock_output")
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+        os.makedirs(self.test_dir, exist_ok=True)
+
+        self.mock_pipe = MockDiffusionPipeline()
+        self.mock_vae = self.mock_pipe.vae
+        self.mock_ir = MockImageRewardModel()
+
+    def tearDown(self):
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+
+    def test_01_load_stratified_prompts_per_category(self):
+        """Stratified selection over the 6 GenEval categories."""
+        # 1 prompt per category -> 6 prompts
+        prompts_1 = load_stratified_prompts_per_category(
+            prompt_path="prompt_files/geneval_metadata.jsonl",
+            prompts_per_category=1
+        )
+        self.assertEqual(len(prompts_1), 6)
+        cats_1 = {p["tag"] for p in prompts_1}
+        self.assertEqual(len(cats_1), 6)
+
+        # 2 prompts per category -> 12 prompts
+        prompts_2 = load_stratified_prompts_per_category(
+            prompt_path="prompt_files/geneval_metadata.jsonl",
+            prompts_per_category=2
+        )
+        self.assertEqual(len(prompts_2), 12)
+        for p in prompts_2:
+            self.assertIn("prompt", p)
+            self.assertIn("original_idx", p)
+            self.assertIn("tag", p)
+
+    def test_02_phase1_lookahead_dual_annotation(self):
+        """Phase 1 generates lookahead latents and scores them with r_vanilla and r_RS."""
+        prompt = "three apples on a wooden table"
+        real_idx = 4
+        num_lookahead = 10  # few particles for a fast test
+
+        ds_vanilla, ds_rs, stats = run_phase1_lookahead_dual_annotation(
+            pipe=self.mock_pipe,
+            vae=self.mock_vae,
+            ir_model=self.mock_ir,
+            prompt=prompt,
+            real_idx=real_idx,
+            num_particles=num_lookahead,
+            guidance_steps=3,
+            sigma=1.0,
+            mc_samples=3,
+            use_crn=True,
+            seed=42,
+            device="cpu"
+        )
+
+        self.assertIn(real_idx, ds_vanilla.data)
+        self.assertIn(real_idx, ds_rs.data)
+        self.assertEqual(ds_vanilla.data[real_idx]["latents"].shape, (num_lookahead, 4, 64, 64))
+        self.assertEqual(len(ds_vanilla.data[real_idx]["rewards"]), num_lookahead)
+        self.assertEqual(len(ds_rs.data[real_idx]["rewards"]), num_lookahead)
+        self.assertIn("r_vanilla_mean", stats)
+        self.assertIn("r_rs_mean", stats)
+
+    def test_03_phase2_target_steering(self):
+        """Phase 2 produces the three branches (unsteered, LiDAR, RS-LiDAR) from the same seed."""
+        prompt = "a red sports car"
+        real_idx = 6
+
+        # Dummy datasets
+        ds_v = InMemoryLookaheadDataset()
+        ds_v.set_datapoint(real_idx, torch.randn(10, 4, 64, 64), torch.ones(10) * 0.5, [prompt]*10)
+        ds_rs = InMemoryLookaheadDataset()
+        ds_rs.is_rs = True
+        ds_rs.set_datapoint(real_idx, torch.randn(10, 4, 64, 64), torch.ones(10) * 0.8, [prompt]*10)
+
+        p2_res = run_phase2_target_steering(
+            pipe=self.mock_pipe,
+            prompt=prompt,
+            real_idx=real_idx,
+            ds_vanilla=ds_v,
+            ds_rs=ds_rs,
+            ir_model=self.mock_ir,
+            guidance_scale=12.5,
+            target_steps=10,
+            seed=42,
+            device="cpu"
+        )
+
+        self.assertIn("img_unsteered", p2_res)
+        self.assertIn("img_vanilla", p2_res)
+        self.assertIn("img_rs", p2_res)
+        self.assertIn("r_vanilla", p2_res)
+        self.assertIn("r_rs", p2_res)
+        self.assertIn("delta_r", p2_res)
+        self.assertIsInstance(p2_res["img_unsteered"], Image.Image)
+        self.assertIsInstance(p2_res["img_vanilla"], Image.Image)
+        self.assertIsInstance(p2_res["img_rs"], Image.Image)
+
+        # Text CFG = 12.5 and particle guidance scale = 12.5 are passed through
+        self.assertEqual(self.mock_pipe.last_guidance_scale, 12.5)
+        self.assertIsNotNone(self.mock_pipe.last_fkd_args)
+        self.assertEqual(self.mock_pipe.last_fkd_args["scale"], 12.5)
+
+    def test_03b_extract_single_pil_image_unwrapping(self):
+        """extract_single_pil_image unwraps every nested diffusers output format."""
+        base_img = Image.new("RGB", (32, 32), color=(100, 150, 200))
+
+        # 1. Tuple of PipelineOutput (FKDStableDiffusion return format)
+        nested_tuple = tuple([SimpleNamespace(images=[base_img])])
+        self.assertIsInstance(extract_single_pil_image(nested_tuple), Image.Image)
+
+        # 2. PipelineOutput
+        pipe_out = SimpleNamespace(images=[base_img])
+        self.assertIsInstance(extract_single_pil_image(pipe_out), Image.Image)
+
+        # 3. List of PIL
+        self.assertIsInstance(extract_single_pil_image([base_img]), Image.Image)
+
+        # 4. Pure PIL
+        self.assertIsInstance(extract_single_pil_image(base_img), Image.Image)
+
+        # 5. Tensor [-1, 1]
+        dummy_tensor = torch.zeros(1, 3, 32, 32)
+        self.assertIsInstance(extract_single_pil_image(dummy_tensor), Image.Image)
+
+        # 6. NumPy array
+        dummy_arr = np.zeros((32, 32, 3), dtype=np.uint8)
+        self.assertIsInstance(extract_single_pil_image(dummy_arr), Image.Image)
+
+    def test_04_compute_1d_landscape_slicing(self):
+        """1D slicing along the difference vector and numerical secant derivatives."""
+        img_v = Image.new("RGB", (64, 64), color=(200, 50, 50))
+        img_rs = Image.new("RGB", (64, 64), color=(50, 180, 120))
+        prompt = "a cat under a wooden chair"
+
+        slicing = compute_1d_landscape_profile(
+            img_vanilla=img_v,
+            img_rs=img_rs,
+            prompt=prompt,
+            ir_model=self.mock_ir,
+            slicing_points=11,  # few points for a fast test
+            alpha_max=0.2,
+            slicing_sigma=1.0,
+            mc_samples=2,
+            device="cpu"
+        )
+
+        self.assertEqual(len(slicing["alphas"]), 11)
+        self.assertEqual(len(slicing["curve_vanilla"]), 11)
+        self.assertEqual(len(slicing["curve_rs"]), 11)
+        self.assertEqual(len(slicing["deriv_vanilla"]), 10)
+        self.assertEqual(len(slicing["deriv_rs"]), 10)
+        self.assertGreaterEqual(slicing["l_max_vanilla"], 0.0)
+        self.assertGreaterEqual(slicing["l_max_rs"], 0.0)
+        self.assertGreater(slicing["theoretical_bound"], 0.0)
+
+    def test_05_sharding_and_merge_end_to_end(self):
+        """Two simulated shards: checkpoints, merge, CSV, JSON and PNG outputs."""
+        # Six representative prompts
+        test_prompts = [
+            {"original_idx": 0, "tag": "single_object", "prompt": "a photo of a bench"},
+            {"original_idx": 2, "tag": "two_object", "prompt": "a photo of a bench and a horse"},
+            {"original_idx": 4, "tag": "counting", "prompt": "three apples on a wooden table"},
+            {"original_idx": 6, "tag": "colors", "prompt": "a red sports car"},
+            {"original_idx": 8, "tag": "position", "prompt": "a laptop on top of a desk"},
+            {"original_idx": 10, "tag": "color_attr", "prompt": "a red dog and a blue cat"},
+        ]
+
+        images_dir = os.path.join(self.test_dir, "images")
+        os.makedirs(images_dir, exist_ok=True)
+
+        records_shard0 = []
+        records_shard1 = []
+
+        for idx, item in enumerate(test_prompts):
+            p_id = item["original_idx"]
+            p_text = item["prompt"]
+            cat = item["tag"]
+
+            # Write fake images to disk
+            un_path = os.path.join(images_dir, f"{p_id:05d}_unsteered.png")
+            vl_path = os.path.join(images_dir, f"{p_id:05d}_vanilla.png")
+            rs_path = os.path.join(images_dir, f"{p_id:05d}_rs.png")
+            Image.new("RGB", (64, 64), color=(120, 120, 180)).save(un_path)
+            Image.new("RGB", (64, 64), color=(220, 60, 60)).save(vl_path)
+            Image.new("RGB", (64, 64), color=(40, 180, 140)).save(rs_path)
+
+            alphas = np.linspace(-0.2, 0.2, 11).tolist()
+            cv = [float(0.5 + 0.1 * np.sin(i * 1.5)) for i in range(11)]
+            crs = [float(0.7 + 0.02 * i) for i in range(11)]
+            lv = float(np.max(np.abs(np.diff(cv) / 0.04)))
+            lrs = float(np.max(np.abs(np.diff(crs) / 0.04)))
+
+            div_score = compute_prompt_divergence_score(
+                delta_r=0.2,
+                l_max_vanilla=lv,
+                l_max_rs=lrs,
+                dist_l2=5.0
+            )
+
+            rec = {
+                "original_idx": p_id,
+                "prompt_idx": p_id,
+                "category": cat,
+                "prompt": p_text,
+                "r_unsteered": 0.35,
+                "r_vanilla": 0.50,
+                "r_rs": 0.70,
+                "delta_r": 0.20,
+                "img_unsteered_path": un_path,
+                "img_vanilla_path": vl_path,
+                "img_rs_path": rs_path,
+                "dist_l2": 5.0,
+                "l_max_vanilla": lv,
+                "l_max_rs": lrs,
+                "l_reduction_ratio": lv / (lrs + 1e-6),
+                "divergence_score": div_score,
+                "slicing": {
+                    "alphas": alphas,
+                    "curve_vanilla": cv,
+                    "curve_rs": crs,
+                    "theoretical_bound": 1.2
+                }
+            }
+
+            if idx % 2 == 0:
+                records_shard0.append(rec)
+            else:
+                records_shard1.append(rec)
+
+        # Shard 0 checkpoint
+        ckpt0_path = os.path.join(self.test_dir, "checkpoint_ablation1_shard_0.json")
+        with open(ckpt0_path, "w", encoding="utf-8") as f:
+            json.dump({"shard_id": 0, "records": records_shard0}, f, indent=2)
+
+        # Shard 1 checkpoint
+        ckpt1_path = os.path.join(self.test_dir, "checkpoint_ablation1_shard_1.json")
+        with open(ckpt1_path, "w", encoding="utf-8") as f:
+            json.dump({"shard_id": 1, "records": records_shard1}, f, indent=2)
+
+        # Merge shard checkpoints
+        merge_shard_checkpoints(self.test_dir)
+
+        # Output files
+        summary_csv = os.path.join(self.test_dir, "ablation1_summary.csv")
+        top5_csv = os.path.join(self.test_dir, "ablation1_top5_divergence.csv")
+        rescue_csv = os.path.join(self.test_dir, "ablation1_top5_rescue.csv")
+        smooth_csv = os.path.join(self.test_dir, "ablation1_top5_smoothness.csv")
+        metrics_json = os.path.join(self.test_dir, "ablation1_metrics.json")
+        panel_png = os.path.join(self.test_dir, "ablation1_top5_divergence_panel.png")
+        rescue_png = os.path.join(self.test_dir, "ablation1_top5_rescue_panel.png")
+        smooth_png = os.path.join(self.test_dir, "ablation1_top5_smoothness_panel.png")
+        curves_png = os.path.join(self.test_dir, "ablation1_landscape_1d_curves.png")
+
+        self.assertTrue(os.path.exists(summary_csv), "Missing ablation1_summary.csv")
+        self.assertTrue(os.path.exists(top5_csv), "Missing ablation1_top5_divergence.csv")
+        self.assertTrue(os.path.exists(rescue_csv), "Missing ablation1_top5_rescue.csv")
+        self.assertTrue(os.path.exists(smooth_csv), "Missing ablation1_top5_smoothness.csv")
+        self.assertTrue(os.path.exists(metrics_json), "Missing ablation1_metrics.json")
+        self.assertTrue(os.path.exists(panel_png), "Missing ablation1_top5_divergence_panel.png")
+        self.assertTrue(os.path.exists(rescue_png), "Missing ablation1_top5_rescue_panel.png")
+        self.assertTrue(os.path.exists(smooth_png), "Missing ablation1_top5_smoothness_panel.png")
+        self.assertTrue(os.path.exists(curves_png), "Missing ablation1_landscape_1d_curves.png")
+
+        # The *_top5_* files are backward-compatible aliases of the top-k outputs (default top_k=10),
+        # so they hold min(top_k, number of prompts) ranked rows
+        with open(top5_csv, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        self.assertEqual(len(lines), 1 + min(10, len(test_prompts)))  # header + ranked rows
+
+        # PNG files are not empty
+        self.assertGreater(os.path.getsize(panel_png), 1000)
+        self.assertGreater(os.path.getsize(rescue_png), 1000)
+        self.assertGreater(os.path.getsize(smooth_png), 1000)
+        self.assertGreater(os.path.getsize(curves_png), 1000)
+
+    def test_06_bounded_rescue_divergence_ranking(self):
+        """Ranking: failure-rescue index vs. smoothness index."""
+        from experiments.landscape_slicing import compute_prompt_rescue_score, compute_prompt_smoothness_score
+
+        # Case 1: prompt 80 (failure rescue: LiDAR falls below unsteered, RS-LiDAR recovers strongly)
+        # R_un = -0.328, R_v = -1.660, R_rs = +1.849, dR = +3.509, dist_l2 = 81.3, Lv = 20.47, Lrs = 1.03
+        score_rescue_80 = compute_prompt_rescue_score(
+            delta_r=3.509,
+            r_unsteered=-0.328,
+            r_vanilla=-1.660,
+            l_max_vanilla=20.47,
+            l_max_rs=1.03,
+            dist_l2=81.3,
+            tau_dist=500.0
+        )
+
+        # Case 2: prompt 260 (near-identical images, dR ~ 0.005, dist_l2 = 40.8, Lv = 1.43, Lrs = 0.03)
+        score_rescue_260 = compute_prompt_rescue_score(
+            delta_r=0.006,
+            r_unsteered=1.642,
+            r_vanilla=1.678,
+            l_max_vanilla=1.43,
+            l_max_rs=0.03,
+            dist_l2=40.8,
+            tau_dist=500.0
+        )
+
+        # Case 3: prompt 454 (RS-LiDAR below LiDAR, dR = -0.34)
+        score_rescue_454 = compute_prompt_rescue_score(
+            delta_r=-0.34,
+            r_unsteered=-1.037,
+            r_vanilla=-0.469,
+            l_max_vanilla=2.16,
+            l_max_rs=0.05,
+            dist_l2=77.0,
+            tau_dist=500.0
+        )
+
+        # The rescue score must rank prompt 80 above 260, and 260 above 454
+        self.assertGreater(score_rescue_80, score_rescue_260, "Prompt 80 (failure rescue) should outrank prompt 260")
+        self.assertGreater(score_rescue_260, score_rescue_454, "Prompt 260 should outrank prompt 454, where RS-LiDAR lowers the reward")
+
+        # The smoothness score rewards the Lipschitz reduction ratio (prompt 260: 48.98x)
+        score_smooth_260 = compute_prompt_smoothness_score(delta_r=0.006, l_max_vanilla=1.43, l_max_rs=0.03)
+        self.assertGreater(score_smooth_260, 2.5, "Prompt 260 should have a high smoothness score (48.98x slope reduction)")
+
+
+if __name__ == "__main__":
+    unittest.main()

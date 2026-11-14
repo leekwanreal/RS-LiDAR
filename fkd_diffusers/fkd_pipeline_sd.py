@@ -11,15 +11,34 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Stable Diffusion 1.5 pipeline with LiDAR closed-form lookahead guidance and FK / RS-SMC steering.
+
+Adapted from diffusers' `StableDiffusionPipeline`. `get_sample_guide` implements the closed-form
+lookahead guidance; `fkd_args` (built by `LiDAR_sampling.py`) switches on guidance (`use_rag`) and
+particle resampling (`use_smc`, see `fkd_class.FKD`).
+"""
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Union
 
-# Added for FK Steering
-from fkd_class import FKD
-from rewards import get_reward_function
-
 import torch
-from packaging import version
+import torch.nn.functional as F
+from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
+from diffusers.image_processor import PipelineImageInput
+from diffusers.loaders import (
+    FromSingleFileMixin,
+    IPAdapterMixin,
+    StableDiffusionLoraLoaderMixin,
+    TextualInversionLoaderMixin,
+)
+from diffusers.models import AutoencoderKL, UNet2DConditionModel
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
+from diffusers.pipelines.stable_diffusion import (
+    StableDiffusionPipeline,
+    StableDiffusionPipelineOutput,
+    StableDiffusionSafetyChecker,
+)
+from diffusers.schedulers import KarrasDiffusionSchedulers
+from diffusers.utils import deprecate, logging
 from transformers import (
     CLIPImageProcessor,
     CLIPTextModel,
@@ -27,36 +46,8 @@ from transformers import (
     CLIPVisionModelWithProjection,
 )
 
-from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
-from diffusers.configuration_utils import FrozenDict
-from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
-from diffusers.loaders import (
-    FromSingleFileMixin,
-    IPAdapterMixin,
-    StableDiffusionLoraLoaderMixin,
-    TextualInversionLoaderMixin,
-)
-from diffusers.models import AutoencoderKL, ImageProjection, UNet2DConditionModel
-from diffusers.models.lora import adjust_lora_scale_text_encoder
-from diffusers.schedulers import KarrasDiffusionSchedulers
-from diffusers.utils import (
-    USE_PEFT_BACKEND,
-    deprecate,
-    logging,
-    replace_example_docstring,
-    scale_lora_layers,
-    unscale_lora_layers,
-)
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
-from diffusers.pipelines.stable_diffusion import StableDiffusionPipelineOutput
-from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
-from diffusers.pipelines.stable_diffusion import (
-    StableDiffusionPipeline,
-    StableDiffusionPipelineOutput,
-)
-
-import torch.nn.functional as F
-import math
+from fkd_class import FKD
+from rewards import get_reward_function
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -225,87 +216,23 @@ class FKDStableDiffusion(
             requires_safety_checker=requires_safety_checker,
         )
 
-    ## YM-edit
-    def encode_retrival(self,
-                        prompt,
-                        device,
-                        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
-                        ):
-        lora_scale = (
-            cross_attention_kwargs.get("scale", None)
-            if cross_attention_kwargs is not None
-            else None
-        )
-
-        if lora_scale is not None and isinstance(self, StableDiffusionLoraLoaderMixin):
-            self._lora_scale = lora_scale
-            # dynamically adjust the LoRA scale
-            if not USE_PEFT_BACKEND:
-                adjust_lora_scale_text_encoder(self.text_encoder, lora_scale)
-            else:
-                scale_lora_layers(self.text_encoder, lora_scale)
-
-        if isinstance(self, TextualInversionLoaderMixin):
-            prompt = self.maybe_convert_prompt(prompt, self.tokenizer)
-
-        text_inputs = self.tokenizer(
-            prompt,
-            padding="max_length",
-            max_length=self.tokenizer.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-        text_input_ids = text_inputs.input_ids
-        untruncated_ids = self.tokenizer(prompt, padding="longest", return_tensors="pt").input_ids
-
-        if untruncated_ids.shape[-1] >= text_input_ids.shape[-1] and not torch.equal(
-                text_input_ids, untruncated_ids
-        ):
-            removed_text = self.tokenizer.batch_decode(
-                untruncated_ids[:, self.tokenizer.model_max_length - 1: -1]
-            )
-            logger.warning(
-                "The following part of your input was truncated because CLIP can only handle sequences up to"
-                f" {self.tokenizer.model_max_length} tokens: {removed_text}"
-            )
-
-        if hasattr(self.text_encoder.config, "use_attention_mask") and self.text_encoder.config.use_attention_mask:
-            attention_mask = text_inputs.attention_mask.to(device)
-        else:
-            attention_mask = None
-
-        out = self.text_encoder(
-            text_input_ids.to(device),
-            attention_mask=attention_mask,
-            return_dict=True
-        )
-
-        emb = out.pooler_output  # (1, 768)
-        ret_emb = emb / emb.norm(dim=-1, keepdim=True)
-
-        if self.text_encoder is not None:
-            if isinstance(self, StableDiffusionLoraLoaderMixin) and USE_PEFT_BACKEND:
-                # Retrieve the original scale by scaling back the LoRA layers
-                unscale_lora_layers(self.text_encoder, lora_scale)
-
-        return ret_emb.squeeze()
-
-
     def get_sample_guide(self, subset, t, latents, lamda):
-        """
-        latents: (B, 4, 64, 64)
-        subset["latents"][0]: (K=256, 4, 64, 64)
-        subset["rewards"][0]: (K,)
-        """
+        """Closed-form LiDAR guidance term for the noise prediction at timestep t.
 
+        With lookahead latents z_k (K of them) and rewards r_k of the current prompt:
+            potential_k = -||x_t - sqrt(abar_t) z_k||^2 / (2 (1 - abar_t)),
+            w = softmax(potential),  w_r = softmax(lamda * r + potential),
+            guide = sqrt(abar_t) / (1 - abar_t) * sum_k (w_r,k - w_k) z_k,
+        i.e. the change of the posterior-mean score when the lookahead pool is tilted by exp(lamda * r).
+        The caller subtracts sqrt(1 - abar_t) * scale * guide from the predicted noise.
+
+        latents: (B, 4, 64, 64); subset["latents"][0]: (K, 4, 64, 64); subset["rewards"][0]: (K,).
+        Returns the guide in float16.
+        """
         device = latents.device
         alpha_prod_t = self.scheduler.alphas_cumprod[t]
 
-        B = latents.shape[0]
         K = subset["latents"][0].shape[0]
-        # --------------------------------------------------
-        # reshape for broadcasting
-        # --------------------------------------------------
         latents = latents.unsqueeze(1)  # (B, 1, 4, 64, 64)
         lookahead_latents = subset["latents"][0].to(device)  # (K, 4, 64, 64)
         if lookahead_latents.shape[-1] != latents.shape[-1] or lookahead_latents.shape[-2] != latents.shape[-2]:
@@ -315,55 +242,16 @@ class FKDStableDiffusion(
                 f"but lookahead latents are {lookahead_latents.shape[-2]}x{lookahead_latents.shape[-1]}."
             )
         lookahead_latents = lookahead_latents.unsqueeze(0)  # (1, K, 4, 64, 64)
-        # --------------------------------------------------
-        # potential: (B, K)
-        # --------------------------------------------------
+
+        # Gaussian potential of x_t under each lookahead sample: (B, K)
         potential = - (latents.float() - (alpha_prod_t ** 0.5) * lookahead_latents) ** 2
         potential = potential / (2 * (1 - alpha_prod_t))
-        potential = potential.sum(dim=(2, 3, 4))  # (B, K)
-        # --------------------------------------------------
-        # weights
-        # --------------------------------------------------
-        if "rewards_high" in subset and "rewards_low" in subset:
-            r_high = subset["rewards_high"][0].to(device).float().view(1, K)
-            r_low = subset["rewards_low"][0].to(device).float().view(1, K)
-            alpha_prod_0 = self.scheduler.alphas_cumprod[0].to(device) if len(self.scheduler.alphas_cumprod) > 0 else 1.0
-            rho_t = torch.clamp(alpha_prod_t / (alpha_prod_0 + 1e-8), 1e-4, 1.0)
-            rewards = (1.0 - rho_t ** 2) * r_low + (rho_t ** 2) * r_high
-        else:
-            rewards = subset["rewards"][0].to(device).float()  # (K,)
-            rewards = rewards.view(1, K)  # (1, K)
+        potential = potential.sum(dim=(2, 3, 4))
+
+        rewards = subset["rewards"][0].to(device).float().view(1, K)  # (1, K)
 
         w = F.softmax(potential, dim=1)  # (B, K)
         w_r = F.softmax((lamda * rewards + potential), dim=1)  # (B, K)
-
-        # Extract Lookahead Prospective Potential and dominant seed for Doob-Tweedie Innovation Residual
-        self._last_v_lidar = (w_r * rewards).sum(dim=1)  # (B,)
-        dominant_indices = torch.argmax(w_r, dim=1)  # (B,)
-        raw_seeds = subset.get("seeds", None)
-        seeds_list = None
-        if raw_seeds is not None:
-            if isinstance(raw_seeds, (list, tuple)) and len(raw_seeds) > 0:
-                candidate = raw_seeds[0]
-                if isinstance(candidate, (list, tuple)):
-                    seeds_list = candidate
-                elif isinstance(candidate, (int, float, torch.Tensor)):
-                    seeds_list = raw_seeds
-            elif isinstance(raw_seeds, torch.Tensor):
-                seeds_list = raw_seeds.tolist()
-
-        if seeds_list is not None and len(seeds_list) > 0:
-            extracted_seeds = []
-            for idx in dominant_indices:
-                i_val = idx.item() if hasattr(idx, "item") else int(idx)
-                if 0 <= i_val < len(seeds_list) and seeds_list[i_val] is not None:
-                    s_val = seeds_list[i_val]
-                    extracted_seeds.append(int(s_val.item() if hasattr(s_val, "item") else s_val))
-                else:
-                    extracted_seeds.append(None)
-            self._last_dominant_seeds = extracted_seeds if any(s is not None for s in extracted_seeds) else None
-        else:
-            self._last_dominant_seeds = None
 
         delta_w = (w_r - w)[..., None, None, None]
         guide = delta_w * lookahead_latents
@@ -371,8 +259,6 @@ class FKDStableDiffusion(
         guide = guide.sum(dim=1).half()  # (B, 4, 64, 64)
 
         return guide
-
-
 
     @torch.no_grad()
     def __call__(
@@ -445,7 +331,7 @@ class FKDStableDiffusion(
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             eta (`float`, *optional*, defaults to 0.0):
-                Corresponds to parameter eta (η) from the [DDIM](https://arxiv.org/abs/2010.02502) paper. Only applies
+                Corresponds to parameter eta from the [DDIM](https://arxiv.org/abs/2010.02502) paper. Only applies
                 to the [`~schedulers.DDIMScheduler`], and is ignored in other schedulers.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
                 A [`torch.Generator`](https://pytorch.org/docs/stable/generated/torch.Generator.html) to make
@@ -562,22 +448,17 @@ class FKDStableDiffusion(
             else None
         )
 
-        ## YM (Encode prompt for retrival)
-        # ret_emb = self.encode_retrival(prompt, device)
-
         prompt_embeds, negative_prompt_embeds = self.encode_prompt(
             prompt,
             device,
             num_images_per_prompt,
             self.do_classifier_free_guidance,
             negative_prompt,
-            prompt_embeds=prompt_embeds,  ## None
+            prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
             lora_scale=lora_scale,
-            clip_skip=self.clip_skip,  # None
+            clip_skip=self.clip_skip,
         )
-        # print("prompt_embeds:", prompt_embeds.shape) #torch.Size([1, 77, 768])
-        # print("negative_prompt_embeds:", negative_prompt_embeds.shape) #torch.Size([1, 77, 768])
 
         # For classifier free guidance, we need to do two forward passes.
         # Here we concatenate the unconditional and text embeddings into a single batch
@@ -632,7 +513,6 @@ class FKDStableDiffusion(
                 guidance_scale_tensor, embedding_dim=self.unet.config.time_cond_proj_dim
             ).to(device=device, dtype=latents.dtype)
 
-        # Added for FK Steering
         def postprocess_and_apply_reward_fn(x):
             # convert to pil image
             imagesx = self.image_processor.postprocess(x, output_type=output_type)
@@ -645,21 +525,6 @@ class FKDStableDiffusion(
             )
             return torch.tensor(rewards).to(x.device)
 
-        # YM-edit
-        def postprocess_and_apply_reward_fn_grad(x):
-            # convert to pil image
-            imagesx = x
-            rewards = get_reward_function(
-                fkd_args["guidance_reward_fn"],
-                images=imagesx,
-                prompts=prompt,
-                metric_to_chase=fkd_args.get("metric_to_chase", None),
-                diff=True
-            )
-
-            return rewards
-
-        print('Args:', fkd_args)
         if fkd_args is not None and fkd_args['use_smc']:
             fkd = FKD(
                 latent_to_decode_fn=lambda x: latent_to_decode(
@@ -669,11 +534,6 @@ class FKDStableDiffusion(
                 scheduler=self.scheduler,
                 **fkd_args,
             )
-
-        ## YM edit
-        if fkd_args is not None and fkd_args['use_grad']:
-            self.latent_to_decode_fn = lambda x: latent_to_decode(model=self, output_type=output_type, latents=x)
-            self.reward_fn = postprocess_and_apply_reward_fn_grad
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -690,36 +550,7 @@ class FKDStableDiffusion(
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     continue
-                if fkd_args is not None and fkd_args["use_grad"] and i % fkd_args["grad_frequency"] == 0:
-                    latents = latents.detach().requires_grad_(True)  # torch.Size([1, 4, 64, 64])
-                    with torch.set_grad_enabled(True):
-                        latent_model_input = torch.cat([latents] * 2)
-                        latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
-                        # predict the noise residual
-                        noise_pred = self.unet(
-                            latent_model_input,
-                            t,
-                            encoder_hidden_states=prompt_embeds,
-                            timestep_cond=timestep_cond,
-                            cross_attention_kwargs=self.cross_attention_kwargs,
-                            added_cond_kwargs=added_cond_kwargs,
-                            return_dict=False,
-                        )[0]
-
-                        if self.do_classifier_free_guidance:
-                            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                            noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                        alpha_prod_t = self.scheduler.alphas_cumprod[t]
-                        beta_prod_t = 1 - alpha_prod_t
-                        x0_preds = (latents - beta_prod_t ** (0.5) * noise_pred) / alpha_prod_t ** (0.5)  # torch.Size([B, 4, 64, 64])
-                        images_preds = self.latent_to_decode_fn(x0_preds)  # torch.Size([B, 3, 512, 512])
-                        reward_score = self.reward_fn(images_preds)
-                        reward_grad = torch.autograd.grad(reward_score.sum(), latents)[0]  # torch.Size([B, 4, 64, 64])
-                    noise_pred = noise_pred - fkd_args["lmbda"] * beta_prod_t ** (0.5) * reward_grad
-                    step_dict = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=True)
-
-                elif fkd_args is not None and fkd_args["use_rag"]:
+                if fkd_args is not None and fkd_args["use_rag"]:
                     latent_model_input = (
                         torch.cat([latents] * 2)
                         if self.do_classifier_free_guidance
@@ -750,7 +581,6 @@ class FKDStableDiffusion(
                         reward_grad = self.get_sample_guide(subset, t, latents, fkd_args["lmbda"])
                         noise_pred = noise_pred - (1 - alpha_prod_t) ** (0.5) * reward_grad * fkd_args["scale"]
 
-
                     if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
                         # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
                         noise_pred = rescale_noise_cfg(
@@ -763,7 +593,7 @@ class FKDStableDiffusion(
                         noise_pred, t, latents, **extra_step_kwargs, return_dict=True
                     )
 
-                else:  ## Original
+                else:
                     # expand the latents if we are doing classifier free guidance
                     latent_model_input = (
                         torch.cat([latents] * 2)
@@ -803,21 +633,11 @@ class FKDStableDiffusion(
                         noise_pred, t, latents, **extra_step_kwargs, return_dict=True
                     )
 
-                # FK Steering Change
                 latents = step_dict["prev_sample"]
                 x0_preds = step_dict["pred_original_sample"]
 
-                # FK Steering Change
                 if fkd_args is not None and fkd_args["use_smc"]:
-                    v_lidar_val = getattr(self, "_last_v_lidar", None)
-                    dominant_seeds = getattr(self, "_last_dominant_seeds", None)
-                    latents, _ = fkd.resample(
-                        sampling_idx=i,
-                        latents=latents,
-                        x0_preds=x0_preds,
-                        v_lidar=v_lidar_val,
-                        seed_int=dominant_seeds,
-                    )
+                    latents, _ = fkd.resample(sampling_idx=i, latents=latents, x0_preds=x0_preds)
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -872,15 +692,8 @@ class FKDStableDiffusion(
         return tuple(res)
 
 
-# FK Steering Change
 def latent_to_decode(*, model, output_type, latents):
     if not output_type == "latent":
-        # # make sure the VAE is in float32 mode, as it overflows in float16
-        # needs_upcasting = model.vae.dtype == torch.float16 and model.vae.config.force_upcast
-
-        # if needs_upcasting:
-        #     model.upcast_vae()
-        #     latents = latents.to(next(iter(model.vae.post_quant_conv.parameters())).dtype)
         if latents.dtype != model.vae.dtype:
             if torch.backends.mps.is_available():
                 # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272

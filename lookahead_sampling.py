@@ -1,96 +1,71 @@
-# primary generation script
-import os
-os.environ["USE_TF"] = "0"
-os.environ["USE_TORCH"] = "1"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+"""Phase 1 of LiDAR / RS-LiDAR: sample a pool of lookahead particles and score them.
 
+For every prompt, N lookahead latents are drawn with a few-step solver, decoded and scored. Each
+prompt folder stores `samples/latent.pt` (latents sorted by reward) and `results.json`
+(`<metric>.result` per particle); Phase 2 (`LiDAR_sampling.py`) loads them as the dataset of the
+closed-form lookahead guidance.
+
+With `--use_smoothing` the stored reward is the randomized-smoothing estimate of RS-LiDAR,
+
+    R_sigma(x) = (1/M) * sum_m R(clip(D(x) + sigma * u_m, -1, 1)),
+
+computed in decoded pixel space D(x). `mc_rewards_loop` evaluates the [M, N] matrix of rewards
+of the noisy decodings, with u_m drawn according to `--noise_mode` (I.I.D., Coupled CRN shared
+across particles, or antithetic pairs (u, -u)). `compute_entropic_antithetic_rewards` aggregates
+it into the Monte Carlo mean, or the entropic-risk corrected mean when `--beta_risk > 0`.
+"""
+import argparse
 import json
 import math
+import os
+import pickle
+import sys
+from datetime import datetime
+from typing import Callable, Dict, List, Optional, Tuple
+
+import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from PIL import Image
 from tqdm import tqdm
 
-import matplotlib.pyplot as plt
-import argparse
-from datetime import datetime
-import torch
-import sys
-import types
-import importlib.machinery
-if "wandb" not in sys.modules:
-    try:
-        import wandb
-    except Exception:
-        _mock_wandb = types.ModuleType("wandb")
-        _mock_wandb.__spec__ = importlib.machinery.ModuleSpec("wandb", None)
-        _mock_wandb.__file__ = "wandb"
-        sys.modules["wandb"] = _mock_wandb
+from rslidar_utils import load_geneval_metadata, parse_prompt_indices, setup_runtime, str2bool
 
-# Universal compatibility patch for transformers, diffusers, peft, protobuf, and ImageReward
-try:
-    import google.protobuf
-    if not hasattr(google.protobuf, "runtime_version"):
-        class _RuntimeVersion:
-            DOMAIN = "protobuf"
-        google.protobuf.runtime_version = _RuntimeVersion
-except Exception:
-    pass
+setup_runtime()
 
-try:
-    import transformers
-    if not hasattr(transformers, "EncoderDecoderCache"):
-        class EncoderDecoderCache:
-            pass
-        transformers.EncoderDecoderCache = EncoderDecoderCache
-except Exception:
-    pass
+from diffusers import (  # noqa: E402
+    AutoPipelineForText2Image,
+    DiffusionPipeline,
+    DPMSolverMultistepScheduler,
+    EulerDiscreteScheduler,
+    FluxPipeline,
+    LCMScheduler,
+    StableDiffusionPipeline,
+    StableDiffusionXLPipeline,
+    UNet2DConditionModel,
+)
+from huggingface_hub import hf_hub_download  # noqa: E402
+from safetensors.torch import load_file  # noqa: E402
 
-try:
-    from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
-    patch_transformers_for_imagereward()
-except Exception:
-    pass
-
-try:
-    from diffusers import (
-        DDIMScheduler, UNet2DConditionModel, DPMSolverMultistepScheduler,
-        StableDiffusionPipeline, StableDiffusionXLPipeline, DiffusionPipeline,
-        LCMScheduler, AutoPipelineForText2Image, EulerDiscreteScheduler, FluxPipeline
-    )
-    from huggingface_hub import hf_hub_download
-    from safetensors.torch import load_file
-except ImportError:
-    DDIMScheduler = UNet2DConditionModel = DPMSolverMultistepScheduler = None
-    StableDiffusionPipeline = StableDiffusionXLPipeline = DiffusionPipeline = None
-    LCMScheduler = AutoPipelineForText2Image = EulerDiscreteScheduler = FluxPipeline = None
-    hf_hub_download = load_file = None
-
-
-import sys
 sys.path.append("fkd_diffusers")
 
+from fks_utils import do_eval  # noqa: E402
 
-try:
-    from fks_utils import do_eval
-except ImportError as e:
-    import traceback
-    print(f"⚠️ Cảnh báo nạp do_eval: {e}")
-    traceback.print_exc()
-    do_eval = None
-from typing import Dict, List, Optional, Tuple
+NOISE_MODES = ["independent_iid", "independent_antithetic", "coupled_crn"]
+
 
 @torch.no_grad()
 def generate_smoothed_pixel_batch(
     images_0: torch.Tensor,
     sigma: float,
     M: int = 4,
-    noise_mode: str = "independent_antithetic",
+    noise_mode: str = "independent_iid",
     clamp_range: Optional[Tuple[float, float]] = (-1.0, 1.0),
-    **kwargs
 ) -> torch.Tensor:
-    """
-    Tạo batch nhiễu Monte Carlo tuân thủ tính đối xứng Antithetic (Theorem 5.1),
-    IID độc lập, hoặc Coupled CRN (Common Random Numbers).
+    """Vectorized smoothing batch: returns clip(images_0 + sigma * u_m) with shape [M, N, C, H, W].
+
+    `independent_antithetic` uses pairs (u, -u) (M must be even), `independent_iid` independent
+    noise per particle, and `coupled_crn` one noise draw per m shared by all N particles.
     """
     N, C, H, W = images_0.shape
     device, dtype = images_0.device, images_0.dtype
@@ -98,44 +73,60 @@ def generate_smoothed_pixel_batch(
     if sigma <= 0.0 or M <= 0:
         return images_0.unsqueeze(0).repeat(max(1, M), 1, 1, 1, 1)
 
-    if noise_mode == "stratified_harmonized":
-        assert M >= 4 and M % 2 == 0, f"M must be even and >= 4 for stratified_harmonized, got M={M}."
-        sigma_hi = kwargs.get("sigma_high", 1.0) if kwargs else 1.0
-        sigma_lo = kwargs.get("sigma_low", 0.25) if kwargs else 0.25
-        u_hi = torch.randn((1, N, C, H, W), device=device, dtype=dtype)
-        p_hi = torch.cat([u_hi, -u_hi], dim=0) * sigma_hi
-        u_lo = torch.randn((1, N, C, H, W), device=device, dtype=dtype)
-        p_lo = torch.cat([u_lo, -u_lo], dim=0) * sigma_lo
-        pert = torch.cat([p_hi, p_lo], dim=0)
-        if M > 4:
-            extra_half = (M - 4) // 2
-            u_ex = torch.randn((extra_half, N, C, H, W), device=device, dtype=dtype)
-            p_ex = torch.cat([u_ex, -u_ex], dim=0) * sigma_lo
-            pert = torch.cat([pert, p_ex], dim=0)
-        perturbed = images_0.unsqueeze(0) + pert
-        del u_hi, u_lo, pert
-        if clamp_range is not None:
-            perturbed = torch.clamp(perturbed, clamp_range[0], clamp_range[1])
-        return perturbed
-    elif noise_mode == "independent_antithetic":
-        assert M % 2 == 0, f"M phải là số chẵn cho chế độ antithetic, nhận M={M}."
+    if noise_mode == "independent_antithetic":
+        assert M % 2 == 0, f"M must be even for antithetic sampling, got M={M}."
         half_M = M // 2
         u_half = torch.randn((half_M, N, C, H, W), device=device, dtype=dtype)
         u = torch.cat([u_half, -u_half], dim=0)
     elif noise_mode == "independent_iid":
         u = torch.randn((M, N, C, H, W), device=device, dtype=dtype)
     elif noise_mode == "coupled_crn":
-        # Chế độ cũ: cùng 1 nhiễu cho toàn bộ N hạt
         u = torch.randn((M, 1, C, H, W), device=device, dtype=dtype).expand(M, N, C, H, W)
     else:
-        raise ValueError(f"Unknown noise_mode: {noise_mode}. Expected 'independent_antithetic', 'independent_iid', 'coupled_crn', or 'stratified_harmonized'.")
+        raise ValueError(f"Unknown noise_mode: {noise_mode}. Expected one of {NOISE_MODES}.")
 
-    # In-place broadcast addition to save VRAM, explicitly delete u
     perturbed = images_0.unsqueeze(0) + sigma * u
     if clamp_range is not None:
         perturbed = torch.clamp(perturbed, clamp_range[0], clamp_range[1])
     del u
     return perturbed
+
+
+def mc_rewards_loop(
+    decoded: torch.Tensor,
+    sigma: float,
+    num_mc_samples: int,
+    noise_mode: str,
+    score_fn: Callable[[torch.Tensor], Dict[str, List[float]]],
+) -> Dict[str, torch.Tensor]:
+    """Monte Carlo rewards of the smoothed reward R_sigma, one noise sample at a time (low memory).
+
+    For m = 1..M, scores `clip(decoded + sigma * u_m, -1, 1)` with `score_fn`, which maps a batch of
+    N decoded images to `{metric: [N rewards]}`. Returns `{metric: float32 tensor [M, N]}`.
+
+    Noise: antithetic pairs (u_m, -u_m) (all M/2 draws are made up front), a single draw per m shared
+    by all particles (`coupled_crn`), or independent draws (`independent_iid`, and antithetic with odd M).
+    """
+    half_m = num_mc_samples // 2
+    is_antithetic = noise_mode == "independent_antithetic" and num_mc_samples % 2 == 0
+    u_half = [torch.randn_like(decoded) for _ in range(half_m)] if is_antithetic else None
+
+    rows: Dict[str, List[List[float]]] = {}
+    for m in range(num_mc_samples):
+        if sigma > 0:
+            if noise_mode == "coupled_crn":
+                noise = torch.randn((1, *decoded.shape[1:]), device=decoded.device, dtype=decoded.dtype) * sigma
+            elif is_antithetic:
+                u_m = u_half[m] if m < half_m else -u_half[m - half_m]
+                noise = u_m * sigma
+            else:
+                noise = torch.randn_like(decoded) * sigma
+            noisy = (decoded + noise).clamp(-1.0, 1.0)
+        else:
+            noisy = decoded.clamp(-1.0, 1.0)
+        for metric, values in score_fn(noisy).items():
+            rows.setdefault(metric, []).append(values)
+    return {metric: torch.tensor(values, dtype=torch.float32) for metric, values in rows.items()}
 
 
 @torch.no_grad()
@@ -144,43 +135,17 @@ def compute_entropic_antithetic_rewards(
     sigma: float = 1.0,
     beta_risk: float = 0.0,
     noise_mode: str = "independent_iid",
-    **kwargs
 ) -> Dict[str, torch.Tensor]:
+    """Aggregate an [M, N] matrix of Monte Carlo rewards into the smoothed reward of each particle.
+
+    Returns `r_corrected` (the MC mean, minus the entropic-risk penalty `beta_risk / (2M) * Var` when
+    `beta_risk != 0`), `grad_energy_sq` and `pair_variance`. For antithetic pairs the variance is split
+    into the half-difference (gradient energy) and half-sum (curvature) terms.
     """
-    Tính toán kỳ vọng reward làm trơn (Randomized Smoothing).
-    Mặc định sử dụng I.I.D thuần túy: r_corrected = r_mean (không áp dụng beta_risk).
-    """
-    # Ép kiểu FP32 để chống tràn số / sai số
     r_fp32 = rewards_mc.to(torch.float32)
     M, N = r_fp32.shape
 
-    if noise_mode == "stratified_harmonized" and M >= 4:
-        # Pair 1 (high): [0, 1], Pair 2 (low): [2, 3]
-        r_hi_pos, r_hi_neg = r_fp32[0], r_fp32[1]
-        mean_hi = 0.5 * (r_hi_pos + r_hi_neg)
-        diff_hi = 0.5 * (r_hi_pos - r_hi_neg)
-        grad_energy_hi = diff_hi ** 2
-        r_hi_corr = mean_hi - (beta_risk / 4.0) * grad_energy_hi if beta_risk != 0.0 else mean_hi
-
-        r_lo_pos, r_lo_neg = r_fp32[2], r_fp32[3]
-        mean_lo = 0.5 * (r_lo_pos + r_lo_neg)
-        diff_lo = 0.5 * (r_lo_pos - r_lo_neg)
-        grad_energy_lo = diff_lo ** 2
-        r_lo_corr = mean_lo - (beta_risk / 4.0) * grad_energy_lo if beta_risk != 0.0 else mean_lo
-
-        r_corrected = 0.5 * (r_hi_corr + r_lo_corr)
-        grad_energy_sq = 0.5 * (grad_energy_hi + grad_energy_lo)
-        pair_var = 0.5 * (grad_energy_hi + grad_energy_lo)
-        return {
-            "r_corrected": r_corrected.to(rewards_mc.dtype),
-            "grad_energy_sq": grad_energy_sq.to(rewards_mc.dtype),
-            "pair_variance": pair_var.to(rewards_mc.dtype),
-            "r_high": r_hi_corr.to(rewards_mc.dtype),
-            "r_low": r_lo_corr.to(rewards_mc.dtype),
-        }
-
     if noise_mode != "independent_antithetic" or M % 2 != 0:
-        # Mặc định I.I.D (independent_iid) hoặc fallback chuẩn: r_corrected = r_mean
         r_mean = r_fp32.mean(dim=0)
         variance = r_fp32.var(dim=0, unbiased=True) if M > 1 else torch.zeros_like(r_mean)
         r_corrected = r_mean if beta_risk == 0.0 else (r_mean - (beta_risk / (2.0 * float(M))) * variance)
@@ -195,16 +160,15 @@ def compute_entropic_antithetic_rewards(
     r_pos = r_fp32[:half_M]
     r_neg = r_fp32[half_M:]
 
-    # Định lý 5.1: Phân rã Half-Sum và Half-Difference
+    # Half-sum / half-difference decomposition of antithetic pairs.
     pair_sums = 0.5 * (r_pos + r_neg)
     pair_diffs = 0.5 * (r_pos - r_neg)
 
     grad_energy_sq = torch.mean(pair_diffs ** 2, dim=0) / (sigma ** 2 + 1e-8)
     curv_var = pair_sums.var(dim=0, unbiased=True) if half_M >= 2 else torch.zeros_like(grad_energy_sq)
 
-    # Định lý 5.2: Phạt Donsker-Varadhan Entropic Risk (nếu beta_risk > 0, mặc định beta_risk = 0.0 không phạt)
     total_var = (sigma ** 2) * grad_energy_sq + curv_var
-    r_mean = r_fp32.mean(dim=0)  # Tương đương pair_sums.mean(dim=0)
+    r_mean = r_fp32.mean(dim=0)
     r_corrected = r_mean if beta_risk == 0.0 else (r_mean - (beta_risk / (2.0 * float(M))) * total_var)
 
     return {
@@ -214,52 +178,164 @@ def compute_entropic_antithetic_rewards(
     }
 
 
-def parse_prompt_indices(indices_arg):
-    if not indices_arg:
-        return None
-    if isinstance(indices_arg, (list, tuple)):
-        return list(indices_arg)
-    indices_str = str(indices_arg).strip()
-    if indices_str.lower() in ["stratified_100", "100_representative"]:
-        for repr_path in ["prompt_files/geneval_100_representative.json", "Diffusion-LiDAR-Sampling/prompt_files/geneval_100_representative.json"]:
-            if os.path.exists(repr_path):
-                with open(repr_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        return [0, 5, 11, 16, 21, 26, 32, 37, 42, 47, 53, 58, 63, 68, 74, 79, 80, 86, 92, 99, 105, 111, 117, 123, 130, 136, 142, 148, 154, 161, 167, 173, 178, 179, 184, 190, 195, 200, 205, 211, 216, 221, 226, 232, 237, 242, 247, 253, 258, 259, 265, 271, 277, 282, 288, 294, 300, 306, 312, 318, 323, 329, 335, 341, 347, 352, 353, 359, 365, 372, 378, 384, 390, 396, 403, 409, 415, 421, 428, 434, 440, 446, 452, 453, 459, 465, 472, 478, 484, 490, 496, 503, 509, 515, 521, 527, 533, 540, 546, 552]
-    if os.path.exists(indices_str):
-        with open(indices_str, "r", encoding="utf-8") as f:
-            return json.load(f)
-    if "-" in indices_str and "," not in indices_str:
-        parts = indices_str.split("-")
-        return list(range(int(parts[0]), int(parts[1]) + 1))
-    return [int(x.strip()) for x in indices_str.split(",") if x.strip().isdigit()]
+def _reward_summary(values: List[float]) -> dict:
+    arr = torch.tensor(values, dtype=torch.float32)
+    return {
+        "result": values,
+        "mean": arr.mean().item(),
+        "std": arr.std().item() if len(values) > 1 else 0.0,
+        "max": arr.max().item(),
+        "min": arr.min().item(),
+    }
 
-# load prompt data
-def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
-    if prompt_path.endswith(".json"):
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+
+def summarize_smoothed_rewards(multi_rewards_mc: Dict[str, torch.Tensor], args) -> dict:
+    """Turn the per-metric [M, N] Monte Carlo rewards into `results.json` entries."""
+    results = {}
+    for metric, scores_mat in multi_rewards_mc.items():
+        if args.noise_mode == "coupled_crn" and args.beta_risk == 0.0:
+            results[metric] = _reward_summary(scores_mat.mean(dim=0).tolist())
+        else:
+            stats = compute_entropic_antithetic_rewards(
+                scores_mat, sigma=args.sigma, beta_risk=args.beta_risk, noise_mode=args.noise_mode
+            )
+            results[metric] = _reward_summary(stats["r_corrected"].tolist())
+            results[metric]["grad_energy_sq"] = stats["grad_energy_sq"].tolist()
+            results[metric]["pair_variance"] = stats["pair_variance"].tolist()
+
+    if args.use_pareto and len(multi_rewards_mc) > 1:
+        # Imported lazily: multi_reward_evaluator imports this module.
+        from multi_reward_evaluator import compute_multi_reward_pareto_potential
+        pareto_pot, _ = compute_multi_reward_pareto_potential(
+            multi_rewards_mc,
+            sigma=args.sigma,
+            pareto_rho=args.pareto_rho,
+            beta_risk=args.beta_risk,
+            noise_mode=args.noise_mode,
+        )
+        results["Pareto"] = _reward_summary(pareto_pot.tolist())
+    return results
+
+
+def load_lookahead_pipeline(model_name, device):
+    """Load the few-step lookahead model used in Phase 1."""
+    if "runwayml/stable-diffusion-v1-5" in model_name:  # SD1.5, DPM-Solver
+        pipe = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=torch.float16)
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+
+    elif "mhdang/dpo" in model_name and "xl" not in model_name:  # SD1.5-DPO, DPM-Solver
+        pipe = StableDiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16)
+        pipe.unet = UNet2DConditionModel.from_pretrained(
+            "mhdang/dpo-sd1.5-text2image-v1", subfolder="unet", torch_dtype=torch.float16
+        )
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+
+    elif "stabilityai/stable-diffusion-xl-base-1.0" in model_name:  # SDXL, DPM-Solver
+        pipe = DiffusionPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, use_safetensors=True, variant="fp16"
+        )
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
+        pipe.vae.to(dtype=torch.float32)
+
+    elif "dmd2_sdxl_4step_lora_fp16.safetensors" in model_name:  # SDXL-DMD2, 4 steps
+        base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+        pipe = DiffusionPipeline.from_pretrained(base_model_id, torch_dtype=torch.float16, variant="fp16").to(device)
+        pipe.load_lora_weights(hf_hub_download("tianweiy/DMD2", "dmd2_sdxl_4step_lora_fp16.safetensors"))
+        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+        pipe.fuse_lora(lora_scale=1.0)
+        pipe.vae.to(dtype=torch.float32)
+
+    elif "dmd2_sdxl_1step_unet_fp16.bin" in model_name:  # SDXL-DMD2, 1 step
+        base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
+        unet.load_state_dict(torch.load(hf_hub_download("tianweiy/DMD2", "dmd2_sdxl_1step_unet_fp16.bin"),
+                                        map_location=device))
+        pipe = DiffusionPipeline.from_pretrained(
+            base_model_id, unet=unet, torch_dtype=torch.float16, variant="fp16"
+        ).to(device)
+        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+        pipe.vae.to(dtype=torch.float32)
+
+    elif "latent-consistency/lcm-lora-sdxl" in model_name:  # SDXL-LCM-LoRA, 4 steps
+        pipe = AutoPipelineForText2Image.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, variant="fp16"
+        )
+        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+        pipe.to(device)
+        pipe.load_lora_weights("latent-consistency/lcm-lora-sdxl")
+        pipe.fuse_lora()
+        pipe.vae.to(dtype=torch.float32)
+
+    elif "sdxl_lightning_4step_lora.safetensors" in model_name:  # SDXL-Lightning, 4 steps
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, variant="fp16"
+        ).to(device)
+        pipe.load_lora_weights(hf_hub_download("ByteDance/SDXL-Lightning", "sdxl_lightning_4step_lora.safetensors"))
+        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
+        pipe.fuse_lora()
+        pipe.vae.to(dtype=torch.float32)
+
+    elif "Hyper-SDXL-1step-Unet.safetensors" in model_name:  # SDXL-Hyper-SD, 1 step
+        base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
+        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
+        unet.load_state_dict(load_file(hf_hub_download("ByteDance/Hyper-SD", "Hyper-SDXL-1step-Unet.safetensors"),
+                                       device=device))
+        pipe = DiffusionPipeline.from_pretrained(
+            base_model_id, unet=unet, torch_dtype=torch.float16, variant="fp16"
+        ).to(device)
+        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
+        pipe.vae.to(dtype=torch.float32)
+
+    elif "Hyper-FLUX.1-dev-8steps-lora.safetensors" in model_name:  # FLUX.1-dev + Hyper-SD LoRA, 8 steps
+        base_model_id = "black-forest-labs/FLUX.1-dev"
+        print(f"Loading FLUX lookahead model {base_model_id} with ByteDance/Hyper-SD 8-step LoRA")
+        pipe = FluxPipeline.from_pretrained(base_model_id, token=os.environ.get("HF_TOKEN", True))
+        pipe.load_lora_weights(hf_hub_download("ByteDance/Hyper-SD", "Hyper-FLUX.1-dev-8steps-lora.safetensors"))
+        pipe.fuse_lora(lora_scale=0.125)
+        pipe.to(device, dtype=torch.float16)
+
     else:
-        assert prompt_path.endswith(".jsonl")
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            data = [json.loads(line) for line in f if line.strip()]
-    assert isinstance(data, list)
-    prompt_key = "prompt"
-    if prompt_key not in data[0]:
-        assert "text" in data[0], "Prompt data should have 'prompt' or 'text' key"
-
-        for item in data:
-            item["prompt"] = item["text"]
-    for idx, item in enumerate(data):
-        if "original_idx" not in item:
-            item["original_idx"] = idx
-    if prompt_indices is not None and len(prompt_indices) > 0:
-        data = [data[i] for i in prompt_indices if i < len(data)]
-    elif max_prompts is not None:
-        data = data[:max_prompts]
-    return data
+        raise ValueError(f"Unsupported lookahead model: {model_name}")
+    return pipe
 
 
+def sample_lookahead_latents(pipe, model_name, prompt, num_inference_steps):
+    """Run the lookahead solver and return latents (packed for FLUX)."""
+    if "dmd2_sdxl_4step_lora_fp16.safetensors" in model_name:
+        return pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, timesteps=[999, 749, 499, 249],
+                    output_type="latent").images
+    if "dmd2_sdxl_1step_unet_fp16.bin" in model_name:
+        return pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[399],
+                    output_type="latent").images
+    if "latent-consistency/lcm-lora-sdxl" in model_name or "sdxl_lightning_4step_lora.safetensors" in model_name:
+        return pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
+    if "Hyper-SDXL-1step-Unet.safetensors" in model_name:
+        return pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[800],
+                    output_type="latent").images
+    if "Hyper-FLUX.1-dev-8steps-lora.safetensors" in model_name:
+        return pipe(prompt=prompt, num_inference_steps=8, guidance_scale=3.5, output_type="latent").images
+    # SD1.5, SD1.5-DPO and SDXL with a multistep DPM-Solver.
+    return pipe(prompt=prompt, guidance_scale=7.5, num_inference_steps=num_inference_steps,
+                output_type="latent").images
+
+
+def _cache_mismatches(res_cached, args):
+    """List hyper-parameter mismatches between a cached smoothed `results.json` and the current run."""
+    s_info = res_cached["smoothing"]
+    cached_m = s_info.get("num_mc_samples")
+    cached_mode = s_info.get("noise_mode")
+    cached_sig = s_info.get("sigma")
+    cached_beta = s_info.get("beta_risk")
+    reasons = []
+    if cached_m is not None and cached_m != args.num_mc_samples:
+        reasons.append(f"M: {cached_m} != {args.num_mc_samples}")
+    if cached_mode is not None and cached_mode != args.noise_mode:
+        reasons.append(f"noise_mode: '{cached_mode}' != '{args.noise_mode}'")
+    if cached_sig is not None and abs(cached_sig - args.sigma) > 1e-4:
+        reasons.append(f"sigma: {cached_sig} != {args.sigma}")
+    if cached_beta is not None and args.beta_risk != 0.0 and abs(cached_beta - args.beta_risk) > 1e-4:
+        reasons.append(f"beta_risk: {cached_beta} != {args.beta_risk}")
+    return reasons
 
 
 def main(args):
@@ -269,7 +345,8 @@ def main(args):
             actual_gpu_id = args.gpu_id if args.gpu_id < num_devices else (args.gpu_id % num_devices)
             torch.cuda.set_device(actual_gpu_id)
             device = f"cuda:{actual_gpu_id}"
-            print(f"🎯 Assigned process to GPU {actual_gpu_id} (device {actual_gpu_id + 1}/{num_devices}): {torch.cuda.get_device_name(actual_gpu_id)}")
+            print(f"Assigned process to GPU {actual_gpu_id} (device {actual_gpu_id + 1}/{num_devices}): "
+                  f"{torch.cuda.get_device_name(actual_gpu_id)}")
         else:
             actual_gpu_id = 0
             device = "cuda:0"
@@ -278,156 +355,43 @@ def main(args):
         actual_gpu_id = "cpu"
         device = "cpu"
 
-    # seed everything
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    # load prompt data
-    parsed_indices = parse_prompt_indices(getattr(args, "prompt_indices", None))
+    parsed_indices = parse_prompt_indices(args.prompt_indices)
     prompt_data = load_geneval_metadata(args.prompt_path, max_prompts=args.max_prompt, prompt_indices=parsed_indices)
 
-    if "runwayml/stable-diffusion-v1-5" in args.model_name: ## SDv1.5-DPM
-        pipe = StableDiffusionPipeline.from_pretrained(args.model_name, torch_dtype=torch.float16)
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-
-    elif "mhdang/dpo" in args.model_name and "xl" not in args.model_name: ## SDv1.5-DPO-DPM
-        pipe = StableDiffusionPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16
-        )
-        # load finetuned model
-        unet_id = "mhdang/dpo-sd1.5-text2image-v1"
-        unet = UNet2DConditionModel.from_pretrained(
-            unet_id, subfolder="unet", torch_dtype=torch.float16
-        )
-        pipe.unet = unet
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-
-    elif "stabilityai/stable-diffusion-xl-base-1.0" in args.model_name: ## SDXL-DPM
-        pipe = DiffusionPipeline.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16,use_safetensors=True, variant="fp16")
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
-        pipe.vae.to(dtype=torch.float32)
-
-    elif "dmd2_sdxl_4step_lora_fp16.safetensors" in args.model_name: ## SDXL-DMD-4
-        base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
-        repo_name = "tianweiy/DMD2"
-        ckpt_name = "dmd2_sdxl_4step_lora_fp16.safetensors"
-        pipe = DiffusionPipeline.from_pretrained(base_model_id, torch_dtype=torch.float16, variant="fp16").to(device)
-        pipe.load_lora_weights(hf_hub_download(repo_name, ckpt_name))
-        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
-        pipe.fuse_lora(lora_scale=1.0)
-        pipe.vae.to(dtype=torch.float32)
-
-    elif "dmd2_sdxl_1step_unet_fp16.bin" in args.model_name: ## SDXL-DMD-1
-        base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
-        repo_name = "tianweiy/DMD2"
-        ckpt_name = "dmd2_sdxl_1step_unet_fp16.bin"
-        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
-        unet.load_state_dict(torch.load(hf_hub_download(repo_name, ckpt_name), map_location=device))
-        pipe = DiffusionPipeline.from_pretrained(base_model_id, unet=unet, torch_dtype=torch.float16, variant="fp16").to(device)
-        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
-        pipe.vae.to(dtype=torch.float32)
-
-    elif "latent-consistency/lcm-lora-sdxl" in args.model_name: ## SDXL-LCM-LoRA-4
-        model_id = "stabilityai/stable-diffusion-xl-base-1.0"
-        adapter_id = "latent-consistency/lcm-lora-sdxl"
-        pipe = AutoPipelineForText2Image.from_pretrained(model_id, torch_dtype=torch.float16, variant="fp16")
-        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
-        pipe.to(device)
-        pipe.load_lora_weights(adapter_id)
-        pipe.fuse_lora()
-        pipe.vae.to(dtype=torch.float32)
-
-    elif "sdxl_lightning_4step_lora.safetensors" in args.model_name: ## SDXL-Lightning-4
-        base = "stabilityai/stable-diffusion-xl-base-1.0"
-        repo = "ByteDance/SDXL-Lightning"
-        ckpt = "sdxl_lightning_4step_lora.safetensors"
-        pipe = StableDiffusionXLPipeline.from_pretrained(base, torch_dtype=torch.float16, variant="fp16").to(device)
-        pipe.load_lora_weights(hf_hub_download(repo, ckpt))
-        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config, timestep_spacing="trailing")
-        pipe.fuse_lora()
-        pipe.vae.to(dtype=torch.float32)
-
-    elif "Hyper-SDXL-1step-Unet.safetensors" in args.model_name: ## SDXL-Hyper-SD-1
-        base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
-        repo_name = "ByteDance/Hyper-SD"
-        ckpt_name = "Hyper-SDXL-1step-Unet.safetensors"
-        unet = UNet2DConditionModel.from_config(base_model_id, subfolder="unet").to(device, torch.float16)
-        unet.load_state_dict(load_file(hf_hub_download(repo_name, ckpt_name), device=device))
-        pipe = DiffusionPipeline.from_pretrained(base_model_id, unet=unet, torch_dtype=torch.float16,variant="fp16").to(device)
-        pipe.scheduler = LCMScheduler.from_config(pipe.scheduler.config)
-        pipe.vae.to(dtype=torch.float32)
-
-    elif "Hyper-FLUX.1-dev-8steps-lora.safetensors" in args.model_name: ## FLUX-Hyper-8
-        base_model_id = "black-forest-labs/FLUX.1-dev"
-        repo_name = "ByteDance/Hyper-SD"
-        ckpt_name = "Hyper-FLUX.1-dev-8steps-lora.safetensors"
-        print(f"📦 Đang nạp mô hình Lookahead FLUX ({base_model_id}) và LoRA 8-step ({repo_name}/{ckpt_name})...")
-        pipe = FluxPipeline.from_pretrained(base_model_id, token=os.environ.get("HF_TOKEN", True))
-        pipe.load_lora_weights(hf_hub_download(repo_name, ckpt_name))
-        pipe.fuse_lora(lora_scale=0.125)
-        pipe.to(device, dtype=torch.float16)
-        print("✅ Đã nạp thành công FLUX Lookahead Pipeline & hợp nhất LoRA!")
-
-    # set device
-    if torch.cuda.is_available():
-        if getattr(args, "gpu_id", None) is not None:
-            actual_gpu = args.gpu_id if args.gpu_id < torch.cuda.device_count() else (args.gpu_id % torch.cuda.device_count())
-            torch.cuda.set_device(actual_gpu)
-            device = f"cuda:{actual_gpu}"
-        else:
-            device = "cuda:0"
-    else:
-        device = "cpu"
+    pipe = load_lookahead_pipeline(args.model_name, device)
     pipe = pipe.to(device)
     if hasattr(pipe, "enable_vae_slicing"):
-        try:
-            pipe.enable_vae_slicing()
-        except Exception:
-            pass
+        pipe.enable_vae_slicing()
 
-    # set output directory
-    model_prefix = "FLUX_" if "flux" in args.model_name.lower() else ""
+    is_flux = "flux" in args.model_name.lower()
+    model_prefix = "FLUX_" if is_flux else ""
     prefix = f"{model_prefix}{args.seed}_{args.num_particles}_{args.num_inference_steps}"
-    if getattr(args, "use_smoothing", False):
-        if getattr(args, "noise_mode", "independent_iid") == "coupled_crn" or getattr(args, "use_crn", False):
+    if args.use_smoothing:
+        if args.noise_mode == "coupled_crn":
             suffix = "_crn"
-        elif getattr(args, "noise_mode", "independent_iid") == "independent_iid":
+        elif args.noise_mode == "independent_iid":
             suffix = "_iid"
         else:
-            suffix = f"_{getattr(args, 'noise_mode', 'iid')}"
+            suffix = f"_{args.noise_mode}"
         prefix += f"_rs_sig{args.sigma}_M{args.num_mc_samples}{suffix}"
-    if getattr(args, "run_name", None):
-        output_dir = os.path.join(args.output_dir, args.run_name)
-    else:
-        output_dir = os.path.join(args.output_dir, f"{prefix}")
-
+    output_dir = os.path.join(args.output_dir, args.run_name or prefix)
     os.makedirs(output_dir, exist_ok=True)
 
-    arg_path = os.path.join(output_dir, "args.json")
-    with open(arg_path, "w") as f:
+    with open(os.path.join(output_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent=4)
 
-    metrics_to_compute = args.metrics_to_compute.split("#")
+    reward_metrics = args.metrics_to_compute.split("#")
+    metrics_to_compute = list(reward_metrics)  # may additionally report "Pareto"
 
-    # cache metric fns
-    print(f"🎯 Đang khởi tạo và làm ấm hàm đánh giá chất lượng ({args.metrics_to_compute})...")
-    if do_eval is not None:
-        do_eval(
-            prompt=["test"],
-            images=[Image.new("RGB", (224, 224))],
-            metrics_to_compute=metrics_to_compute,
-        )
-        print("✅ Hàm đánh giá chất lượng đã sẵn sàng!")
-    else:
-        raise RuntimeError(
-            "❌ Không thể nạp hàm đánh giá `do_eval` từ fks_utils! "
-            "Vui lòng kiểm tra lại log cảnh báo phía trên để khắc phục thư viện phụ thuộc."
-        )
+    # Load and warm up the reward models once.
+    print(f"Initializing reward models ({args.metrics_to_compute})...")
+    do_eval(prompt=["test"], images=[Image.new("RGB", (224, 224))], metrics_to_compute=reward_metrics)
 
-    metrics_arr = {
-        metric: dict(mean=0, max=0, min=0, std=0) for metric in metrics_to_compute
-    }
+    metrics_arr = {metric: dict(mean=0, max=0, min=0, std=0) for metric in metrics_to_compute}
     n_samples = 0
     average_time = 0
 
@@ -436,12 +400,13 @@ def main(args):
         prompts_per_shard = math.ceil(total_prompts / args.num_shards)
         start_idx = args.shard_id * prompts_per_shard
         end_idx = min(start_idx + prompts_per_shard, total_prompts)
-        print(f"🚀 Shard {args.shard_id + 1}/{args.num_shards}: Processing prompts {start_idx} to {end_idx - 1} (Total: {end_idx - start_idx})")
+        print(f"Shard {args.shard_id + 1}/{args.num_shards}: processing prompts {start_idx} to {end_idx - 1} "
+              f"(total: {end_idx - start_idx})")
     else:
         start_idx = 0
         end_idx = total_prompts
 
-    is_xl = "xl" in args.model_name.lower() or "flux" in args.model_name.lower()
+    is_xl = "xl" in args.model_name.lower() or is_flux
     expected_latent_dim = 128 if is_xl else 64
 
     for prompt_idx in tqdm(range(start_idx, end_idx), desc=f"Shard-{args.shard_id}"):
@@ -454,399 +419,175 @@ def main(args):
 
         results_file = os.path.join(prompt_path, "results.json")
         latent_file = os.path.join(prompt_path, "samples", "latent.pt")
-        if args.resume and not getattr(args, "overwrite", False) and os.path.exists(results_file) and os.path.exists(latent_file):
+        if args.resume and not args.overwrite and os.path.exists(results_file) and os.path.exists(latent_file):
             try:
                 lat_valid = True
                 lat_check = torch.load(latent_file, map_location="cpu")
                 check_t = lat_check[0] if isinstance(lat_check, (list, tuple)) else lat_check
                 if hasattr(check_t, "shape") and check_t.shape[-1] != expected_latent_dim:
                     lat_valid = False
-                    print(f"⚠️ [Prompt {real_idx:05d}] latent.pt có kích thước {check_t.shape[-1]}x{check_t.shape[-1]} != {expected_latent_dim}x{expected_latent_dim} ({args.model_name}). Bỏ qua cache hỏng và tạo lại!")
+                    print(f"[Prompt {real_idx:05d}] cached latent.pt is {check_t.shape[-1]}x{check_t.shape[-1]}, "
+                          f"expected {expected_latent_dim}x{expected_latent_dim} for {args.model_name}; regenerating.")
 
                 if lat_valid:
                     with open(results_file, "r") as f:
                         res_cached = json.load(f)
-                    if getattr(args, "use_smoothing", False):
+                    if args.use_smoothing:
                         if "smoothing" not in res_cached or not res_cached["smoothing"].get("enabled", False):
                             lat_valid = False
-                            print(f"⚠️ [Prompt {real_idx:05d}] Cache results.json là kết quả Vanilla (không làm trơn), trong khi lệnh hiện tại yêu cầu --use_smoothing. Tự động tính lại chuẩn xác!")
+                            print(f"[Prompt {real_idx:05d}] cached results.json has unsmoothed rewards but "
+                                  f"--use_smoothing is set; recomputing.")
                         else:
-                            s_info = res_cached["smoothing"]
-                            cached_m = s_info.get("num_mc_samples")
-                            cached_mode = s_info.get("noise_mode")
-                            cached_sig = s_info.get("sigma")
-                            cached_beta = s_info.get("beta_risk")
-
-                            mismatch_reasons = []
-                            if cached_m is not None and cached_m != args.num_mc_samples:
-                                mismatch_reasons.append(f"M: {cached_m} != {args.num_mc_samples}")
-                            if cached_mode is not None and cached_mode != getattr(args, "noise_mode", "independent_antithetic"):
-                                mismatch_reasons.append(f"noise_mode: '{cached_mode}' != '{args.noise_mode}'")
-                            if cached_sig is not None and abs(cached_sig - args.sigma) > 1e-4:
-                                mismatch_reasons.append(f"sigma: {cached_sig} != {args.sigma}")
-                            if cached_beta is not None and getattr(args, "beta_risk", 0.0) != 0.0 and abs(cached_beta - getattr(args, "beta_risk", 0.0)) > 1e-4:
-                                mismatch_reasons.append(f"beta_risk: {cached_beta} != {args.beta_risk}")
-
+                            mismatch_reasons = _cache_mismatches(res_cached, args)
                             if mismatch_reasons:
                                 lat_valid = False
-                                print(f"⚠️ [Prompt {real_idx:05d}] Cache results.json không khớp siêu tham số ({', '.join(mismatch_reasons)}). Tự động tính lại chuẩn xác!")
+                                print(f"[Prompt {real_idx:05d}] cached results.json does not match "
+                                      f"({', '.join(mismatch_reasons)}); recomputing.")
                     if lat_valid:
                         for metric in metrics_to_compute:
                             if metric in res_cached:
-                                metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
-                                metrics_arr[metric]["max"] += res_cached[metric]["max"]
-                                metrics_arr[metric]["min"] += res_cached[metric]["min"]
-                                metrics_arr[metric]["std"] += res_cached[metric]["std"]
+                                for stat in ("mean", "max", "min", "std"):
+                                    metrics_arr[metric][stat] += res_cached[metric][stat]
                         n_samples += 1
-                        print(f"⏩ [Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{real_idx:05d}: Đã có sẵn kết quả hợp lệ, tự động bỏ qua (Resume)!")
+                        print(f"[Shard {args.shard_id} | GPU {actual_gpu_id}] Prompt #{real_idx:05d}: "
+                              f"valid cached result found, skipping (resume).")
                         continue
             except Exception as e:
                 print(f"Error loading cached result for prompt {real_idx}: {e}")
 
-        # dump metadata
         with open(os.path.join(prompt_path, "metadata.jsonl"), "w") as f:
             json.dump(item, f)
 
-        # Kiểm tra xem có thể tái sử dụng latent.pt đã chạy từ trước hay không
+        # Optionally reuse latents of a previous Phase 1 run (rewards are recomputed).
         reused_latent_file = None
         cached_reused_latents = None
-        if getattr(args, "reuse_latents_from", None):
+        if args.reuse_latents_from:
             candidates = [
                 os.path.join(args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
                 os.path.join("Lookahead_samples", args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
                 os.path.join(args.output_dir, args.reuse_latents_from, f"{real_idx:0>5}", "samples", "latent.pt"),
             ]
             for c in candidates:
-                if os.path.exists(c):
-                    try:
-                        test_lat = torch.load(c, map_location="cpu")
-                        test_t = test_lat[0] if isinstance(test_lat, (list, tuple)) else test_lat
-                        n_avail = len(test_lat) if isinstance(test_lat, (list, tuple)) else (test_lat.shape[0] if hasattr(test_lat, "shape") else 0)
-                        if hasattr(test_t, "shape") and test_t.shape[-1] == expected_latent_dim and n_avail >= args.num_particles:
-                            reused_latent_file = c
-                            cached_reused_latents = test_lat
-                            break
-                    except Exception:
-                        continue
+                if not os.path.exists(c):
+                    continue
+                try:
+                    test_lat = torch.load(c, map_location="cpu")
+                except (OSError, RuntimeError, EOFError, pickle.UnpicklingError):
+                    continue
+                test_t = test_lat[0] if isinstance(test_lat, (list, tuple)) else test_lat
+                if isinstance(test_lat, (list, tuple)):
+                    n_avail = len(test_lat)
+                else:
+                    n_avail = test_lat.shape[0] if hasattr(test_lat, "shape") else 0
+                if hasattr(test_t, "shape") and test_t.shape[-1] == expected_latent_dim and n_avail >= args.num_particles:
+                    reused_latent_file = c
+                    cached_reused_latents = test_lat
+                    break
             if reused_latent_file is None:
                 raise FileNotFoundError(
-                    f"\n{'='*70}\n"
-                    f"❌ [FAIL-FAST: KHÔNG TÌM THẤY LATENTS ĐỂ TÁI SỬ DỤNG]\n"
-                    f"Bạn đã chỉ định --reuse_latents_from='{args.reuse_latents_from}', nhưng không tìm thấy file latent.pt\n"
-                    f"nào hợp lệ cho prompt #{real_idx:05d} (yêu cầu {expected_latent_dim}x{expected_latent_dim}, >= {args.num_particles} hạt)!\n"
-                    f"Hệ thống dừng ngay lập tức thay vì tự ý fallback sang thư mục khác hoặc sinh mới tốn GPU.\n"
-                    f"{'='*70}"
+                    f"--reuse_latents_from='{args.reuse_latents_from}' was given, but no valid latent.pt was found for "
+                    f"prompt #{real_idx:05d} (need {expected_latent_dim}x{expected_latent_dim} latents and "
+                    f">= {args.num_particles} particles). Searched: {candidates}"
                 )
 
         start_time = datetime.now()
         with torch.inference_mode():
             if reused_latent_file is not None:
                 if prompt_idx == start_idx or prompt_idx % 50 == 0:
-                    print(f"⚡ [Prompt {real_idx:05d}] Tái sử dụng latents có sẵn: {reused_latent_file}")
-                if cached_reused_latents is not None:
-                    loaded_latents = cached_reused_latents
+                    print(f"[Prompt {real_idx:05d}] reusing latents from {reused_latent_file}")
+                if isinstance(cached_reused_latents, (list, tuple)):
+                    latents = torch.stack([x.to(device) for x in cached_reused_latents[:args.num_particles]])
                 else:
-                    loaded_latents = torch.load(reused_latent_file, map_location=device)
-                if isinstance(loaded_latents, (list, tuple)):
-                    latents = torch.stack([x.to(device) for x in loaded_latents[:args.num_particles]])
-                else:
-                    latents = loaded_latents[:args.num_particles].to(device)
+                    latents = cached_reused_latents[:args.num_particles].to(device)
                 cached_reused_latents = None
             else:
-                if "dmd2_sdxl_4step_lora_fp16.safetensors" in args.model_name:
-                    latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, timesteps=[999, 749, 499, 249], output_type="latent").images
-                elif "dmd2_sdxl_1step_unet_fp16.bin" in args.model_name:
-                    latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[399], output_type="latent").images
-                elif "latent-consistency/lcm-lora-sdxl" in args.model_name:
-                    latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
-                elif "sdxl_lightning_4step_lora.safetensors" in args.model_name:
-                    latents = pipe(prompt=prompt, num_inference_steps=4, guidance_scale=0, output_type="latent").images
-                elif "Hyper-SDXL-1step-Unet.safetensors" in args.model_name:
-                    latents = pipe(prompt=prompt, num_inference_steps=1, guidance_scale=0, timesteps=[800], output_type="latent").images
-                elif "Hyper-FLUX.1-dev-8steps-lora.safetensors" in args.model_name:
-                    latents = pipe(prompt=prompt, num_inference_steps=8, guidance_scale=3.5, output_type="latent").images
-                else: ## runwayml/stable-diffusion-v1-5 // mhdang/dpo // stabilityai/stable-diffusion-xl-base-1.0
-                    latents = pipe(prompt=prompt, guidance_scale=7.5, num_inference_steps=args.num_inference_steps, output_type="latent").images
+                latents = sample_lookahead_latents(pipe, args.model_name, prompt, args.num_inference_steps)
 
             if "xl" in args.model_name or "XL" in args.model_name:
                 latents = latents.to(torch.float32)
 
-            if "flux" in args.model_name.lower():
+            if is_flux:
                 latents = pipe._unpack_latents(latents, 1024, 1024, pipe.vae_scale_factor)
                 scaled_latents = (latents / pipe.vae.config.scaling_factor) + pipe.vae.config.shift_factor
                 vae_batch_size = 1
                 decoded_chunks = []
                 for v_i in range(0, scaled_latents.shape[0], vae_batch_size):
-                    chunk = scaled_latents[v_i : v_i + vae_batch_size]
+                    chunk = scaled_latents[v_i: v_i + vae_batch_size]
                     decoded_chunks.append(pipe.vae.decode(chunk, return_dict=False)[0])
                 decoded_tensor = torch.cat(decoded_chunks, dim=0)
-                if args.save_individual_images or not getattr(args, "use_smoothing", False):
-                    clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
-                else:
-                    clean_images = None
             else:
                 scaled_latents = latents / pipe.vae.config.scaling_factor
                 decoded_tensor = pipe.vae.decode(scaled_latents, return_dict=False)[0]
-                if args.save_individual_images or not getattr(args, "use_smoothing", False):
-                    clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
-                else:
-                    clean_images = None
+            if args.save_individual_images or not args.use_smoothing:
+                clean_images = pipe.image_processor.postprocess(decoded_tensor, output_type="pil")
+            else:
+                clean_images = None
 
-        end_time = datetime.now()
-        time_taken = end_time - start_time
-        n_particles = decoded_tensor.shape[0]
+        time_taken = datetime.now() - start_time
+        images = clean_images
 
-        if getattr(args, "use_smoothing", False):
-            # Randomized Smoothing: Monte Carlo expectation E[R(x + eps)] over M noisy samples
-            use_loop = getattr(args, "use_smoothing_loop", True)
+        if args.use_smoothing:
+            eval_prompt = prompt[0]
 
-            if use_loop:
-                mc_evals = {metric: [] for metric in metrics_to_compute}
+            if args.use_smoothing_loop:
+                def score_fn(noisy):
+                    noisy_pil = pipe.image_processor.postprocess(noisy, output_type="pil")
+                    evals = do_eval(prompt=[eval_prompt] * len(noisy_pil), images=noisy_pil,
+                                    metrics_to_compute=reward_metrics)
+                    return {metric: evals[metric]["result"] for metric in reward_metrics}
+
                 with torch.inference_mode():
-                    half_M = args.num_mc_samples // 2
-                    is_stratified = (getattr(args, "noise_mode", "") == "stratified_harmonized" and args.num_mc_samples >= 4 and args.num_mc_samples % 2 == 0)
-                    is_antithetic = (getattr(args, "noise_mode", "independent_antithetic") == "independent_antithetic" and args.num_mc_samples % 2 == 0)
-                    
-                    sigma_hi = getattr(args, "sigma_high", 1.0)
-                    sigma_lo = getattr(args, "sigma_low", 0.25)
-
-                    if is_stratified:
-                        if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
-                            u_p1 = torch.randn_like(scaled_latents)
-                            u_p2 = torch.randn_like(scaled_latents)
-                        else:
-                            u_p1 = torch.randn_like(decoded_tensor)
-                            u_p2 = torch.randn_like(decoded_tensor)
-                        u_half_list = None
-                    elif is_antithetic:
-                        if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
-                            u_half_list = [torch.randn_like(scaled_latents) for _ in range(half_M)]
-                        else:
-                            u_half_list = [torch.randn_like(decoded_tensor) for _ in range(half_M)]
-                    else:
-                        u_half_list = None
-
-                    for m_idx in range(args.num_mc_samples):
-                        if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
-                            if is_stratified:
-                                if m_idx == 0: noise = u_p1 * sigma_hi
-                                elif m_idx == 1: noise = -u_p1 * sigma_hi
-                                elif m_idx == 2: noise = u_p2 * sigma_lo
-                                elif m_idx == 3: noise = -u_p2 * sigma_lo
-                                else: noise = torch.randn_like(scaled_latents) * sigma_lo
-                            elif getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
-                                noise = torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma
-                            elif is_antithetic and u_half_list is not None:
-                                u_m = u_half_list[m_idx] if m_idx < half_M else -u_half_list[m_idx - half_M]
-                                noise = u_m * args.sigma
-                            else:
-                                noise = torch.randn_like(scaled_latents) * args.sigma
-                            noisy_lat = scaled_latents + noise
-                            noisy_t = pipe.vae.decode(noisy_lat, return_dict=False)[0].clamp(-1.0, 1.0)
-                        else:
-                            if is_stratified:
-                                if m_idx == 0: noise = u_p1 * sigma_hi
-                                elif m_idx == 1: noise = -u_p1 * sigma_hi
-                                elif m_idx == 2: noise = u_p2 * sigma_lo
-                                elif m_idx == 3: noise = -u_p2 * sigma_lo
-                                else: noise = torch.randn_like(decoded_tensor) * sigma_lo
-                                noisy_t = (decoded_tensor + noise).clamp(-1.0, 1.0)
-                            elif args.sigma > 0:
-                                if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
-                                    noise = torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma
-                                elif is_antithetic and u_half_list is not None:
-                                    u_m = u_half_list[m_idx] if m_idx < half_M else -u_half_list[m_idx - half_M]
-                                    noise = u_m * args.sigma
-                                else:
-                                    noise = torch.randn_like(decoded_tensor) * args.sigma
-                                noisy_t = (decoded_tensor + noise).clamp(-1.0, 1.0)
-                            else:
-                                noisy_t = decoded_tensor.clamp(-1.0, 1.0)
-                        noisy_pil = pipe.image_processor.postprocess(noisy_t, output_type="pil")
-                        eval_prompt = [prompt[0]] * len(noisy_pil)
-                        eval_m = do_eval(prompt=eval_prompt, images=noisy_pil, metrics_to_compute=metrics_to_compute)
-                        for metric in metrics_to_compute:
-                            mc_evals[metric].append(eval_m[metric]["result"])
-
-                    if u_half_list is not None:
-                        del u_half_list
-
-                results = {}
-                multi_rewards_mc = {}
-                for metric in metrics_to_compute:
-                    scores_mat = torch.tensor(mc_evals[metric], dtype=torch.float32)
-                    multi_rewards_mc[metric] = scores_mat
-                    if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" and getattr(args, "beta_risk", 0.0) == 0.0:
-                        smoothed_scores = scores_mat.mean(dim=0).tolist()
-                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                        results[metric] = {
-                            "result": smoothed_scores,
-                            "mean": scores_arr.mean().item(),
-                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                            "max": scores_arr.max().item(),
-                            "min": scores_arr.min().item(),
-                        }
-                    else:
-                        entropic_res = compute_entropic_antithetic_rewards(
-                            scores_mat,
-                            sigma=args.sigma,
-                            beta_risk=getattr(args, "beta_risk", 0.0),
-                            noise_mode=getattr(args, "noise_mode", "independent_iid"),
-                            sigma_high=getattr(args, "sigma_high", 1.0),
-                            sigma_low=getattr(args, "sigma_low", 0.25)
-                        )
-                        smoothed_scores = entropic_res["r_corrected"].tolist()
-                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                        results[metric] = {
-                            "result": smoothed_scores,
-                            "mean": scores_arr.mean().item(),
-                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                            "max": scores_arr.max().item(),
-                            "min": scores_arr.min().item(),
-                            "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
-                            "pair_variance": entropic_res["pair_variance"].tolist(),
-                        }
-                        if "r_high" in entropic_res and "r_low" in entropic_res:
-                            results[metric]["result_high"] = entropic_res["r_high"].tolist()
-                            results[metric]["result_low"] = entropic_res["r_low"].tolist()
-                results["lookahead_seeds"] = [(int(args.seed) * 1000003 + k * 1009) & 0x7FFFFFFF for k in range(n_particles)]
-                if getattr(args, "use_pareto", False) and len(metrics_to_compute) > 1:
-                    try:
-                        from multi_reward_evaluator import compute_multi_reward_pareto_potential
-                        pareto_pot, pareto_diag = compute_multi_reward_pareto_potential(
-                            multi_rewards_mc,
-                            sigma=args.sigma,
-                            pareto_rho=getattr(args, "pareto_rho", 0.5),
-                            beta_risk=getattr(args, "beta_risk", 0.5),
-                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
-                        )
-                        pareto_list = pareto_pot.tolist()
-                        results["Pareto"] = {
-                            "result": pareto_list,
-                            "mean": pareto_pot.mean().item(),
-                            "std": pareto_pot.std().item() if len(pareto_list) > 1 else 0.0,
-                            "max": pareto_pot.max().item(),
-                            "min": pareto_pot.min().item(),
-                        }
-                        if "Pareto" not in metrics_to_compute:
-                            metrics_to_compute = list(metrics_to_compute) + ["Pareto"]
-                            metrics_arr["Pareto"] = dict(mean=0, max=0, min=0, std=0)
-                    except Exception as e:
-                        print(f"Warning: Failed to compute Pareto potential: {e}")
-                images = clean_images
+                    multi_rewards_mc = mc_rewards_loop(
+                        decoded_tensor, args.sigma, args.num_mc_samples, args.noise_mode, score_fn
+                    )
             else:
                 num_mc = args.num_mc_samples
                 n_particles = decoded_tensor.shape[0]
                 with torch.inference_mode():
-                    if args.smoothing_domain == "latent" and "flux" not in args.model_name.lower():
-                        if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
-                            noisy_lat_list = [scaled_latents + torch.randn((1, *scaled_latents.shape[1:]), device=scaled_latents.device, dtype=scaled_latents.dtype) * args.sigma for _ in range(num_mc)]
-                            noisy_lat_cat = torch.cat(noisy_lat_list, dim=0)
+                    if args.sigma > 0:
+                        if args.noise_mode == "coupled_crn":
+                            noisy_t_list = [
+                                (decoded_tensor + torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device,
+                                                              dtype=decoded_tensor.dtype) * args.sigma).clamp(-1.0, 1.0)
+                                for _ in range(num_mc)
+                            ]
+                            noisy_t_all = torch.cat(noisy_t_list, dim=0)
                         else:
-                            perturbed_lat = generate_smoothed_pixel_batch(
-                                scaled_latents,
-                                sigma=args.sigma,
-                                M=num_mc,
-                                noise_mode=getattr(args, "noise_mode", "independent_antithetic"),
-                                clamp_range=None,
-                                sigma_high=getattr(args, "sigma_high", 1.0),
-                                sigma_low=getattr(args, "sigma_low", 0.25)
+                            perturbed_all = generate_smoothed_pixel_batch(
+                                decoded_tensor, sigma=args.sigma, M=num_mc, noise_mode=args.noise_mode
                             )
-                            noisy_lat_cat = perturbed_lat.view(-1, *scaled_latents.shape[1:])
-                        noisy_t_all = pipe.vae.decode(noisy_lat_cat, return_dict=False)[0].clamp(-1.0, 1.0)
+                            noisy_t_all = perturbed_all.view(-1, *decoded_tensor.shape[1:])
                     else:
-                        if args.sigma > 0 or getattr(args, "noise_mode", "") == "stratified_harmonized":
-                            if getattr(args, "noise_mode", "") == "coupled_crn" or getattr(args, "use_crn", False):
-                                noisy_t_list = [(decoded_tensor + torch.randn((1, *decoded_tensor.shape[1:]), device=decoded_tensor.device, dtype=decoded_tensor.dtype) * args.sigma).clamp(-1.0, 1.0) for _ in range(num_mc)]
-                                noisy_t_all = torch.cat(noisy_t_list, dim=0)
-                            else:
-                                perturbed_all = generate_smoothed_pixel_batch(decoded_tensor, sigma=args.sigma, M=num_mc, noise_mode=getattr(args, "noise_mode", "independent_antithetic"), sigma_high=getattr(args, "sigma_high", 1.0), sigma_low=getattr(args, "sigma_low", 0.25))
-                                noisy_t_all = perturbed_all.view(-1, *decoded_tensor.shape[1:])
-                        else:
-                            noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
+                        noisy_t_all = decoded_tensor.clamp(-1.0, 1.0).repeat(num_mc, 1, 1, 1)
 
                     noisy_pil_all = pipe.image_processor.postprocess(noisy_t_all, output_type="pil")
-                    eval_prompt_all = [prompt[0]] * len(noisy_pil_all)
-                    eval_all = do_eval(prompt=eval_prompt_all, images=noisy_pil_all, metrics_to_compute=metrics_to_compute)
+                    eval_all = do_eval(prompt=[eval_prompt] * len(noisy_pil_all), images=noisy_pil_all,
+                                       metrics_to_compute=reward_metrics)
+                multi_rewards_mc = {
+                    metric: torch.tensor(eval_all[metric]["result"], dtype=torch.float32).view(num_mc, n_particles)
+                    for metric in reward_metrics
+                }
 
-                results = {}
-                multi_rewards_mc = {}
-                for metric in metrics_to_compute:
-                    raw_scores = eval_all[metric]["result"]
-                    scores_mat = torch.tensor(raw_scores, dtype=torch.float32).view(num_mc, n_particles)
-                    multi_rewards_mc[metric] = scores_mat
-                    if getattr(args, "noise_mode", "independent_antithetic") == "coupled_crn" and getattr(args, "beta_risk", 0.0) == 0.0:
-                        smoothed_scores = scores_mat.mean(dim=0).tolist()
-                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                        results[metric] = {
-                            "result": smoothed_scores,
-                            "mean": scores_arr.mean().item(),
-                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                            "max": scores_arr.max().item(),
-                            "min": scores_arr.min().item(),
-                        }
-                    else:
-                        entropic_res = compute_entropic_antithetic_rewards(
-                            scores_mat,
-                            sigma=args.sigma,
-                            beta_risk=getattr(args, "beta_risk", 0.0),
-                            noise_mode=getattr(args, "noise_mode", "independent_iid")
-                        )
-                        smoothed_scores = entropic_res["r_corrected"].tolist()
-                        scores_arr = torch.tensor(smoothed_scores, dtype=torch.float32)
-                        results[metric] = {
-                            "result": smoothed_scores,
-                            "mean": scores_arr.mean().item(),
-                            "std": scores_arr.std().item() if len(smoothed_scores) > 1 else 0.0,
-                            "max": scores_arr.max().item(),
-                            "min": scores_arr.min().item(),
-                            "grad_energy_sq": entropic_res["grad_energy_sq"].tolist(),
-                            "pair_variance": entropic_res["pair_variance"].tolist(),
-                        }
-                if getattr(args, "use_pareto", False) and len(metrics_to_compute) > 1:
-                    try:
-                        from multi_reward_evaluator import compute_multi_reward_pareto_potential
-                        pareto_pot, pareto_diag = compute_multi_reward_pareto_potential(
-                            multi_rewards_mc,
-                            sigma=args.sigma,
-                            pareto_rho=getattr(args, "pareto_rho", 0.5),
-                            beta_risk=getattr(args, "beta_risk", 0.5),
-                            noise_mode=getattr(args, "noise_mode", "independent_antithetic")
-                        )
-                        pareto_list = pareto_pot.tolist()
-                        results["Pareto"] = {
-                            "result": pareto_list,
-                            "mean": pareto_pot.mean().item(),
-                            "std": pareto_pot.std().item() if len(pareto_list) > 1 else 0.0,
-                            "max": pareto_pot.max().item(),
-                            "min": pareto_pot.min().item(),
-                        }
-                        if "Pareto" not in metrics_to_compute:
-                            metrics_to_compute = list(metrics_to_compute) + ["Pareto"]
-                            metrics_arr["Pareto"] = dict(mean=0, max=0, min=0, std=0)
-                    except Exception as e:
-                        print(f"Warning: Failed to compute Pareto potential: {e}")
-                images = clean_images
+            results = summarize_smoothed_rewards(multi_rewards_mc, args)
+            if "Pareto" in results and "Pareto" not in metrics_to_compute:
+                metrics_to_compute.append("Pareto")
+                metrics_arr["Pareto"] = dict(mean=0, max=0, min=0, std=0)
         else:
-            images = clean_images
-            eval_prompt = [prompt[0]] * len(images)
-            results = do_eval(
-                prompt=eval_prompt, images=images, metrics_to_compute=metrics_to_compute
-            )
+            results = do_eval(prompt=[prompt[0]] * len(images), images=images, metrics_to_compute=reward_metrics)
 
         results["time_taken"] = time_taken.total_seconds()
         results["prompt"] = prompt
         results["prompt_index"] = real_idx
-        if getattr(args, "use_smoothing", False):
+        if args.use_smoothing:
             results["smoothing"] = {
                 "enabled": True,
                 "sigma": args.sigma,
                 "num_mc_samples": args.num_mc_samples,
-                "domain": args.smoothing_domain,
-                "mode": "loop" if use_loop else "vectorized",
-                "noise_mode": getattr(args, "noise_mode", "independent_iid"),
-                "beta_risk": getattr(args, "beta_risk", 0.0),
-                "use_crn": getattr(args, "use_crn", False) or (getattr(args, "noise_mode", "") == "coupled_crn"),
+                "domain": "image",
+                "mode": "loop" if args.use_smoothing_loop else "vectorized",
+                "noise_mode": args.noise_mode,
+                "beta_risk": args.beta_risk,
+                "use_crn": args.noise_mode == "coupled_crn",
                 "reused_latents_from": reused_latent_file,
             }
 
@@ -854,7 +595,7 @@ def main(args):
         average_time += time_taken.total_seconds()
         print(f"Time taken: {average_time / n_samples}")
 
-        # sort images by reward
+        # Sort particles (and their rewards) by the guidance reward, best first.
         guidance_reward = np.array(results[args.guidance_reward_fn]["result"])
         sorted_idx = np.argsort(guidance_reward)[::-1]
         if images is not None:
@@ -862,30 +603,16 @@ def main(args):
         latents = [latents[i] for i in sorted_idx]
         for metric in metrics_to_compute:
             if metric in results and "result" in results[metric]:
-                results[metric]["result"] = [
-                    results[metric]["result"][i] for i in sorted_idx
-                ]
-                if "grad_energy_sq" in results[metric]:
-                    results[metric]["grad_energy_sq"] = [
-                        results[metric]["grad_energy_sq"][i] for i in sorted_idx
-                    ]
-                if "pair_variance" in results[metric]:
-                    results[metric]["pair_variance"] = [
-                        results[metric]["pair_variance"][i] for i in sorted_idx
-                    ]
+                for key in ("result", "grad_energy_sq", "pair_variance"):
+                    if key in results[metric]:
+                        results[metric][key] = [results[metric][key][i] for i in sorted_idx]
 
         for metric in metrics_to_compute:
-            metrics_arr[metric]["mean"] += results[metric]["mean"]
-            metrics_arr[metric]["max"] += results[metric]["max"]
-            metrics_arr[metric]["min"] += results[metric]["min"]
-            metrics_arr[metric]["std"] += results[metric]["std"]
+            for stat in ("mean", "max", "min", "std"):
+                metrics_arr[metric][stat] += results[metric][stat]
 
         for metric in metrics_to_compute:
-            print(
-                metric,
-                metrics_arr[metric]["mean"] / n_samples,
-                metrics_arr[metric]["max"] / n_samples,
-            )
+            print(metric, metrics_arr[metric]["mean"] / n_samples, metrics_arr[metric]["max"] / n_samples)
 
         sample_path = os.path.join(prompt_path, "samples")
         os.makedirs(sample_path, exist_ok=True)
@@ -908,102 +635,89 @@ def main(args):
                 ax[i].axis("off")
 
             plt.suptitle(prompt[0])
-            image_fpath = os.path.join(prompt_path, f"grid.png")
-            plt.savefig(image_fpath)
+            plt.savefig(os.path.join(prompt_path, "grid.png"))
             plt.close()
 
         with open(os.path.join(prompt_path, "results.json"), "w") as f:
             json.dump(results, f)
 
-    # save final metrics
     if n_samples > 0:
         for metric in metrics_to_compute:
-            metrics_arr[metric]["mean"] /= n_samples
-            metrics_arr[metric]["max"] /= n_samples
-            metrics_arr[metric]["min"] /= n_samples
-            metrics_arr[metric]["std"] /= n_samples
+            for stat in ("mean", "max", "min", "std"):
+                metrics_arr[metric][stat] /= n_samples
 
     metrics_fname = f"final_metrics_shard_{args.shard_id}.json" if args.num_shards > 1 else "final_metrics.json"
     with open(os.path.join(output_dir, metrics_fname), "w") as f:
         json.dump(metrics_arr, f, indent=4)
-    print(f"🏁 [Shard {args.shard_id} | GPU {actual_gpu_id}] Đã hoàn thành toàn bộ shard ({start_idx} -> {end_idx - 1})!")
-
-
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ("yes", "true", "t", "y", "1"):
-        return True
-    elif v.lower() in ("no", "false", "f", "n", "0"):
-        return False
-    raise argparse.ArgumentTypeError("Boolean value expected.")
+    print(f"[Shard {args.shard_id} | GPU {actual_gpu_id}] finished prompts {start_idx} -> {end_idx - 1}.")
 
 
 def get_args():
-    import sys
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Phase 1: lookahead sampling with (optionally smoothed) rewards.")
     parser.add_argument("--output_dir", type=str, default="Lookahead_samples")
     parser.add_argument("--save_individual_images", type=str2bool, nargs="?", const=True, default=False)
     parser.add_argument("--num_particles", type=int, default=100)
     parser.add_argument("--num_inference_steps", "--steps", dest="num_inference_steps", type=int, default=100)
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward")
-    parser.add_argument("--metrics_to_compute",type=str,default="ImageReward#Clip-Score",help="# separated list of metrics")
+    parser.add_argument("--metrics_to_compute", type=str, default="ImageReward#Clip-Score",
+                        help="'#'-separated list of metrics")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl")
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_prompt", type=int, default=1000)
-    parser.add_argument("--prompt_indices", type=str, default=None, help="Optional subset of prompt indices (e.g. 'stratified_100', '0-99', '0,5,10', or path to JSON)")
+    parser.add_argument("--prompt_indices", type=str, default=None,
+                        help="Optional subset of prompt indices ('stratified_100', '0-99', '0,5,10' or a JSON file)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards to split prompts")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID to run on (e.g. 0 or 1)")
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
-    parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
-    parser.add_argument("--use_smoothing", action="store_true", default=False, help="Enable Randomized Smoothing for Phase 1 lookahead rewards")
-    parser.add_argument("--sigma", type=float, default=0.25, help="Gaussian noise standard deviation for Randomized Smoothing (default: 0.25)")
-    parser.add_argument("--num_mc_samples", "--M", dest="num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M to compute expected reward (default: 4)")
-    parser.add_argument("--smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
-    parser.add_argument("--vectorized_smoothing", type=str2bool, nargs="?", const=True, default=False, help="Compute smoothing over all M*N samples in a single batch (True) or loop over M MC iterations (False, default to save VRAM and avoid OOM)")
-    parser.add_argument("--loop_smoothing", type=str2bool, nargs="?", const=True, default=None, help="Explicitly enable/disable loop-based smoothing over M iterations (default: True, overrides --vectorized_smoothing if set)")
-    parser.add_argument("--reuse_latents_from", type=str, default=None, help="Path or folder name under Lookahead_samples to reuse previously generated latents (e.g. 100_50_5)")
-    parser.add_argument("--no_reuse_latents", action="store_true", default=False, help="Do not reuse existing latents even if available")
-    parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers (CRN): broadcast a single noise sample across all N particles within each prompt to eliminate inter-particle ranking variance")
-    parser.add_argument("--noise_mode", type=str, default="independent_iid", choices=["independent_iid", "independent_antithetic", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode: 'independent_iid' (default), 'independent_antithetic', or 'coupled_crn' (legacy)")
-    parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
-    parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
-    parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
-    parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
-    parser.add_argument("--s_flow", type=float, default=40.0, help="Velocity guidance scale for Rectified Flows (default: 40.0, Table 3 standard for FLUX)")
-    parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
-    parser.add_argument("--use_pareto", type=str2bool, nargs="?", const=True, default=False, help="Enable Local-Lipschitz Multi-Reward Pareto Evaluator (Theorem 6)")
+    parser.add_argument("--overwrite", action="store_true", default=False,
+                        help="Force re-run and overwrite existing results")
+    parser.add_argument("--use_smoothing", action="store_true", default=False,
+                        help="Score lookahead particles with the randomized-smoothing reward (RS-LiDAR)")
+    parser.add_argument("--sigma", type=float, default=0.25, help="Pixel-space smoothing noise std sigma")
+    parser.add_argument("--num_mc_samples", "--M", dest="num_mc_samples", type=int, default=4,
+                        help="Number of Monte Carlo samples M")
+    parser.add_argument("--vectorized_smoothing", type=str2bool, nargs="?", const=True, default=False,
+                        help="Score all M*N noisy images in one batch instead of looping over M (more memory)")
+    parser.add_argument("--loop_smoothing", type=str2bool, nargs="?", const=True, default=None,
+                        help="Explicitly enable/disable the loop over M (overrides --vectorized_smoothing)")
+    parser.add_argument("--reuse_latents_from", type=str, default=None,
+                        help="Run folder (or name under Lookahead_samples) whose latents are reused, e.g. 100_50_5")
+    parser.add_argument("--no_reuse_latents", action="store_true", default=False,
+                        help="Ignore --reuse_latents_from")
+    parser.add_argument("--use_crn", type=str2bool, nargs="?", const=True, default=False,
+                        help="Shorthand for --noise_mode coupled_crn")
+    parser.add_argument("--noise_mode", type=str, default="independent_iid", choices=NOISE_MODES,
+                        help="Monte Carlo noise: 'independent_iid' (default), 'independent_antithetic' (pairs u, -u) "
+                             "or 'coupled_crn' (one draw per m shared by all particles)")
+    parser.add_argument("--beta_risk", type=float, default=0.0,
+                        help="Entropic-risk coefficient; 0 uses the plain Monte Carlo mean")
+    parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight (with --use_pareto)")
+    parser.add_argument("--use_pareto", type=str2bool, nargs="?", const=True, default=False,
+                        help="Also store a multi-reward Pareto potential (requires >= 2 metrics)")
     parser.add_argument("--run_name", type=str, default=None, help="Custom output subfolder name")
     args = parser.parse_args()
 
-    # Xóa sổ hoàn toàn beta_risk: cố định = 0.0 để r_corrected = r_mean (I.I.D thuần túy)
-    args.beta_risk = 0.0
-
-    if getattr(args, "use_crn", False) or getattr(args, "noise_mode", "") == "coupled_crn":
+    if args.use_crn or args.noise_mode == "coupled_crn":
         args.noise_mode = "coupled_crn"
 
-    # Auto-dispatch num_particles to 3 for FLUX if not specified on CLI (Table 3 Ground Truth)
+    # FLUX protocol: 3 lookahead particles unless --num_particles is given explicitly.
     if "flux" in args.model_name.lower():
         if not any(arg.startswith("--num_particles") for arg in sys.argv):
             args.num_particles = 3
-            print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 3 for FLUX Phase 1 lookahead pool (Table 3 standard).")
+            print("FLUX protocol: using num_particles = 3 for the Phase 1 lookahead pool.")
 
     args.M = args.num_mc_samples
 
-    # Fail-Fast: Kiểm tra xung đột cờ dòng lệnh giữa --num_mc_samples và --M
     raw_m_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--M=')]
     raw_mc_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--num_mc_samples=')]
     if raw_m_flags and raw_mc_flags and raw_m_flags[0] != raw_mc_flags[0]:
-        raise ValueError(f"❌ [FAIL-FAST] Phát hiện xung đột cờ dòng lệnh: --num_mc_samples={raw_mc_flags[0]} nhưng --M={raw_m_flags[0]}! Vui lòng chỉ định một giá trị duy nhất.")
+        raise ValueError(f"Conflicting flags: --num_mc_samples={raw_mc_flags[0]} but --M={raw_m_flags[0]}.")
 
-    # Fail-Fast: Chế độ Antithetic bắt buộc M phải là số chẵn
-    if getattr(args, "use_smoothing", False):
-        if getattr(args, "noise_mode", "") == "independent_antithetic" and args.num_mc_samples % 2 != 0:
-            raise ValueError(f"❌ [FAIL-FAST] Chế độ nhiễu 'independent_antithetic' yêu cầu --num_mc_samples phải là số chẵn (ví dụ: 2, 4, 8, 16) để tạo cặp đối xứng (+u, -u), nhưng nhận được M={args.num_mc_samples}!")
-        if getattr(args, "noise_mode", "") == "stratified_harmonized" and (args.num_mc_samples < 4 or args.num_mc_samples % 2 != 0):
-            raise ValueError(f"❌ [FAIL-FAST] Chế độ nhiễu 'stratified_harmonized' yêu cầu --num_mc_samples >= 4 và là số chẵn, nhưng nhận được M={args.num_mc_samples}!")
+    if args.use_smoothing and args.noise_mode == "independent_antithetic" and args.num_mc_samples % 2 != 0:
+        raise ValueError(f"--noise_mode independent_antithetic needs an even number of Monte Carlo samples "
+                         f"(pairs u, -u), got M={args.num_mc_samples}.")
 
     if args.no_reuse_latents:
         args.reuse_latents_from = None
@@ -1016,5 +730,4 @@ def get_args():
 
 
 if __name__ == "__main__":
-    args = get_args()
-    main(args)
+    main(get_args())

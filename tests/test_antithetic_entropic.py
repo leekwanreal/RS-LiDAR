@@ -1,13 +1,5 @@
-import os
-import sys
 import unittest
 import torch
-
-# Ensure Diffusion-LiDAR-Sampling is on sys.path
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
 
 from lookahead_sampling import (
     generate_smoothed_pixel_batch,
@@ -17,8 +9,7 @@ from lookahead_sampling import (
 
 class TestDualOrderAntitheticAndEntropicRisk(unittest.TestCase):
     """
-    Test suite for Task 1.1: Dual-Order Antithetic Smoothing & Entropic Risk Scorer
-    Theorems 5.1 & 5.2 (Unified Stochastic Control Framework for ICML 2027).
+    Antithetic smoothing batches and the entropic-risk reward aggregation.
     """
 
     def setUp(self):
@@ -32,7 +23,7 @@ class TestDualOrderAntitheticAndEntropicRisk(unittest.TestCase):
 
     def test_01_antithetic_symmetry(self):
         """
-        Verify Theorem 5.1 Antithetic Symmetry: sum_{m=1}^M u_m = 0 exactly.
+        Antithetic symmetry: sum_{m=1}^M u_m = 0 exactly.
         """
         # Using zero base image to isolate noise tensor u
         images_0 = torch.zeros((self.N, self.C, self.H, self.W), device=self.device)
@@ -94,7 +85,7 @@ class TestDualOrderAntitheticAndEntropicRisk(unittest.TestCase):
 
     def test_03_entropic_risk_penalty_and_elimination_of_winners_curse(self):
         """
-        Verify Theorem 5.2:
+        Entropic risk:
         1. r_corrected <= r_mean for beta_risk >= 0.
         2. Stable particles beat noisy/spurious particles of equal sample mean.
         """
@@ -115,7 +106,7 @@ class TestDualOrderAntitheticAndEntropicRisk(unittest.TestCase):
 
         r_corrected = res["r_corrected"]
         grad_energy_sq = res["grad_energy_sq"]
-        pair_variance = res["pair_variance"]
+        res["pair_variance"]
 
         r_mean = rewards_mc.mean(dim=0)
 
@@ -141,7 +132,7 @@ class TestDualOrderAntitheticAndEntropicRisk(unittest.TestCase):
 
     def test_04_gradient_energy_non_negativity(self):
         """
-        Verify Theorem 5.1: grad_energy_sq >= 0 and pair_variance >= 0.
+        grad_energy_sq >= 0 and pair_variance >= 0.
         """
         random_rewards = torch.randn((self.M, 20), device=self.device)
         res = compute_entropic_antithetic_rewards(random_rewards, sigma=0.3, beta_risk=0.5)
@@ -177,7 +168,7 @@ class TestDualOrderAntitheticAndEntropicRisk(unittest.TestCase):
 
     def test_06_legacy_bit_for_bit_equivalence(self):
         """
-        Rule 1 & Rule 2: When beta_risk == 0.0, r_corrected must be identical
+        When beta_risk == 0.0, r_corrected must be identical
         to the standard Monte Carlo sample mean (legacy baseline).
         """
         rewards = torch.randn((self.M, 15), device=self.device)

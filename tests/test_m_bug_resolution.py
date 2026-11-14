@@ -1,13 +1,7 @@
-import os
 import sys
-import json
 import torch
 import unittest
-import tempfile
-import shutil
 
-# Add parent directory
-sys.path.insert(0, os.path.abspath("Diffusion-LiDAR-Sampling"))
 from lookahead_sampling import get_args as get_lookahead_args, compute_entropic_antithetic_rewards
 from LiDAR_sampling import get_args as get_lidar_args
 
@@ -57,10 +51,6 @@ class TestFailFastAndBugResolution(unittest.TestCase):
     def test_03_fail_fast_odd_m_antithetic(self):
         """Fail-Fast: independent_antithetic requires even M, odd M MUST raise ValueError"""
         sys.argv = ["lookahead_sampling.py", "--use_smoothing", "--noise_mode=independent_antithetic", "--num_mc_samples=5"]
-        with self.assertRaises(ValueError):
-            get_lookahead_args()
-
-        sys.argv = ["lookahead_sampling.py", "--use_smoothing", "--noise_mode=stratified_harmonized", "--num_mc_samples=2"]
         with self.assertRaises(ValueError):
             get_lookahead_args()
 

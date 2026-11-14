@@ -1,6 +1,6 @@
-﻿#!/usr/bin/env python3
-"""
-Automated GenEval Benchmark Evaluation for LiDAR Sampling
+#!/usr/bin/env python3
+"""Run the official GenEval benchmark (Mask2Former Swin-S detector) on Phase 2 outputs.
+
 Usage:
     python run_geneval_eval.py --target_dir Target_samples/SD15_LiDAR_Table2_Replication
 """
@@ -8,7 +8,6 @@ Usage:
 import os
 import sys
 import glob
-import json
 import shutil
 import argparse
 import subprocess
@@ -17,20 +16,20 @@ import subprocess
 def parse_args():
     parser = argparse.ArgumentParser(description="Run GenEval on generated LiDAR images")
     parser.add_argument("--target_dir", type=str, default="Target_samples/SD15_LiDAR_Table2_Replication", help="Path to Target_samples directory containing prompt folders")
-    parser.add_argument("--geneval_dir", type=str, default="/kaggle/working/geneval", help="Path to clone/run GenEval")
-    parser.add_argument("--work_dir", type=str, default="/kaggle/working", help="Working directory on Kaggle/Colab")
+    parser.add_argument("--geneval_dir", type=str, default="geneval", help="Path to clone/run GenEval")
+    parser.add_argument("--work_dir", type=str, default=".", help="Working directory for GenEval inputs and results")
     parser.add_argument("--output_jsonl", type=str, default="geneval_results.jsonl", help="Output results file")
     return parser.parse_args()
 
 
 def prepare_geneval_input(target_dir, geneval_input_dir):
-    """Chuẩn hóa đường dẫn ảnh Target_samples/{prompt_idx}/samples/*.png thành geneval_input/{prompt_idx:05d}/*.png"""
+    """Link `<target_dir>/<prompt_idx>/samples/*.png` to `<geneval_input_dir>/<prompt_idx:05d>/*.png`."""
     os.makedirs(geneval_input_dir, exist_ok=True)
     prompt_folders = sorted(glob.glob(os.path.join(target_dir, "[0-9]*")))
     if not prompt_folders:
         prompt_folders = sorted(glob.glob(os.path.join(target_dir, "**", "[0-9]*"), recursive=True))
 
-    print(f"🔍 Tìm thấy {len(prompt_folders)} thư mục prompt đã sinh từ: {target_dir}")
+    print(f"Found {len(prompt_folders)} prompt folders in: {target_dir}")
     total_images = 0
 
     for p_dir in prompt_folders:
@@ -53,20 +52,20 @@ def prepare_geneval_input(target_dir, geneval_input_dir):
             if not os.path.exists(dest_path):
                 try:
                     os.symlink(os.path.abspath(img_path), dest_path)
-                except Exception:
+                except OSError:  # symlinks unavailable (e.g. Windows without privileges)
                     shutil.copyfile(img_path, dest_path)
             total_images += 1
 
-    print(f"✅ Đã chuẩn bị {total_images} ảnh sẵn sàng tại: {geneval_input_dir}")
+    print(f"Prepared {total_images} images in: {geneval_input_dir}")
     return total_images
 
 
 def setup_geneval_env(geneval_dir, work_dir):
-    """Cài đặt và tải các trọng số Mask2Former nếu chưa có"""
-    print("\n📦 Đang kiểm tra mã nguồn GenEval & mô hình phát hiện Mask2Former...")
+    """Clone GenEval and download the Mask2Former checkpoint if needed."""
+    print("\nChecking GenEval sources and the Mask2Former detector...")
 
     if not os.path.exists(geneval_dir):
-        print(f"📥 Đang clone repository GenEval vào {geneval_dir}...")
+        print(f"Cloning GenEval into {geneval_dir}...")
         subprocess.run(["git", "clone", "-q", "https://github.com/djghosh13/geneval.git", geneval_dir], check=True)
 
     models_dir = os.path.join(geneval_dir, "models")
@@ -76,21 +75,21 @@ def setup_geneval_env(geneval_dir, work_dir):
 
     if not os.path.exists(ckpt_path) or os.path.getsize(ckpt_path) < 1000000:
         url = "https://download.openmmlab.com/mmdetection/v2.0/mask2former/mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco/mask2former_swin-s-p4-w7-224_lsj_8x2_50e_coco_20220504_001756-743b7d99.pth"
-        print(f"⬇️ Đang tải checkpoint Mask2Former ({url})...")
+        print(f"Downloading Mask2Former checkpoint ({url})...")
         subprocess.run(["wget", "-q", "-c", url, "-O", ckpt_path], check=True)
-        print(f"✅ Đã tải xong checkpoint: {ckpt_path}")
+        print(f"Checkpoint downloaded: {ckpt_path}")
     else:
-        print(f"✅ Đã có sẵn checkpoint Mask2Former tại: {ckpt_path}")
+        print(f"Using existing Mask2Former checkpoint: {ckpt_path}")
 
     return models_dir
 
 
 def run_evaluation(geneval_dir, geneval_input_dir, models_dir, output_jsonl):
-    """Chạy evaluate_images.py và summary_scores.py"""
+    """Run GenEval's evaluate_images.py followed by summary_scores.py."""
     eval_script = os.path.join(geneval_dir, "evaluation", "evaluate_images.py")
     summary_script = os.path.join(geneval_dir, "evaluation", "summary_scores.py")
 
-    print("\n🚀 BẮT ĐẦU CHẠY ĐÁNH GIÁ GENEVAL BẰNG MASK2FORMER...")
+    print("\nRunning GenEval evaluation with Mask2Former...")
     cmd_eval = [
         sys.executable, eval_script,
         geneval_input_dir,
@@ -99,13 +98,13 @@ def run_evaluation(geneval_dir, geneval_input_dir, models_dir, output_jsonl):
     ]
     subprocess.run(cmd_eval, check=True)
 
-    print("\n" + "="*80)
-    print("📊 BẢNG TỔNG KẾT ĐIỂM SỐ GENEVAL BENCHMARK")
-    print("="*80)
+    print("\n" + "=" * 80)
+    print("GenEval summary")
+    print("=" * 80)
     cmd_summary = [sys.executable, summary_script, output_jsonl]
     subprocess.run(cmd_summary, check=True)
-    print("="*80)
-    print(f"💾 File chi tiết từng ảnh đã được lưu tại: {output_jsonl}")
+    print("=" * 80)
+    print(f"Per-image results saved to: {output_jsonl}")
 
 
 def main():
@@ -115,7 +114,7 @@ def main():
 
     total_imgs = prepare_geneval_input(args.target_dir, geneval_input_dir)
     if total_imgs == 0:
-        print(f"❌ Không tìm thấy ảnh nào trong: {args.target_dir}. Vui lòng kiểm tra lại đường dẫn!")
+        print(f"No images found in: {args.target_dir}. Please check the path.")
         sys.exit(1)
 
     models_dir = setup_geneval_env(args.geneval_dir, args.work_dir)

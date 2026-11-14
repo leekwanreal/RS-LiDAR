@@ -1,16 +1,11 @@
-"""
-compute_diversity_metrics.py - In-Memory Multi-Folder Diversity Evaluation Tool
+"""Diversity metrics for the particle sets produced by SMC / RS-SMC (Phase 2) runs.
 
-Computes Intra-Prompt Diversity Metrics across generated particle samples:
-1. Intra-Prompt Pairwise LPIPS (Perceptual Manifold / Visual Layout)
-2. Intra-Prompt Vendi Score (Effective Number of Modes via Von Neumann Entropy on CLIP Gram Matrix)
-3. Intra-Prompt Pairwise CLIP Cosine Distance (Semantic Diversity)
-4. ImageReward Quality (extracted from results.json) for Quality-Diversity Pareto Frontier Analysis
-
-Features:
-- Multithreaded In-Memory RAM Caching: Preloads entire image datasets into RAM to eliminate Drive I/O bottlenecks.
-- Multi-Folder Comparison: Evaluates multiple runs side-by-side and formats publication-grade Markdown tables.
-- Dual Interface: Standalone CLI and importable Python API for Jupyter/Colab notebooks.
+For every prompt folder `<run>/<idx>/samples/*.png` the N particles are compared with:
+1. mean pairwise LPIPS (AlexNet), perceptual / layout diversity;
+2. Vendi score (exp of the von Neumann entropy of the CLIP Gram matrix), the effective number of modes;
+3. mean pairwise CLIP cosine distance, semantic diversity;
+and the ImageReward max/mean stored in `results.json` is collected for quality-diversity plots.
+Images are preloaded into RAM with a thread pool. Usable as a CLI or imported from notebooks.
 """
 
 import os
@@ -20,7 +15,7 @@ import time
 import math
 import re
 import argparse
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -29,7 +24,7 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as T
 
-# Graceful optional imports
+# Optional dependencies; the corresponding metric is skipped when missing.
 try:
     import lpips
 except ImportError:
@@ -41,8 +36,15 @@ except ImportError:
     CLIPProcessor, CLIPModel = None, None
 
 
+# Placeholder and anneal labels written into summaries. The values are compared verbatim by the
+# diversity-evaluator notebook, so they are kept unchanged (em dash, Vietnamese "yes"/"no").
+NOT_AVAILABLE = "\u2014"
+ANNEAL_YES = "C\u00f3"
+ANNEAL_NO = "Kh\u00f4ng"
+
+
 # ==============================================================================
-# 1. CORE MATHEMATICAL DIVERSITY SOLVERS
+# 1. DIVERSITY METRICS
 # ==============================================================================
 
 def compute_vendi_score(embeddings: np.ndarray) -> float:
@@ -208,7 +210,7 @@ def _load_single_prompt_folder(
                 img_rgb = img.convert("RGB").resize((256, 256), Image.Resampling.BILINEAR)
                 pil_images.append(img_rgb)
                 tensor_list.append(lpips_transform(img_rgb))
-        except Exception:
+        except (OSError, ValueError):  # unreadable / truncated image
             continue
             
     if len(pil_images) < 2:
@@ -229,8 +231,8 @@ def _load_single_prompt_folder(
                     reward_mean = float(ir_info.get("mean", np.nan))
                 if "prompt" in res_data:
                     prompt_text = str(res_data["prompt"])
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError) as e:
+            print(f"Warning: could not read rewards from {results_path}: {e}")
             
     return InMemPromptItem(
         prompt_idx=prompt_idx,
@@ -250,7 +252,7 @@ def preload_run_to_ram(
     verbose: bool = True
 ) -> InMemRunDataset:
     """
-    Multithreaded loader that sucks all prompt particle images from Drive/SSD into RAM.
+    Load all prompt particle images of one run into RAM with a thread pool.
     
     Args:
         run_dir: Path to Target_samples/<RUN_NAME>
@@ -274,11 +276,11 @@ def preload_run_to_ram(
         
     if len(candidate_dirs) == 0:
         if verbose:
-            print(f"⚠️ [RAM Preloader]: Không tìm thấy thư mục prompt con nào trong {run_dir}!")
+            print(f"[RAM preloader] No prompt subfolders found in {run_dir}.")
         return dataset
         
     if verbose:
-        print(f"⚡ [RAM Preloader]: Đang nạp song song {len(candidate_dirs)} prompts từ {run_name} vào RAM...")
+        print(f"[RAM preloader] Loading {len(candidate_dirs)} prompts of {run_name} into RAM...")
         
     lpips_transform = T.Compose([
         T.ToTensor(),
@@ -300,13 +302,13 @@ def preload_run_to_ram(
         n_loaded = len(dataset)
         sample_n = dataset.items[0].num_particles if n_loaded > 0 else 0
         mem_mb = (n_loaded * sample_n * 3 * 256 * 256 * 4) / (1024 * 1024) if n_loaded > 0 else 0
-        print(f"  ✅ Đã nạp thành công {n_loaded} prompts (N={sample_n} hạt) vào RAM trong {elapsed:.2f}s (~{mem_mb:.1f} MB RAM).")
+        print(f"  Loaded {n_loaded} prompts (N={sample_n} particles) in {elapsed:.2f}s (~{mem_mb:.1f} MB RAM).")
         
     return dataset
 
 
 # ==============================================================================
-# 3. GPU DIVERSITY EVALUATOR ENGINE
+# 3. GPU DIVERSITY EVALUATOR
 # ==============================================================================
 
 class DiversityEvaluator:
@@ -330,17 +332,17 @@ class DiversityEvaluator:
         # Load AlexNet LPIPS
         if load_lpips:
             if lpips is None:
-                print("⚠️ Thư viện 'lpips' chưa được cài đặt. Vui lòng chạy: pip install lpips")
+                print("Warning: 'lpips' is not installed (pip install lpips); LPIPS is skipped.")
             else:
-                print(f"📦 Đang nạp mô hình AlexNet LPIPS trên thiết bị {self.device}...")
+                print(f"Loading AlexNet LPIPS on {self.device}...")
                 self.lpips_model = lpips.LPIPS(net="alex").to(self.device).eval()
                 
         # Load CLIP ViT-B/32
         if load_clip:
             if CLIPModel is None or CLIPProcessor is None:
-                print("⚠️ Thư viện 'transformers' chưa sẵn sàng cho CLIP.")
+                print("Warning: 'transformers' CLIP is unavailable; Vendi score and CLIP distance are skipped.")
             else:
-                print(f"📦 Đang nạp mô hình CLIP ViT-B/32 trên thiết bị {self.device}...")
+                print(f"Loading CLIP ViT-B/32 on {self.device}...")
                 clip_id = "openai/clip-vit-base-patch32"
                 self.clip_model = CLIPModel.from_pretrained(clip_id).to(self.device).eval()
                 self.clip_processor = CLIPProcessor.from_pretrained(clip_id)
@@ -356,7 +358,7 @@ class DiversityEvaluator:
         Returns dict containing aggregated metrics and per-prompt arrays.
         """
         if len(dataset) == 0:
-            return {"error": "Dataset rỗng", "run_name": dataset.run_name}
+            return {"error": "Empty dataset", "run_name": dataset.run_name}
             
         t0 = time.time()
         vendi_scores: List[float] = []
@@ -422,15 +424,15 @@ class DiversityEvaluator:
         summary.update(parse_run_settings(dataset.run_name, sample_n))
         
         if verbose:
-            print(f"  🏁 Đánh giá xong {dataset.run_name} trong {elapsed:.2f}s:")
+            print(f"  Evaluated {dataset.run_name} in {elapsed:.2f}s:")
             if summary['image_reward_max'] is not None:
-                print(f"     • ImageReward (Max):    {summary['image_reward_max']:.4f}")
+                print(f"     - ImageReward (max):    {summary['image_reward_max']:.4f}")
             if summary['vendi_score_mean'] is not None:
-                print(f"     • Vendi Score (Modes):  {summary['vendi_score_mean']:.3f} / {sample_n}.0 (±{summary['vendi_score_std']:.3f})")
+                print(f"     - Vendi score (modes):  {summary['vendi_score_mean']:.3f} / {sample_n}.0 (+-{summary['vendi_score_std']:.3f})")
             if summary['lpips_mean'] is not None:
-                print(f"     • Pairwise LPIPS:       {summary['lpips_mean']:.4f} (±{summary['lpips_std']:.4f})")
+                print(f"     - Pairwise LPIPS:       {summary['lpips_mean']:.4f} (+-{summary['lpips_std']:.4f})")
             if summary['clip_dist_mean'] is not None:
-                print(f"     • Pairwise CLIP Dist:   {summary['clip_dist_mean']:.4f}")
+                print(f"     - Pairwise CLIP dist:   {summary['clip_dist_mean']:.4f}")
                 
         return summary
 
@@ -448,9 +450,9 @@ def parse_run_settings(run_name: str, num_particles: Optional[int] = None) -> Di
         "method": "Custom",
         "backbone": "SD15",
         "particles": num_particles if num_particles is not None else 4,
-        "sigma": "—",
-        "M": "—",
-        "anneal": "Không",
+        "sigma": NOT_AVAILABLE,
+        "M": NOT_AVAILABLE,
+        "anneal": ANNEAL_NO,
         "guidance": "None",
     }
     
@@ -490,9 +492,9 @@ def parse_run_settings(run_name: str, num_particles: Optional[int] = None) -> Di
         
     # 6. Anneal
     if "anneal" in run_name.lower():
-        settings["anneal"] = "Có"
+        settings["anneal"] = ANNEAL_YES
     else:
-        settings["anneal"] = "Không" if settings["method"] == "RS-SMC (Ours)" else "—"
+        settings["anneal"] = ANNEAL_NO if settings["method"] == "RS-SMC (Ours)" else NOT_AVAILABLE
         
     # 7. Guidance
     if "RSLiDAR" in run_name or "RS_LiDAR" in run_name:
@@ -504,14 +506,15 @@ def parse_run_settings(run_name: str, num_particles: Optional[int] = None) -> Di
 
 
 def format_markdown_table(summaries: List[Dict[str, Any]]) -> str:
-    """Formats multiple evaluation results into a clean GitHub Markdown comparison table."""
+    """Format evaluation summaries as a Markdown table (all metric columns: higher is better)."""
+    na = NOT_AVAILABLE
     lines = []
-    lines.append("| STT | Phương Pháp | $N$ | $\\sigma$ | $M$ | Anneal | ImageReward (↑) | Vendi Score (↑) | Pairwise LPIPS (↑) | CLIP Dist (↑) | Prompts | Thư Mục |")
+    lines.append("| # | Method | $N$ | $\\sigma$ | $M$ | Anneal | ImageReward | Vendi Score | Pairwise LPIPS | CLIP Dist | Prompts | Folder |")
     lines.append("| :-: | :--- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :--- |")
     
     for idx, s in enumerate(summaries, 1):
         if "error" in s:
-            lines.append(f"| {idx} | `{s['run_name']}` | — | — | — | — | ERROR: {s['error']} | — | — | — | 0 | `{s['run_name']}` |")
+            lines.append(f"| {idx} | `{s['run_name']}` | {na} | {na} | {na} | {na} | ERROR: {s['error']} | {na} | {na} | {na} | 0 | `{s['run_name']}` |")
             continue
             
         r_name = s['run_name']
@@ -519,17 +522,17 @@ def format_markdown_table(summaries: List[Dict[str, Any]]) -> str:
             s.update(parse_run_settings(r_name, s.get('num_particles')))
             
         method = s.get('method', 'Custom')
-        n_part = s.get('particles', s.get('num_particles', '—'))
-        sigma = s.get('sigma', '—')
-        m_val = s.get('M', '—')
-        anneal = s.get('anneal', '—')
+        n_part = s.get('particles', s.get('num_particles', na))
+        sigma = s.get('sigma', na)
+        m_val = s.get('M', na)
+        anneal = s.get('anneal', na)
         
         sigma_str = f"{sigma:.2f}" if isinstance(sigma, float) else str(sigma)
         
-        ir_str = f"**`{s['image_reward_max']:.4f}`**" if s.get('image_reward_max') is not None else "—"
-        vs_str = f"**`{s['vendi_score_mean']:.3f}`** / {n_part}" if s.get('vendi_score_mean') is not None else "—"
-        lpips_str = f"`{s['lpips_mean']:.4f}`" if s.get('lpips_mean') is not None else "—"
-        clip_str = f"`{s['clip_dist_mean']:.4f}`" if s.get('clip_dist_mean') is not None else "—"
+        ir_str = f"**`{s['image_reward_max']:.4f}`**" if s.get('image_reward_max') is not None else na
+        vs_str = f"**`{s['vendi_score_mean']:.3f}`** / {n_part}" if s.get('vendi_score_mean') is not None else na
+        lpips_str = f"`{s['lpips_mean']:.4f}`" if s.get('lpips_mean') is not None else na
+        clip_str = f"`{s['clip_dist_mean']:.4f}`" if s.get('clip_dist_mean') is not None else na
         n_prompts = s.get('evaluated_prompts', 0)
         
         if len(r_name) > 38:
@@ -552,7 +555,7 @@ def save_and_merge_reports(
     create_timestamped_copy: bool = True
 ) -> List[Dict[str, Any]]:
     """
-    Saves and merges evaluation results with existing report files on Drive/disk.
+    Save evaluation results, merging them with an existing report.
     - Incremental Accumulation: Preserves all previous run settings and evaluations.
     - Deduplication: If the same run_name is evaluated again, updates it with the latest data.
     - Timestamped Snapshot: Automatically saves a timestamped backup in a 'history/' folder.
@@ -571,9 +574,9 @@ def save_and_merge_reports(
                     for item in existing_data:
                         if isinstance(item, dict) and "run_name" in item:
                             merged_dict[item["run_name"]] = item
-            print(f"🔄 [Smart Accumulator]: Đã tải {len(merged_dict)} kết quả tích lũy từ file báo cáo cũ.")
-        except Exception as e:
-            print(f"⚠️ [Smart Accumulator]: Không thể nạp JSON cũ ({e}), sẽ tạo mới.")
+            print(f"[Report] Loaded {len(merged_dict)} previous results from {output_json}.")
+        except (OSError, ValueError) as e:
+            print(f"[Report] Could not read existing JSON ({e}); starting a new report.")
             
     # 2. Merge new summaries (updating existing or appending new)
     for s in new_summaries:
@@ -596,7 +599,7 @@ def save_and_merge_reports(
         os.makedirs(os.path.dirname(os.path.abspath(output_json)), exist_ok=True)
         with open(output_json, "w", encoding="utf-8") as jf:
             json.dump(accumulated_list, jf, indent=4)
-        print(f"💾 [Master JSON]: Đã lưu {len(accumulated_list)} kết quả tích lũy tại: {output_json}")
+        print(f"[Report] Saved {len(accumulated_list)} results to {output_json}")
         
     # 4. Save Master CSV & Timestamped Snapshot
     if output_csv:
@@ -618,7 +621,7 @@ def save_and_merge_reports(
         ordered_cols = [c for c in priority_cols if c in df.columns] + [c for c in df.columns if c not in priority_cols]
         df = df[ordered_cols]
         df.to_csv(output_csv, index=False)
-        print(f"💾 [Master CSV]: Đã lưu bảng tổng hợp tích lũy tại: {output_csv}")
+        print(f"[Report] Saved summary table to {output_csv}")
         
         # 5. Save Timestamped Snapshot to history/
         if create_timestamped_copy:
@@ -627,13 +630,13 @@ def save_and_merge_reports(
             os.makedirs(history_dir, exist_ok=True)
             ts_csv = os.path.join(history_dir, f"diversity_summary_{timestamp}.csv")
             df.to_csv(ts_csv, index=False)
-            print(f"🕒 [Snapshot Backup]: Đã lưu bản sao lưu lịch sử tại: {ts_csv}")
+            print(f"[Report] Saved timestamped snapshot to {ts_csv}")
             
     return accumulated_list
 
 
 def auto_resolve_target_dir(dir_query: str, base_drive: Optional[str] = None) -> str:
-    """Helper to auto-resolve relative names, wildcards, or Colab Drive paths."""
+    """Resolve a run folder given as a path, a name under Target_samples/, or a glob pattern."""
     if os.path.isabs(dir_query) and os.path.exists(dir_query):
         return dir_query
         
@@ -673,13 +676,13 @@ def evaluate_multiple_folders(
     summaries = []
     
     print("\n" + "=" * 78)
-    print(f"🚀 KHỞI ĐỘNG HỆ THỐNG ĐÁNH GIÁ ĐA DẠNG MẪU (MULTI-FOLDER IN-MEMORY DIVERSITY)")
-    print(f"📁 Tổng số thư mục cần đánh giá: {len(folder_paths)}")
+    print("Multi-folder diversity evaluation")
+    print(f"Folders to evaluate: {len(folder_paths)}")
     print("=" * 78)
     
     for idx, f_path in enumerate(folder_paths, 1):
         resolved_path = auto_resolve_target_dir(f_path)
-        print(f"\n📂 [{idx}/{len(folder_paths)}] Đang xử lý thư mục: {resolved_path}")
+        print(f"\n[{idx}/{len(folder_paths)}] Processing folder: {resolved_path}")
         
         # 1. Preload folder into RAM
         dataset = preload_run_to_ram(
@@ -694,13 +697,13 @@ def evaluate_multiple_folders(
         summaries.append(summary)
         
     print("\n" + "=" * 78)
-    print("📊 BẢNG TỔNG HỢP SO SÁNH CHẤT LƯỢNG (IMAGEREWARD) VS ĐỘ ĐA DẠNG (DIVERSITY):")
+    print("Quality (ImageReward) vs. diversity summary:")
     print("=" * 78 + "\n")
     md_table = format_markdown_table(summaries)
     print(md_table + "\n")
     print("=" * 78)
     
-    # Save & Merge outputs if specified (Smart Accumulator Mode)
+    # Save and merge with existing reports if requested.
     if output_json or output_csv:
         all_accumulated = save_and_merge_reports(
             new_summaries=summaries,
@@ -741,7 +744,7 @@ def parse_args():
         "--base_drive", 
         type=str, 
         default=None, 
-        help="Base Google Drive directory path if running on Colab"
+        help="Optional base directory that contains Target_samples/"
     )
     parser.add_argument(
         "--output_json", 

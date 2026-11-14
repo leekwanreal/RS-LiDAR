@@ -1,54 +1,37 @@
-from typing import Union
+"""ImageReward model with batched scoring, used as the reward R in Phases 1 and 2.
+
+Adapted from ImageReward (Xu et al., 2023; https://github.com/THUDM/ImageReward), which builds on
+the CLIP and improved-aesthetic-predictor code bases. `rm_load` mirrors `ImageReward.load` but
+returns `IRSMC`, whose `score_batched` scores all particles of a prompt in one forward pass.
+"""
+import importlib.machinery
 import os
-import torch
-
-# Compatibility patch for ImageReward with newer transformers versions (>= 4.40)
-try:
-    from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
-    patch_transformers_for_imagereward()
-except Exception:
-    pass
-
 import sys
 import types
-import importlib.machinery
+from typing import Union
+
+import torch
+import torch.nn as nn
+from PIL import Image
+from torchvision.transforms import CenterCrop, Compose, Normalize, Resize, ToTensor
+
+# ImageReward imports `wandb` at module level; provide an empty stub when it is not installed.
 if "wandb" not in sys.modules:
     try:
-        import wandb
-    except Exception:
+        import wandb  # noqa: F401
+    except ImportError:
         _mock_wandb = types.ModuleType("wandb")
         _mock_wandb.__spec__ = importlib.machinery.ModuleSpec("wandb", None)
         _mock_wandb.__file__ = "wandb"
         sys.modules["wandb"] = _mock_wandb
 
-from PIL import Image
-import ImageReward as RM
-try:
-    from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
-    patch_transformers_for_imagereward()
-except Exception:
-    pass
+# Restore transformers utilities that the ImageReward BLIP code imports (must precede `import ImageReward`).
+from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward  # noqa: E402
 
+patch_transformers_for_imagereward()
 
-'''
-@File       :   ImageReward.py
-@Time       :   2023/01/28 19:53:00
-@Auther     :   Jiazheng Xu
-@Contact    :   xjz22@mails.tsinghua.edu.cn
-@Description:   ImageReward Reward model.
-* Based on CLIP code base and improved-aesthetic-predictor code base
-* https://github.com/openai/CLIP
-* https://github.com/christophschuhmann/improved-aesthetic-predictor
-'''
-
-import os
-import torch
-import torch.nn as nn
-from PIL import Image
-from ImageReward.models.BLIP.blip_pretrain import BLIP_Pretrain
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-
-from torchvision.transforms.functional import pil_to_tensor
+import ImageReward as RM  # noqa: E402
+from ImageReward.models.BLIP.blip_pretrain import BLIP_Pretrain  # noqa: E402
 
 try:
     from torchvision.transforms import InterpolationMode
@@ -84,20 +67,15 @@ class MLP(nn.Module):
 
         self.layers = nn.Sequential(
             nn.Linear(self.input_size, 1024),
-            # nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(1024, 128),
-            # nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(128, 64),
-            # nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(64, 16),
-            # nn.ReLU(),
             nn.Linear(16, 1),
         )
 
-        # initial MLP param
         for name, param in self.layers.named_parameters():
             if 'weight' in name:
                 nn.init.normal_(param, mean=0.0, std=1.0 / (self.input_size + 1))
@@ -356,7 +334,7 @@ def rm_load(
             import urllib.request
             try:
                 urllib.request.urlretrieve("https://huggingface.co/THUDM/ImageReward/resolve/main/ImageReward.pt", model_path)
-            except Exception as e:
+            except OSError:
                 model_path = RM.ImageReward_download(
                     RM.utils._MODELS[name],
                     cache_root,
@@ -372,7 +350,6 @@ def rm_load(
 
     print('load checkpoint from %s' % model_path)
     state_dict = torch.load(model_path, map_location='cpu')
-    # state_dict = torch.load(model_path, map_location=device)
 
     # med_config
     if med_config is None:
@@ -382,7 +359,7 @@ def rm_load(
             try:
                 urllib.request.urlretrieve("https://huggingface.co/THUDM/ImageReward/resolve/main/med_config.json", med_path)
                 med_config = med_path
-            except Exception:
+            except OSError:
                 med_config = RM.ImageReward_download(
                     "https://huggingface.co/THUDM/ImageReward/blob/main/med_config.json",
                     cache_root,
@@ -391,8 +368,7 @@ def rm_load(
             med_config = med_path
 
     model = IRSMC(device=device, med_config=med_config).to(device)
-    msg = model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(state_dict, strict=False)
     print("checkpoint loaded")
     model.eval()
-    # import pdb; pdb.set_trace()
     return model

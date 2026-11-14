@@ -1,3 +1,9 @@
+"""Reward models used for lookahead scoring, SMC potentials and evaluation.
+
+ImageReward (default guidance reward), CLIP score / CLIP diversity, HPSv2 (HumanPreference) and the
+LAION aesthetic predictor (AS). Loaded models are cached in `REWARDS_DICT`. `clip`, `hpsv2` and
+`filelock` are optional: when missing, the corresponding metric returns zeros.
+"""
 import os
 import shutil
 import urllib.request
@@ -20,7 +26,7 @@ except ImportError:
 
 try:
     import hpsv2
-    # Auto-fix missing bpe_simple_vocab_16e6.txt.gz in hpsv2 wheel on Python 3.11/3.12
+    # Some hpsv2 wheels miss bpe_simple_vocab_16e6.txt.gz; copy it from CLIP or download it.
     try:
         _hps_dir = os.path.join(os.path.dirname(hpsv2.__file__), "src", "open_clip")
         _bpe_target = os.path.join(_hps_dir, "bpe_simple_vocab_16e6.txt.gz")
@@ -35,22 +41,12 @@ try:
                     "https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz",
                     _bpe_target,
                 )
-    except Exception:
-        pass
+    except OSError as e:
+        print(f"Warning: could not provide the hpsv2 BPE vocabulary: {e}")
 except ImportError:
     hpsv2 = None
 
-try:
-    from fkd_diffusers.image_reward_utils import rm_load
-except (ImportError, Exception):
-    try:
-        from image_reward_utils import rm_load
-    except (ImportError, Exception):
-        try:
-            import ImageReward as RM
-            rm_load = RM.load
-        except (ImportError, Exception):
-            rm_load = None
+from fkd_diffusers.image_reward_utils import rm_load  # noqa: E402
 
 # Stores the reward models
 REWARDS_DICT = {
@@ -61,10 +57,10 @@ REWARDS_DICT = {
 }
 
 
-# Returns the reward function based on the guidance_reward_fn name
-def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_score", diff=False):
+def get_reward_function(reward_name, images, prompts, metric_to_chase="overall_score"):
+    """Score `images` with the guidance reward `reward_name`."""
     if reward_name == "ImageReward":
-        return do_image_reward(images=images, prompts=prompts, diff=diff)
+        return do_image_reward(images=images, prompts=prompts)
     elif reward_name == "Clip-Score":
         return do_clip_score(images=images, prompts=prompts)
     elif reward_name == "HumanPreference":
@@ -105,11 +101,11 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
                         from PIL import Image as _PILImg
                         _dummy = _PILImg.new("RGB", (224, 224))
                         _ = hpsv2.score(_dummy, "warmup", hps_version="v2.1")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Warning: HPSv2 warm-up (weight download) failed: {e}")
 
         scores = []
-        # Tối ưu tốc độ cao: Nếu toàn bộ ảnh dùng chung prompt, truyền trọn batch vào hpsv2.score 1 lượt
+        # Fast path: when all images share one prompt, score the whole batch in a single call.
         if len(prompt_texts) > 0 and len(set(prompt_texts)) <= 1:
             try:
                 raw_res = hpsv2.score(images, prompt_texts[0], hps_version="v2.1")
@@ -120,7 +116,7 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
             except Exception:
                 scores = []
 
-        # Fallback tuần tự nếu xử lý cả batch gặp lỗi hoặc không đủ số lượng
+        # Fall back to per-image scoring if the batched call failed or returned the wrong count.
         if len(scores) != len(images):
             scores = []
             for i, img in enumerate(images):
@@ -175,7 +171,7 @@ def do_clip_score_diversity(*, images, prompts):
 
 
 # Compute ImageReward
-def do_image_reward(*, images, prompts, diff=False):
+def do_image_reward(*, images, prompts):
     global REWARDS_DICT
     if images is None or len(images) == 0:
         return []
@@ -193,36 +189,10 @@ def do_image_reward(*, images, prompts, diff=False):
 
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     if REWARDS_DICT["ImageReward"] is None:
-        try:
-            from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
-            patch_transformers_for_imagereward()
-        except Exception:
-            pass
-        if rm_load is None:
-            try:
-                from fkd_diffusers.image_reward_utils import rm_load as _rm_load
-                rm_load_fn = _rm_load
-            except Exception as e1:
-                try:
-                    import ImageReward as RM
-                    rm_load_fn = RM.load
-                except Exception as e2:
-                    raise ImportError(
-                        f"ImageReward chưa được nạp thành công. Lỗi chi tiết:\n"
-                        f"- Từ fkd_diffusers: {e1}\n"
-                        f"- Từ ImageReward: {e2}\n"
-                        f"Vui lòng đảm bảo đã cài đặt: pip install --no-build-isolation git+https://github.com/openai/CLIP.git && pip install image-reward"
-                    ) from e2
-        else:
-            rm_load_fn = rm_load
-        REWARDS_DICT["ImageReward"] = rm_load_fn("ImageReward-v1.0", device=dev)
+        REWARDS_DICT["ImageReward"] = rm_load("ImageReward-v1.0", device=dev)
 
-    if diff:
-        image_reward_result = REWARDS_DICT["ImageReward"].differentiable_score_batched(prompts, images)
-    else:
-
-        with torch.no_grad():
-            image_reward_result = REWARDS_DICT["ImageReward"].score_batched(prompts, images)
+    with torch.no_grad():
+        image_reward_result = REWARDS_DICT["ImageReward"].score_batched(prompts, images)
     return image_reward_result
 
 
@@ -283,16 +253,6 @@ def do_AS(*, images, prompts):
         return [0.0] * len(images)
 
 
-
-try:
-    from filelock import FileLock
-except ImportError:
-    class FileLock:
-        def __init__(self, *args, **kwargs): pass
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-
-
 class CLIPScore(nn.Module):
     def __init__(self, download_root=None, device='cpu'):
         super().__init__()
@@ -344,18 +304,12 @@ class MLP(nn.Module):
         self.input_size = input_size
         self.layers = nn.Sequential(
             nn.Linear(self.input_size, 1024),
-            # nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(1024, 128),
-            # nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(128, 64),
-            # nn.ReLU(),
             nn.Dropout(0.1),
-
             nn.Linear(64, 16),
-            # nn.ReLU(),
-
             nn.Linear(16, 1)
         )
 
@@ -379,8 +333,7 @@ class AestheticScore(nn.Module):
         if device == "cpu":
             self.clip_model.float()
         else:
-            clip.model.convert_weights(
-                self.clip_model)  # Actually this line is unnecessary since clip by default already on float16
+            clip.model.convert_weights(self.clip_model)
 
         # have clip.logit_scale require no grad.
         self.clip_model.logit_scale.requires_grad_(False)

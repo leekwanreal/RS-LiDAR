@@ -1,30 +1,25 @@
-"""
-Universal compatibility bridge between modern Hugging Face transformers (>= 4.40 / 5.x)
-and legacy multimodal / reward packages (such as ImageReward / BLIP).
+"""Compatibility shims that let the ImageReward / BLIP reward model run on newer `transformers`.
 
-Architectural Highlights (General Solution):
-1. Dynamic Symbol Mirroring:
-   Refactored utilities in Hugging Face (such as pruning, chunking, and tensor operations)
-   were moved across `transformers.modeling_utils` and `transformers.pytorch_utils`.
-   This module dynamically mirrors all public symbols bidirectionally between both packages.
-2. Missing Symbol Polyfills:
-   Mathematical fallback implementations for permanently deleted legacy functions
-   (`find_pruneable_heads_and_indices`, `prune_linear_layer`, `apply_chunking_to_forward`).
-3. Universal Tokenizer Backward-Compatibility Resolver:
-   Intercepts `PreTrainedTokenizerBase.__getattr__` to dynamically map deprecated attributes
-   (`additional_special_tokens_ids`, `additional_special_tokens`) to modern counterparts
-   (`extra_special_tokens_ids`, `extra_special_tokens`).
+ImageReward imports utilities that newer `transformers` releases moved or removed. The patch:
+1. re-adds `apply_chunking_to_forward`, `find_pruneable_heads_and_indices` and `prune_linear_layer`;
+2. mirrors public symbols between `transformers.modeling_utils` and `transformers.pytorch_utils`;
+3. maps the legacy tokenizer attributes `additional_special_tokens(_ids)` to their new names;
+4. restores `PreTrainedModel` helpers used by BLIP (`all_tied_weights_keys`, `get_head_mask`,
+   `invert_attention_mask`, `get_extended_attention_mask`).
+Each patch is applied only when the attribute is missing, so it is a no-op on older releases and
+does not change reward values. It must run before `import ImageReward`; it also runs on import.
 """
+
 
 def patch_transformers_for_imagereward():
     try:
         import torch
         import transformers.modeling_utils as mu
         import transformers.pytorch_utils as pu
-    except Exception:
+    except ImportError:
         return
 
-    # 1. Polyfills for functions deleted entirely from transformers >= 5
+    # 1. Polyfills for functions removed from transformers >= 5.
     if not hasattr(pu, "apply_chunking_to_forward") and not hasattr(mu, "apply_chunking_to_forward"):
         def apply_chunking_to_forward(forward_fn, chunk_size, chunk_dim, *args):
             assert len(args) > 0
@@ -73,22 +68,16 @@ def patch_transformers_for_imagereward():
             return new_layer
         pu.prune_linear_layer = prune_linear_layer
 
-    # 2. Universal Dynamic Symbol Mirroring between modeling_utils and pytorch_utils
+    # 2. Mirror public symbols between modeling_utils and pytorch_utils.
     for attr in dir(pu):
         if not attr.startswith("_") and not hasattr(mu, attr):
-            try:
-                setattr(mu, attr, getattr(pu, attr))
-            except Exception:
-                pass
+            setattr(mu, attr, getattr(pu, attr))
 
     for attr in dir(mu):
         if not attr.startswith("_") and not hasattr(pu, attr):
-            try:
-                setattr(pu, attr, getattr(mu, attr))
-            except Exception:
-                pass
+            setattr(pu, attr, getattr(mu, attr))
 
-    # 3. Universal Tokenizer Compatibility (Dynamic Attribute Resolution)
+    # 3. Resolve legacy tokenizer attributes.
     try:
         from transformers import PreTrainedTokenizerBase
 
@@ -124,113 +113,105 @@ def patch_transformers_for_imagereward():
                 setattr(BertTokenizer, "additional_special_tokens_ids", prop_ids)
             if not hasattr(BertTokenizer, "additional_special_tokens"):
                 setattr(BertTokenizer, "additional_special_tokens", prop_tokens)
-        except Exception:
+        except ImportError:
             pass
-    except Exception:
+    except ImportError:
         pass
 
-    # 4. Universal PreTrainedModel Compatibility for Transformers >= 5 (all_tied_weights_keys & get_head_mask)
-    try:
-        if not hasattr(mu.PreTrainedModel, "all_tied_weights_keys"):
-            @property
-            def all_tied_weights_keys(self):
-                if not hasattr(self, "_all_tied_weights_keys_cached"):
-                    if hasattr(self, "get_expanded_tied_weights_keys"):
-                        try:
-                            self._all_tied_weights_keys_cached = self.get_expanded_tied_weights_keys(all_submodels=True)
-                        except Exception:
-                            self._all_tied_weights_keys_cached = {}
-                    elif hasattr(self, "_tied_weights_keys"):
-                        self._all_tied_weights_keys_cached = dict(getattr(self, "_tied_weights_keys", {}))
-                    else:
+    # 4. PreTrainedModel helpers removed in transformers >= 5.
+    if not hasattr(mu.PreTrainedModel, "all_tied_weights_keys"):
+        @property
+        def all_tied_weights_keys(self):
+            if not hasattr(self, "_all_tied_weights_keys_cached"):
+                if hasattr(self, "get_expanded_tied_weights_keys"):
+                    try:
+                        self._all_tied_weights_keys_cached = self.get_expanded_tied_weights_keys(all_submodels=True)
+                    except Exception:  # signature differs across releases; "no tied weights" is a safe default
                         self._all_tied_weights_keys_cached = {}
-                return self._all_tied_weights_keys_cached
-
-            @all_tied_weights_keys.setter
-            def all_tied_weights_keys(self, val):
-                self._all_tied_weights_keys_cached = val
-
-            mu.PreTrainedModel.all_tied_weights_keys = all_tied_weights_keys
-
-        if not hasattr(mu.PreTrainedModel, "get_head_mask"):
-            def get_head_mask(self, head_mask, num_hidden_layers: int, is_attention_chunked: bool = False):
-                if head_mask is not None:
-                    if head_mask.dim() == 1:
-                        head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
-                        head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
-                    elif head_mask.dim() == 2:
-                        head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
-                    dtype = getattr(self, "dtype", torch.float32)
-                    head_mask = head_mask.to(dtype=dtype)
+                elif hasattr(self, "_tied_weights_keys"):
+                    self._all_tied_weights_keys_cached = dict(getattr(self, "_tied_weights_keys", {}))
                 else:
-                    head_mask = [None] * num_hidden_layers
-                return head_mask
+                    self._all_tied_weights_keys_cached = {}
+            return self._all_tied_weights_keys_cached
 
-            mu.PreTrainedModel.get_head_mask = get_head_mask
-            if hasattr(mu, "ModuleUtilsMixin"):
-                mu.ModuleUtilsMixin.get_head_mask = get_head_mask
+        @all_tied_weights_keys.setter
+        def all_tied_weights_keys(self, val):
+            self._all_tied_weights_keys_cached = val
 
-        # Polyfill for invert_attention_mask (removed from PreTrainedModel in modern transformers)
-        def invert_attention_mask(self, encoder_attention_mask):
-            if encoder_attention_mask.dim() == 3:
-                extended_mask = encoder_attention_mask[:, None, :, :]
-            elif encoder_attention_mask.dim() == 2:
-                extended_mask = encoder_attention_mask[:, None, None, :]
-            else:
-                extended_mask = encoder_attention_mask
-            dtype = getattr(self, "dtype", torch.float32)
-            extended_mask = extended_mask.to(dtype=dtype)
-            try:
-                min_val = torch.finfo(dtype).min
-            except Exception:
-                min_val = -10000.0
-            return (1.0 - extended_mask) * min_val
+        mu.PreTrainedModel.all_tied_weights_keys = all_tied_weights_keys
 
-        if not hasattr(mu.PreTrainedModel, "invert_attention_mask"):
-            mu.PreTrainedModel.invert_attention_mask = invert_attention_mask
-        if hasattr(mu, "ModuleUtilsMixin") and not hasattr(mu.ModuleUtilsMixin, "invert_attention_mask"):
-            mu.ModuleUtilsMixin.invert_attention_mask = invert_attention_mask
-
-        try:
-            from transformers.models.bert.modeling_bert import BertModel
-            if not hasattr(BertModel, "invert_attention_mask"):
-                BertModel.invert_attention_mask = invert_attention_mask
-        except Exception:
-            pass
-
-        try:
-            import ImageReward.models.BLIP.med as blip_med
-            if hasattr(blip_med, "BertModel") and not hasattr(blip_med.BertModel, "invert_attention_mask"):
-                blip_med.BertModel.invert_attention_mask = invert_attention_mask
-        except Exception:
-            pass
-
-        # Polyfill for get_extended_attention_mask if missing
-        def get_extended_attention_mask(self, attention_mask, input_shape=None, device=None, dtype=None):
-            if attention_mask.dim() == 3:
-                extended_mask = attention_mask[:, None, :, :]
-            elif attention_mask.dim() == 2:
-                extended_mask = attention_mask[:, None, None, :]
-            else:
-                extended_mask = attention_mask
-            if dtype is None:
+    if not hasattr(mu.PreTrainedModel, "get_head_mask"):
+        def get_head_mask(self, head_mask, num_hidden_layers: int, is_attention_chunked: bool = False):
+            if head_mask is not None:
+                if head_mask.dim() == 1:
+                    head_mask = head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                    head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+                elif head_mask.dim() == 2:
+                    head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
                 dtype = getattr(self, "dtype", torch.float32)
-            extended_mask = extended_mask.to(dtype=dtype)
-            try:
-                min_val = torch.finfo(dtype).min
-            except Exception:
-                min_val = -10000.0
-            return (1.0 - extended_mask) * min_val
+                head_mask = head_mask.to(dtype=dtype)
+            else:
+                head_mask = [None] * num_hidden_layers
+            return head_mask
 
-        if not hasattr(mu.PreTrainedModel, "get_extended_attention_mask"):
-            mu.PreTrainedModel.get_extended_attention_mask = get_extended_attention_mask
-        if hasattr(mu, "ModuleUtilsMixin") and not hasattr(mu.ModuleUtilsMixin, "get_extended_attention_mask"):
-            mu.ModuleUtilsMixin.get_extended_attention_mask = get_extended_attention_mask
-    except Exception:
+        mu.PreTrainedModel.get_head_mask = get_head_mask
+        if hasattr(mu, "ModuleUtilsMixin"):
+            mu.ModuleUtilsMixin.get_head_mask = get_head_mask
+
+    def invert_attention_mask(self, encoder_attention_mask):
+        if encoder_attention_mask.dim() == 3:
+            extended_mask = encoder_attention_mask[:, None, :, :]
+        elif encoder_attention_mask.dim() == 2:
+            extended_mask = encoder_attention_mask[:, None, None, :]
+        else:
+            extended_mask = encoder_attention_mask
+        dtype = getattr(self, "dtype", torch.float32)
+        extended_mask = extended_mask.to(dtype=dtype)
+        try:
+            min_val = torch.finfo(dtype).min
+        except TypeError:
+            min_val = -10000.0
+        return (1.0 - extended_mask) * min_val
+
+    if not hasattr(mu.PreTrainedModel, "invert_attention_mask"):
+        mu.PreTrainedModel.invert_attention_mask = invert_attention_mask
+    if hasattr(mu, "ModuleUtilsMixin") and not hasattr(mu.ModuleUtilsMixin, "invert_attention_mask"):
+        mu.ModuleUtilsMixin.invert_attention_mask = invert_attention_mask
+
+    try:
+        from transformers.models.bert.modeling_bert import BertModel
+        if not hasattr(BertModel, "invert_attention_mask"):
+            BertModel.invert_attention_mask = invert_attention_mask
+    except ImportError:
         pass
 
-# Run patch upon module import
+    try:
+        import ImageReward.models.BLIP.med as blip_med
+        if hasattr(blip_med, "BertModel") and not hasattr(blip_med.BertModel, "invert_attention_mask"):
+            blip_med.BertModel.invert_attention_mask = invert_attention_mask
+    except ImportError:
+        pass
+
+    def get_extended_attention_mask(self, attention_mask, input_shape=None, device=None, dtype=None):
+        if attention_mask.dim() == 3:
+            extended_mask = attention_mask[:, None, :, :]
+        elif attention_mask.dim() == 2:
+            extended_mask = attention_mask[:, None, None, :]
+        else:
+            extended_mask = attention_mask
+        if dtype is None:
+            dtype = getattr(self, "dtype", torch.float32)
+        extended_mask = extended_mask.to(dtype=dtype)
+        try:
+            min_val = torch.finfo(dtype).min
+        except TypeError:
+            min_val = -10000.0
+        return (1.0 - extended_mask) * min_val
+
+    if not hasattr(mu.PreTrainedModel, "get_extended_attention_mask"):
+        mu.PreTrainedModel.get_extended_attention_mask = get_extended_attention_mask
+    if hasattr(mu, "ModuleUtilsMixin") and not hasattr(mu.ModuleUtilsMixin, "get_extended_attention_mask"):
+        mu.ModuleUtilsMixin.get_extended_attention_mask = get_extended_attention_mask
+
+
 patch_transformers_for_imagereward()
-
-
-

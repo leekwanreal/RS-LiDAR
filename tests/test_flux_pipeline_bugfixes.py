@@ -1,13 +1,6 @@
-import os
-import sys
 import unittest
 from unittest.mock import MagicMock
 import torch
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
 
 from fkd_diffusers.fkd_pipeline_flux import FluxPipeline_LiDAR
 from diffusers import FlowMatchEulerDiscreteScheduler
@@ -15,13 +8,13 @@ from diffusers import FlowMatchEulerDiscreteScheduler
 
 class TestFluxPipelineBugfixes(unittest.TestCase):
     """
-    Kiểm thử kiểm tra triệt để các lỗi đã sửa trong FluxPipeline_LiDAR:
-    1. Timestep scaling ở bước cuối (t = 1.0): t_scaled phải là 0.001, KHÔNG ĐƯỢC là 1.0!
-    2. t_norm ở bước cuối (t = 1.0): t_norm phải là 0.001, KHÔNG ĐƯỢC rơi vào [0.95, 1.0]!
-    3. Scheduler.set_begin_index(0) được gọi trước vòng lặp.
-    4. vae_scale_factor mặc định chuẩn 8 (chứ không phải 16 làm hỏng spatial latents).
+    Regression tests for FluxPipeline_LiDAR:
+    1. Timestep scaling at the last step (t = 1.0): t_scaled must be 0.001, not 1.0.
+    2. t_norm at the last step (t = 1.0) must be 0.001, outside [0.95, 1.0].
+    3. scheduler.set_begin_index(0) is called before the loop.
+    4. vae_scale_factor defaults to 8 (16 would corrupt the spatial latents).
     5. Fallback Euler dt: scaled_dt = dt / 1000.0 khi is_discrete_1000.
-    6. Khi s_flow = 0.0, ảnh không bị burn và vận tốc lái delta_v = 0.
+    6. With s_flow = 0.0 the trajectory is unchanged (delta_v = 0).
     """
 
     def setUp(self):
@@ -29,17 +22,17 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
 
     def test_01_timestep_scaling_and_guidance_at_final_step(self):
         """
-        Kiểm tra: với 28 bước từ FlowMatchEulerDiscreteScheduler, bước cuối có t=1.0.
-        Transformer phải nhận t_scaled = 0.001 (1.0 / 1000.0) chứ không phải 1.0.
-        Và t_norm ở bước cuối = 0.001, không bị kích hoạt guidance.
+        With 28 FlowMatchEulerDiscreteScheduler steps, the last timestep is t=1.0.
+        The transformer must receive t_scaled = 0.001 (1.0 / 1000.0), not 1.0,
+        and t_norm = 0.001 at the last step, so no guidance is applied.
         """
         pipe = FluxPipeline_LiDAR()
         pipe.scheduler = FlowMatchEulerDiscreteScheduler()
-        # Mô phỏng lịch trình timesteps chính xác của FLUX với dynamic shifting kết thúc tại 1.0
+        # FLUX timestep schedule with dynamic shifting, ending at 1.0
         pipe.scheduler.timesteps = torch.linspace(1000.0, 1.0, 28)
         self.assertEqual(pipe.scheduler.timesteps[-1].item(), 1.0)
 
-        # Mock transformer để ghi lại tất cả các giá trị t_scaled truyền vào
+        # Mock transformer recording every t_scaled it receives
         captured_timesteps = []
         captured_guidance = []
 
@@ -52,14 +45,14 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
             t_input = kwargs.get("timestep")
             captured_timesteps.append(t_input.item() if isinstance(t_input, torch.Tensor) else float(t_input))
             captured_guidance.append(kwargs.get("guidance"))
-            # Trả về zero velocity
+            # Zero velocity
             h = kwargs.get("hidden_states")
             return (torch.zeros_like(h),)
 
         mock_transformer.side_effect = transformer_forward
         pipe.transformer = mock_transformer
 
-        # Mock guidance module để kiểm tra xem guidance có bị gọi ở bước cuối hay không
+        # Mock guidance module to check whether guidance is called at the last step
         mock_guidance_module = MagicMock()
         mock_guidance_module.compute_velocity_guidance.return_value = torch.zeros(1, 16, 128, 128)
         pipe.flow_guidance_module = mock_guidance_module
@@ -100,7 +93,7 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         target_timesteps = torch.linspace(1000.0, 1.0, 28)
         self.assertEqual(target_timesteps[-1].item(), 1.0)
 
-        out = pipe(
+        pipe(
             prompt="A wooden bench in a park",
             prompt_idx=0,
             height=1024,
@@ -111,29 +104,28 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
             fkd_args=fkd_args,
         )
 
-        # 1. Khẳng định số bước chạy đủ 28
+        # 1. All 28 steps are run
         self.assertEqual(len(captured_timesteps), 28)
 
-        # 2. Khẳng định bước đầu tiên (t = 1000.0) -> t_scaled = 1.0
+        # 2. First step (t = 1000.0) -> t_scaled = 1.0
         self.assertAlmostEqual(captured_timesteps[0], 1.0, places=4)
 
-        # 3. Khẳng định CRITICAL BUG FIX: bước cuối cùng (t = 1.0) -> t_scaled = 0.001 (1.0 / 1000.0)
-        # TRƯỚC FIX: t_scaled = 1.0 (do `1.0 > 1.0` là False)!
+        # 3. Last step (t = 1.0) -> t_scaled = 0.001 (1.0 / 1000.0)
         self.assertAlmostEqual(captured_timesteps[-1], 0.001, places=4,
-                               msg=f"LỖI CỐT LÕI: Bước cuối nhận t_scaled={captured_timesteps[-1]} thay vì 0.001!")
+                               msg=f"Last step received t_scaled={captured_timesteps[-1]} instead of 0.001")
 
-        # 4. Khẳng định guidance module KHÔNG được gọi ở bước cuối (t_norm = 0.001 < 0.95)
-        # Chỉ được gọi trong khoảng [0.95, 1.0], tức là ở các bước đầu tiên
+        # 4. The guidance module is not called at the last step (t_norm = 0.001 < 0.95);
+        # it is only called inside [0.95, 1.0], i.e. at the first steps
         self.assertGreater(len(mock_guidance_module.compute_velocity_guidance.call_args_list), 0)
         for call_args in mock_guidance_module.compute_velocity_guidance.call_args_list:
             sigma_t_called = call_args.kwargs.get("sigma_t")
             self.assertGreaterEqual(sigma_t_called, 0.95,
-                                    msg=f"Guidance không được gọi khi sigma_t < 0.95! Nhận: {sigma_t_called}")
+                                    msg=f"Guidance must not be called for sigma_t < 0.95, got {sigma_t_called}")
             self.assertLessEqual(sigma_t_called, 1.0,
-                                 msg=f"Guidance không được gọi khi sigma_t > 1.0! Nhận: {sigma_t_called}")
+                                 msg=f"Guidance must not be called for sigma_t > 1.0, got {sigma_t_called}")
 
     def test_02_set_begin_index_called(self):
-        """Khẳng định: scheduler.set_begin_index(0) được gọi đúng chuẩn Diffusers trước vòng lặp."""
+        """scheduler.set_begin_index(0) is called before the loop, as in diffusers."""
         pipe = FluxPipeline_LiDAR()
         mock_sched = MagicMock()
         mock_sched.order = 1
@@ -154,24 +146,24 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         mock_sched.set_begin_index.assert_called_once_with(0)
 
     def test_03_vae_scale_factor_default(self):
-        """Khẳng định: vae_scale_factor mặc định là 8 (chuẩn FLUX), không phải 16."""
+        """vae_scale_factor defaults to 8 (FLUX), not 16."""
         pipe = FluxPipeline_LiDAR()
         self.assertEqual(pipe.vae_scale_factor, 8)
 
     def test_04_euler_fallback_scaled_dt(self):
-        """Khẳng định: Fallback vi phân Euler lùi sử dụng scaled_dt = dt / 1000.0 khi timesteps ở thang đo [1, 1000]."""
+        """The plain Euler fallback uses scaled_dt = dt / 1000.0 for timesteps in [1, 1000]."""
         pipe = FluxPipeline_LiDAR()
-        pipe.scheduler = None  # Cưỡng chế chạy vào nhánh fallback Euler
+        pipe.scheduler = None  # force the plain Euler fallback
 
         pipe.transformer = MagicMock()
         pipe.transformer.config.guidance_embeds = False
         pipe.transformer.parameters.return_value = [torch.nn.Parameter(torch.zeros(1))]
-        # Model dự đoán vận tốc không đổi v_pred = 1.0
+        # Constant model velocity v_pred = 1.0
         pipe.transformer.side_effect = lambda **kwargs: (torch.ones_like(kwargs["hidden_states"]),)
         pipe.encode_prompt = MagicMock(return_value=(torch.zeros(1, 10, 64), torch.zeros(1, 10), torch.zeros(10, 3)))
 
-        # 2 timesteps: 1000.0 và 900.0 -> dt = 100.0. Thang đo 1000.
-        # scaled_dt phải là 100.0 / 1000.0 = 0.1, KHÔNG PHẢI 100.0!
+        # Two timesteps 1000.0 and 900.0 -> dt = 100.0 on the [1, 1000] scale;
+        # scaled_dt must be 100.0 / 1000.0 = 0.1, not 100.0.
         timesteps = torch.tensor([1000.0, 900.0])
         init_latents = torch.zeros(1, 4096, 64)
 
@@ -187,12 +179,11 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
 
         out_latent = out.images
         # latents = init_latents - sum(scaled_dt * v_pred) = 0 - (0.1 + 0.9) * 1.0 = -1.0
-        # TRƯỚC FIX: latents = 0 - (100.0 + 900.0) * 1.0 = -1000.0 (Bị nổ latents 1000x)!
         self.assertAlmostEqual(out_latent.mean().item(), -1.0, places=3,
-                               msg=f"Fallback Euler dt không được chia cho 1000: mean={out_latent.mean().item()}")
+                               msg=f"Euler fallback dt was not divided by 1000: mean={out_latent.mean().item()}")
 
     def test_05_s_flow_zero_clean_trajectory(self):
-        """Khẳng định: Khi s_flow = 0.0, trajectory hoàn toàn không bị ảnh hưởng bởi lookahead candidates."""
+        """With s_flow = 0.0 the trajectory is not affected by the lookahead candidates."""
         pipe = FluxPipeline_LiDAR()
         pipe.scheduler = FlowMatchEulerDiscreteScheduler()
         pipe.scheduler.set_timesteps(4)
@@ -232,12 +223,12 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
             output_type="latent",
         )
 
-        # Vì transformer output là 0 và s_flow = 0.0, latents phải giữ nguyên là 0
+        # Zero transformer output and s_flow = 0.0: latents must stay 0
         self.assertTrue(torch.allclose(out.images, init_lat, atol=1e-5),
-                        "Khi s_flow = 0.0, latents không được bị ô nhiễm bởi lookahead!")
+                        "With s_flow = 0.0 the latents must not be changed by the lookahead pool.")
 
     def test_06_default_scheduler_timesteps_and_current_timestep_reset(self):
-        """Khẳng định: Khi không truyền timesteps (timesteps=None), retrieve_timesteps hoạt động trơn tru không cảnh báo và _current_timestep được dọn dẹp sạch."""
+        """With timesteps=None, retrieve_timesteps works without warnings and _current_timestep is reset."""
         pipe = FluxPipeline_LiDAR()
         pipe.scheduler = FlowMatchEulerDiscreteScheduler()
 
@@ -267,26 +258,26 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
             "guidance_end": 0.95,
         }
 
-        out = pipe(
+        pipe(
             prompt="A wooden bench in a park",
             prompt_idx=0,
             height=1024,
             width=1024,
             num_inference_steps=28,
-            timesteps=None,  # Tự động sinh qua FlowMatchEulerDiscreteScheduler
+            timesteps=None,  # generated by FlowMatchEulerDiscreteScheduler
             output_type="latent",
             fkd_args=fkd_args,
         )
 
         self.assertEqual(len(captured_timesteps), 28)
         self.assertAlmostEqual(captured_timesteps[0], 1.0, places=4)
-        # Bước cuối phải < 0.05 (chuẩn 0.001 hoặc 0.0357) và không phải 1.0
+        # The last step must be < 0.05 (0.001 or 0.0357), not 1.0
         self.assertLess(captured_timesteps[-1], 0.05)
-        # Khẳng định _current_timestep đã được dọn sạch về None
+        # _current_timestep is reset to None
         self.assertIsNone(pipe._current_timestep)
 
     def test_07_multiple_prompts_scheduler_step_index_reset(self):
-        """Khẳng định: Chạy liên tiếp nhiều prompts không bị lỗi IndexError ở scheduler (step_index được reset)."""
+        """Consecutive prompts do not raise IndexError in the scheduler (step_index is reset)."""
         pipe = FluxPipeline_LiDAR()
         pipe.scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=3.0, use_dynamic_shifting=True)
 
@@ -302,13 +293,13 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         out0 = pipe(prompt="prompt 0", prompt_idx=0, num_inference_steps=28, fkd_args=fkd_args, output_type="latent")
         self.assertIsNotNone(out0)
 
-        # Prompt 1: Trước fix, step_index là 28 nên sched.step ném IndexError ở ngay bước 0!
+        # Second prompt: without the reset, step_index would be 28 and sched.step would raise IndexError
         out1 = pipe(prompt="prompt 1", prompt_idx=1, num_inference_steps=28, fkd_args=fkd_args, output_type="latent")
         self.assertIsNotNone(out1)
         self.assertEqual(pipe.scheduler.step_index, 28)
 
     def test_08_vanilla_call_does_not_pass_timesteps_to_super(self):
-        """Khẳng định: Chế độ Vanilla (use_rag=False) không truyền timesteps vào super().__call__() của FluxPipeline."""
+        """Vanilla mode (use_rag=False) does not pass timesteps to FluxPipeline.__call__."""
         from diffusers import FluxPipeline
         pipe = FluxPipeline_LiDAR()
 
@@ -317,28 +308,28 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
 
         self.assertTrue(mock_call.called)
         called_kwargs = mock_call.call_args[1]
-        self.assertNotIn("timesteps", called_kwargs, "timesteps không được có trong kwargs truyền cho super().__call__!")
+        self.assertNotIn("timesteps", called_kwargs, "timesteps must not be passed to super().__call__.")
         self.assertIn("prompt", called_kwargs)
         self.assertEqual(called_kwargs["num_inference_steps"], 28)
 
     def test_09_device_property_and_execution_device_resolution(self):
-        """Khẳng định: pipe.device và pipe._execution_device luôn phân giải đúng device của transformer/submodules."""
+        """pipe.device and pipe._execution_device resolve to the device of the transformer / sub-modules."""
         pipe = FluxPipeline_LiDAR()
         mock_param = torch.nn.Parameter(torch.zeros(2, 2))
         pipe.transformer = torch.nn.Linear(2, 2)
         pipe.transformer.weight = mock_param
 
-        # Ban đầu trên CPU
+        # Initially on CPU
         self.assertEqual(pipe.device.type, "cpu")
         self.assertEqual(pipe._execution_device.type, "cpu")
 
-        # Sau khi đặt _execution_device_cache hoặc gán target device
+        # After pinning _execution_device_cache
         pipe._execution_device_cache = torch.device("cuda:0")
         self.assertEqual(pipe.device, torch.device("cuda:0"))
         self.assertEqual(pipe._execution_device, torch.device("cuda:0"))
 
     def test_10_vanilla_call_preserves_device_alignment(self):
-        """Khẳng định: Trong chế độ Vanilla, latents và prompt_embeds được chuyển đúng device trước khi gọi super."""
+        """In vanilla mode, latents and prompt_embeds are moved to the pipeline device before calling super()."""
         from diffusers import FluxPipeline
         pipe = FluxPipeline_LiDAR()
         pipe._execution_device_cache = torch.device("cpu")

@@ -1,25 +1,17 @@
-"""
-Utility functions for the FKD pipeline.
+"""Reward evaluation shared by Phase 1 and Phase 2.
+
+`do_eval` scores a list of PIL images against their prompt with each requested metric
+(ImageReward, Clip-Score, Clip-Diversity, HumanPreference, AS) and returns, per metric,
+the per-image `result` list together with its mean / std / max / min. Phase 1 stores this dict
+in `results.json`; Phase 2 reads `<metric>.result` as the lookahead rewards.
 """
 import torch
 
-# Compatibility patch for ImageReward with newer transformers versions (>= 4.40)
-try:
-    from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
-    patch_transformers_for_imagereward()
-except Exception:
-    pass
+from rslidar_utils import setup_runtime
 
-try:
-    import transformers
-    if not hasattr(transformers, "EncoderDecoderCache"):
-        class EncoderDecoderCache:
-            pass
-        transformers.EncoderDecoderCache = EncoderDecoderCache
-except Exception:
-    pass
+setup_runtime()  # ImageReward compatibility shims; must run before the reward models are imported.
 
-from fkd_diffusers.rewards import (
+from fkd_diffusers.rewards import (  # noqa: E402
     do_clip_score,
     do_clip_score_diversity,
     do_image_reward,
@@ -29,47 +21,30 @@ from fkd_diffusers.rewards import (
 
 
 def get_model(model_name):
-    """
-    Get the FKD-supported model based on the model name.
-    """
+    """Load an FKD pipeline (SD 1.4 / 1.5 / 2.1 or SDXL) with a DDIM scheduler."""
     from diffusers import DDIMScheduler
     if model_name == "stable-diffusion-xl":
-        try:
-            from fkd_pipeline_sdxl import FKDStableDiffusionXL
-        except ImportError:
-            from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
+        from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
         pipeline = FKDStableDiffusionXL.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16)
     elif model_name == "stable-diffusion-v1-5":
-        try:
-            from fkd_pipeline_sd import FKDStableDiffusion
-        except ImportError:
-            from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+        from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
         pipeline = FKDStableDiffusion.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16)
     elif model_name == "stable-diffusion-v1-4":
-        try:
-            from fkd_pipeline_sd import FKDStableDiffusion
-        except ImportError:
-            from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+        from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
         pipeline = FKDStableDiffusion.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16)
     elif model_name == "stable-diffusion-2-1":
-        try:
-            from fkd_pipeline_sd import FKDStableDiffusion
-        except ImportError:
-            from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
+        from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
         pipeline = FKDStableDiffusion.from_pretrained("stabilityai/stable-diffusion-2-1", torch_dtype=torch.float16)
     else:
         raise ValueError(f"Unknown model name: {model_name}")
-    
+
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
-    
+
     return pipeline
 
 
-
 def do_eval(*, prompt, images, metrics_to_compute):
-    """
-    Compute the metrics for the given images and prompt.
-    """
+    """Compute `metrics_to_compute` for `images`; a single prompt is broadcast to all images."""
     if images is None or len(images) == 0:
         return {}
 

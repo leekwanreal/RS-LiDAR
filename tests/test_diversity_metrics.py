@@ -6,14 +6,10 @@ Verifies mathematical boundary conditions:
 - Partial mode (N particles clustered into K modes)
 """
 
-import sys
 import os
 import unittest
 import numpy as np
 import torch
-
-# Add root to sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compute_diversity_metrics import (
     compute_vendi_score,
@@ -125,15 +121,15 @@ class TestDiversityMetrics(unittest.TestCase):
         self.assertEqual(cfg1["particles"], 4)
         self.assertEqual(cfg1["sigma"], 0.25)
         self.assertEqual(cfg1["M"], 8)
-        self.assertEqual(cfg1["anneal"], "Có")
+        self.assertEqual(cfg1["anneal"], "C\u00f3")
         self.assertEqual(cfg1["guidance"], "LiDAR")
 
         name_smc = "SMC_SD15_N4_LiDAR_freq20_lmbda10.0_DDPM100_s12.5_seed100"
         cfg2 = parse_run_settings(name_smc)
         self.assertEqual(cfg2["method"], "Vanilla SMC")
         self.assertEqual(cfg2["particles"], 4)
-        self.assertEqual(cfg2["sigma"], "—")
-        self.assertEqual(cfg2["anneal"], "—")
+        self.assertEqual(cfg2["sigma"], "\u2014")
+        self.assertEqual(cfg2["anneal"], "\u2014")
 
     def test_save_and_merge_reports(self):
         """Verifies incremental accumulation and deduplication across multiple evaluation rounds."""

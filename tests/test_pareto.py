@@ -1,20 +1,12 @@
-import os
-import sys
 import unittest
 import torch
-
-# Ensure Diffusion-LiDAR-Sampling is on sys.path
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
 
 from multi_reward_evaluator import compute_multi_reward_pareto_potential
 
 
 class TestLocalLipschitzMultiRewardPareto(unittest.TestCase):
     """
-    Test suite for Task 1.2: Local-Lipschitz Multi-Reward Pareto Evaluator (Theorem 6).
+    Local-Lipschitz multi-reward Pareto potential.
     Verifies Lipschitz calibration, gradient norm starvation prevention,
     Smooth Tchebycheff Soft-Min Pareto optimality, and numerical stability.
     """

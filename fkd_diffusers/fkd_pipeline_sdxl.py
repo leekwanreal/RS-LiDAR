@@ -12,15 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Stable Diffusion XL pipeline with LiDAR closed-form lookahead guidance and FK / RS-SMC steering.
+
+Adapted from diffusers' `StableDiffusionXLPipeline`. `get_sample_guide` implements the closed-form
+lookahead guidance (applied for t > `resampling_t_end`); `fkd_args` (built by `LiDAR_sampling.py`)
+switches on guidance (`use_rag`) and particle resampling (`use_smc`, see `fkd_class.FKD`).
+"""
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-# Added for FK Steering
-from fkd_class import FKD
-from rewards import get_reward_function
-
 import torch
 import torch.nn.functional as F
+from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
+from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
+from diffusers.loaders import (
+    FromSingleFileMixin,
+    IPAdapterMixin,
+    StableDiffusionXLLoraLoaderMixin,
+    TextualInversionLoaderMixin,
+)
+from diffusers.models import AutoencoderKL, UNet2DConditionModel
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
+from diffusers.pipelines.stable_diffusion_xl import (
+    StableDiffusionXLPipeline,
+    StableDiffusionXLPipelineOutput,
+)
+from diffusers.schedulers import KarrasDiffusionSchedulers
+from diffusers.utils import (
+    deprecate,
+    is_invisible_watermark_available,
+    is_torch_xla_available,
+    logging,
+)
 from transformers import (
     CLIPImageProcessor,
     CLIPTextModel,
@@ -29,45 +52,8 @@ from transformers import (
     CLIPVisionModelWithProjection,
 )
 
-from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
-
-from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
-from diffusers.loaders import (
-    FromSingleFileMixin,
-    IPAdapterMixin,
-    StableDiffusionXLLoraLoaderMixin,
-    TextualInversionLoaderMixin,
-)
-from diffusers.models import AutoencoderKL, ImageProjection, UNet2DConditionModel
-from diffusers.models.attention_processor import (
-    AttnProcessor2_0,
-    FusedAttnProcessor2_0,
-    XFormersAttnProcessor,
-)
-from diffusers.models.lora import adjust_lora_scale_text_encoder
-from diffusers.schedulers import KarrasDiffusionSchedulers
-from diffusers.utils import (
-    USE_PEFT_BACKEND,
-    deprecate,
-    is_invisible_watermark_available,
-    is_torch_xla_available,
-    logging,
-    replace_example_docstring,
-    scale_lora_layers,
-    unscale_lora_layers,
-)
-from diffusers.utils.torch_utils import randn_tensor
-
-
-from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
-from diffusers.pipelines.stable_diffusion_xl import (
-    StableDiffusionXLPipelineOutput,
-    StableDiffusionXLPipeline,
-)
-
-
-# if is_invisible_watermark_available():
-#     from .watermark import StableDiffusionXLWatermarker
+from fkd_class import FKD
+from rewards import get_reward_function
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -304,19 +290,15 @@ class FKDStableDiffusionXL(
         self.watermark = None
 
     def get_sample_guide(self, subset, t, latents, lamda):
-        """
-        latents: (B, 4, H, W)
-        subset["latents"][0]: (K, 4, H, W)
-        subset["rewards"][0]: (K,)
+        """Closed-form LiDAR guidance term (same formula as `FKDStableDiffusion.get_sample_guide`).
+
+        The potential and both softmaxes are computed in float32; the guide is returned in `latents.dtype`.
+        latents: (B, 4, H, W); subset["latents"][0]: (K, 4, H, W); subset["rewards"][0]: (K,).
         """
         device = latents.device
         alpha_prod_t = self.scheduler.alphas_cumprod[t].to(device)
 
-        B = latents.shape[0]
         K = subset["latents"][0].shape[0]
-        # --------------------------------------------------
-        # reshape for broadcasting
-        # --------------------------------------------------
         latents_expanded = latents.unsqueeze(1)  # (B, 1, 4, H, W)
         lookahead_latents = subset["latents"][0].to(device)  # (K, 4, H, W)
         if lookahead_latents.shape[-1] != latents.shape[-1] or lookahead_latents.shape[-2] != latents.shape[-2]:
@@ -328,55 +310,16 @@ class FKDStableDiffusionXL(
                 f"Please re-run Phase 1 with SDXL to produce matching 128x128 lookahead latents."
             )
         lookahead_latents_expanded = lookahead_latents.unsqueeze(0)  # (1, K, 4, H, W)
-        # --------------------------------------------------
-        # potential: (B, K)
-        # --------------------------------------------------
+
+        # Gaussian potential of x_t under each lookahead sample: (B, K)
         potential = - (latents_expanded.float() - (alpha_prod_t ** 0.5) * lookahead_latents_expanded) ** 2
         potential = potential / (2 * (1 - alpha_prod_t))
-        potential = potential.sum(dim=(2, 3, 4))  # (B, K)
-        # --------------------------------------------------
-        # weights
-        # --------------------------------------------------
-        if "rewards_high" in subset and "rewards_low" in subset:
-            r_high = subset["rewards_high"][0].to(device).float().view(1, K)
-            r_low = subset["rewards_low"][0].to(device).float().view(1, K)
-            alpha_prod_0 = self.scheduler.alphas_cumprod[0].to(device) if len(self.scheduler.alphas_cumprod) > 0 else 1.0
-            rho_t = torch.clamp(alpha_prod_t / (alpha_prod_0 + 1e-8), 1e-4, 1.0)
-            rewards = (1.0 - rho_t ** 2) * r_low + (rho_t ** 2) * r_high
-        else:
-            rewards = subset["rewards"][0].to(device).float()  # (K,)
-            rewards = rewards.view(1, K)  # (1, K)
+        potential = potential.sum(dim=(2, 3, 4))
+
+        rewards = subset["rewards"][0].to(device).float().view(1, K)  # (1, K)
 
         w = F.softmax(potential, dim=1)  # (B, K)
         w_r = F.softmax((lamda * rewards + potential), dim=1)  # (B, K)
-
-        # Extract Lookahead Prospective Potential and dominant seed for Doob-Tweedie Innovation Residual
-        self._last_v_lidar = (w_r * rewards).sum(dim=1)  # (B,)
-        dominant_indices = torch.argmax(w_r, dim=1)  # (B,)
-        raw_seeds = subset.get("seeds", None)
-        seeds_list = None
-        if raw_seeds is not None:
-            if isinstance(raw_seeds, (list, tuple)) and len(raw_seeds) > 0:
-                candidate = raw_seeds[0]
-                if isinstance(candidate, (list, tuple)):
-                    seeds_list = candidate
-                elif isinstance(candidate, (int, float, torch.Tensor)):
-                    seeds_list = raw_seeds
-            elif isinstance(raw_seeds, torch.Tensor):
-                seeds_list = raw_seeds.tolist()
-
-        if seeds_list is not None and len(seeds_list) > 0:
-            extracted_seeds = []
-            for idx in dominant_indices:
-                i_val = idx.item() if hasattr(idx, "item") else int(idx)
-                if 0 <= i_val < len(seeds_list) and seeds_list[i_val] is not None:
-                    s_val = seeds_list[i_val]
-                    extracted_seeds.append(int(s_val.item() if hasattr(s_val, "item") else s_val))
-                else:
-                    extracted_seeds.append(None)
-            self._last_dominant_seeds = extracted_seeds if any(s is not None for s in extracted_seeds) else None
-        else:
-            self._last_dominant_seeds = None
 
         delta_w = (w_r - w)[..., None, None, None]
         guide = delta_w * lookahead_latents_expanded
@@ -492,7 +435,7 @@ class FKDStableDiffusionXL(
             num_images_per_prompt (`int`, *optional*, defaults to 1):
                 The number of images to generate per prompt.
             eta (`float`, *optional*, defaults to 0.0):
-                Corresponds to parameter eta (η) in the DDIM paper: https://arxiv.org/abs/2010.02502. Only applies to
+                Corresponds to parameter eta in the DDIM paper: https://arxiv.org/abs/2010.02502. Only applies to
                 [`schedulers.DDIMScheduler`], will be ignored for others.
             generator (`torch.Generator` or `List[torch.Generator]`, *optional*):
                 One or a list of [torch generator(s)](https://pytorch.org/docs/stable/generated/torch.Generator.html)
@@ -533,7 +476,7 @@ class FKDStableDiffusionXL(
                 [diffusers.models.attention_processor](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention_processor.py).
             guidance_rescale (`float`, *optional*, defaults to 0.0):
                 Guidance rescale factor proposed by [Common Diffusion Noise Schedules and Sample Steps are
-                Flawed](https://arxiv.org/pdf/2305.08891.pdf) `guidance_scale` is defined as `φ` in equation 16. of
+                Flawed](https://arxiv.org/pdf/2305.08891.pdf) `guidance_scale` is defined as `phi` in equation 16. of
                 [Common Diffusion Noise Schedules and Sample Steps are Flawed](https://arxiv.org/pdf/2305.08891.pdf).
                 Guidance rescale factor should fix overexposure when using zero terminal SNR.
             original_size (`Tuple[int]`, *optional*, defaults to (1024, 1024)):
@@ -774,21 +717,19 @@ class FKDStableDiffusionXL(
 
         self._num_timesteps = len(timesteps)
 
-        # Added for FK Steering
         def postprocess_and_apply_reward_fn(x):
             # convert to pil image
             imagesx = self.image_processor.postprocess(x, output_type=output_type)
             imagesx = [image for image in imagesx]
             rewards = get_reward_function(
-                fkd_args["guidance_reward_fn"], 
-                images=imagesx, 
-                prompts=prompt, 
+                fkd_args["guidance_reward_fn"],
+                images=imagesx,
+                prompts=prompt,
                 metric_to_chase=fkd_args.get("metric_to_chase", None)
             )
 
             return torch.tensor(rewards).to(x.device)
 
-        print('Args:', fkd_args)
         if fkd_args is not None and fkd_args['use_smc']:
             fkd = FKD(
                 latent_to_decode_fn=lambda x: latent_to_decode(
@@ -867,34 +808,15 @@ class FKDStableDiffusionXL(
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_dtype = latents.dtype
 
-                # FK Steering Change
-                # latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
                 step_dict = self.scheduler.step(
                     noise_pred, t, latents, **extra_step_kwargs, return_dict=True
                 )
 
-                # FK Steering Change
                 latents = step_dict['prev_sample']
                 x0_preds = step_dict['pred_original_sample']
 
-                # FK Steering Change
                 if fkd_args is not None and fkd_args['use_smc']:
-                    v_lidar_val = getattr(self, "_last_v_lidar", None)
-                    dominant_seeds = getattr(self, "_last_dominant_seeds", None)
-                    latents, current_pop_images = fkd.resample(
-                        sampling_idx=i,
-                        latents=latents,
-                        x0_preds=x0_preds,
-                        v_lidar=v_lidar_val,
-                        seed_int=dominant_seeds,
-                    )
-
-                    # if current_pop_images is not None:
-                    #     images = self.image_processor.postprocess(current_pop_images, output_type=output_type)
-
-                    #     for k, image in enumerate(images):
-                    #         os.makedirs('./fkd_images', exist_ok=True)
-                    #         image.save(f'./fkd_images/{i}_{k}.png')
+                    latents, _ = fkd.resample(sampling_idx=i, latents=latents, x0_preds=x0_preds)
 
                 if latents.dtype != latents_dtype:
                     if torch.backends.mps.is_available():
@@ -1009,8 +931,6 @@ class FKDStableDiffusionXL(
         return tuple(res)
 
 
-                
-# FK Steering Change
 def latent_to_decode(*, model, output_type, latents):
     if not output_type == "latent":
         # make sure the VAE is in float32 mode, as it overflows in float16

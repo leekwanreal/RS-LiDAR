@@ -1,12 +1,5 @@
-import os
-import sys
 import unittest
 import torch
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.dirname(SCRIPT_DIR)
-if PARENT_DIR not in sys.path:
-    sys.path.insert(0, PARENT_DIR)
 
 from fkd_diffusers.fkd_pipeline_flux import FluxPipeline_LiDAR
 from rs_flow_lidar import RSFlowLiDARGuidance
@@ -23,7 +16,7 @@ class MockRagDataset:
 
 
 class MockTransformer(torch.nn.Module):
-    """Transformer giả: trả vận tốc 0 cùng shape với hidden_states (pipeline đã fail-fast khi thiếu transformer)."""
+    """Fake transformer: returns zero velocity with the shape of hidden_states (the pipeline requires a transformer)."""
     def forward(self, hidden_states, **kwargs):
         return (torch.zeros_like(hidden_states),)
 
@@ -33,11 +26,11 @@ MOCK_EMBEDS = dict(prompt_embeds=torch.zeros((1, 8, 16)), pooled_prompt_embeds=t
 
 class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
     """
-    Kiểm thử tích hợp luồng dữ liệu End-to-End cho FluxPipeline_LiDAR:
-    1. Tiếp nhận tập lookahead 16-kênh 128x128.
-    2. Cửa sổ thời gian Table 3 [0.95, 1.0] vs cửa sổ liên tục [0.20, 0.98].
-    3. Gia số vận tốc delta_v được cộng chính xác vào v_pred.
-    4. Bước Euler lùi thời gian dt > 0.
+    End-to-end data-flow tests for FluxPipeline_LiDAR:
+    1. Accepts a 16-channel 128x128 lookahead pool.
+    2. FLUX guidance window [0.95, 1.0] vs the default window [0.20, 0.98].
+    3. The velocity correction delta_v is added to v_pred.
+    4. Euler steps go backward in time (dt > 0).
     """
 
     def setUp(self):
@@ -51,7 +44,7 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
         self.rag_dataset = MockRagDataset(self.K, self.C, self.H, self.W)
 
     def test_01_guidance_active_in_table3_window(self):
-        """Khẳng định: Tại t trong [0.95, 1.0], guidance hoạt động mạnh mẽ (Table 3 protocol)."""
+        """For t in [0.95, 1.0] the guidance is active (FLUX window)."""
         fkd_args = {
             "use_rag": True,
             "rag_dataset": self.rag_dataset,
@@ -62,7 +55,7 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
             "guidance_end": 0.95,
         }
         
-        # Test 1 bước Euler tại t=0.98 (nằm trong [0.95, 1.0])
+        # One Euler step at t=0.98 (inside [0.95, 1.0])
         timesteps = [1.0, 0.96]  # dt = 0.04 > 0
         latents_init = torch.randn((1, self.C, self.H, self.W))
         
@@ -81,36 +74,36 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
         self.assertTrue(hasattr(out, "images"))
 
     def test_02_guidance_inactive_outside_window(self):
-        """Khẳng định: Khi t < 0.95, delta_v = 0 và ODE chuyển động thẳng tự do (không bị can thiệp)."""
+        """For t < 0.95, delta_v = 0 and the ODE is unguided."""
         guider = RSFlowLiDARGuidance(s_flow=40.0, lambda_r=5000.0, t_start=1.0, t_end=0.95)
         z_t = torch.randn((1, 16, 128, 128))
         lookahead_z0 = torch.randn((4, 16, 128, 128))
         rewards = torch.tensor([1.0, 2.0, 3.0, 4.0])
 
-        # Tại t = 0.80 (ngoài cửa sổ [0.95, 1.0])
+        # t = 0.80 (outside [0.95, 1.0])
         delta_v = guider.compute_velocity_guidance(z_t, lookahead_z0, rewards, sigma_t=0.80)
-        self.assertEqual(torch.count_nonzero(delta_v).item(), 0, "Ngoài cửa sổ [0.95, 1.0], delta_v phải bằng 0 tuyệt đối!")
+        self.assertEqual(torch.count_nonzero(delta_v).item(), 0, "Outside [0.95, 1.0], delta_v must be exactly 0.")
 
-        # Tại t = 0.98 (trong cửa sổ [0.95, 1.0])
+        # t = 0.98 (inside [0.95, 1.0])
         delta_v_active = guider.compute_velocity_guidance(z_t, lookahead_z0, rewards, sigma_t=0.98)
-        self.assertGreater(torch.count_nonzero(delta_v_active).item(), 0, "Trong cửa sổ [0.95, 1.0], delta_v phải hoạt động!")
+        self.assertGreater(torch.count_nonzero(delta_v_active).item(), 0, "Inside [0.95, 1.0], delta_v must be non-zero.")
 
     def test_03_attraction_toward_best_candidate(self):
-        """Khẳng định giải tích: -delta_v có tích vô hướng dương với hạt có reward lớn nhất."""
+        """-delta_v has a positive inner product with the highest-reward lookahead sample."""
         guider = RSFlowLiDARGuidance(s_flow=40.0, lambda_r=5000.0, t_start=1.0, t_end=0.95)
         z_t = torch.randn((1, 16, 128, 128))
         lookahead_z0 = torch.randn((4, 16, 128, 128))
-        # Hạt 2 có reward vượt trội
+        # Sample 2 has the highest reward
         rewards = torch.tensor([0.0, 0.0, 15.0, 0.0])
 
         delta_v = guider.compute_velocity_guidance(z_t, lookahead_z0, rewards, sigma_t=0.98)
         pull_force = -delta_v[0]
         best_candidate = lookahead_z0[2]
         dot = torch.sum(pull_force * best_candidate).item()
-        self.assertGreater(dot, 0, "Lực Euler kéo phải hướng thuận về ứng viên reward cao nhất!")
+        self.assertGreater(dot, 0, "The Euler step must pull towards the highest-reward candidate.")
 
     def test_04_integer_timestep_safety(self):
-        """Khẳng định: Nếu vô tình truyền resampling_t_start=20, resampling_t_end=200, pipeline tự sửa an toàn."""
+        """Diffusion-style window values (resampling_t_start=20, resampling_t_end=200) are clamped safely."""
         fkd_args = {
             "use_rag": True,
             "rag_dataset": self.rag_dataset,
@@ -139,7 +132,7 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
         self.assertEqual(self.pipe.flow_guidance_module.t_end, 0.95)
 
     def test_05_bf16_inputs_use_fp32_potential(self):
-        """Hồi quy: latent bf16 (FLUX A100) phải cho cùng w_r - w như FP32; bf16 từng làm tròn ||.||^2 ~ 2.4e5 về một giá trị."""
+        """bf16 latents must give the same w_r - w as fp32 (bf16 would round ||.||^2 ~ 2.4e5 to one value)."""
         guider = RSFlowLiDARGuidance(s_flow=40.0, lambda_r=5000.0, t_start=1.0, t_end=0.95)
         torch.manual_seed(0)
         t = 0.964
@@ -149,7 +142,7 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
         dv32, d32 = guider.compute_velocity_guidance(z_t, z0, rewards, sigma_t=t, return_diagnostics=True)
         dv16, d16 = guider.compute_velocity_guidance(z_t.bfloat16(), z0.bfloat16(), rewards, sigma_t=t, return_diagnostics=True)
         self.assertTrue(torch.allclose(d32["w_diff"], d16["w_diff"], atol=1e-2), f"fp32 {d32['w_diff']} vs bf16 {d16['w_diff']}")
-        self.assertEqual(dv16.dtype, torch.bfloat16, "delta_v phải trả về đúng dtype của z_t.")
+        self.assertEqual(dv16.dtype, torch.bfloat16, "delta_v must have the dtype of z_t.")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,18 @@
+# Environment for the FLUX.1-dev experiments (RS-FlowLiDAR).
+# Install torch/torchvision for your CUDA version first.
+# CLIP must be installed without build isolation:
+#   pip install --no-build-isolation git+https://github.com/openai/CLIP.git
+diffusers>=0.30.0
+transformers>=4.43.3,<4.45.0
+accelerate>=0.33.0
+peft
+torchao
+sentencepiece
+protobuf
+ftfy
+timm
+fairscale
+einops
+huggingface_hub
+image-reward
+pytest

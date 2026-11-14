@@ -1,56 +1,38 @@
-# Context & Documents
-README_CONTEXT.md
-readme_context.md
-COLAB_A100_GUIDE.md
-colab_a100_guide.md
-*.pdf
-*.txt
-!requirements.txt
-
-# Python cache & artifacts
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
 *.so
-.Python
-env/
-venv/
-.venv/
+.pytest_cache/
+.ruff_cache/
 
-# Jupyter & IDE
+# Environments and secrets
+.env
+.venv/
+venv/
+env/
+
+# Notebooks and IDE
+*.ipynb
 .ipynb_checkpoints/
 .vscode/
 .idea/
 
-# Experiment outputs & weights
+# Generated samples and results
 Lookahead_samples/
 Target_samples/
-Threshold_Rewards*/
-Adversarial_Rewards*/
-*.pt
-*.pth
-*.bin
-*.safetensors
-*.ckpt
+results/
+output/
 *.zip
 *.csv
 
-# Environment & local files
-.env
-test_results_analyzed/
-backup/
-results/
-txt/
-pdf/
-geneval_official_repo/
-figures/*
-!figures/threshold_*.png
-!figures/adversarial_*.png
-!figures/ablation_*.png
-!figures/ablation_*.pdf
-extracted_test1/
+# Model weights and checkpoints
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+!tests/golden/fixtures.pt
 
-# Notebook build & temporary helper scripts
-notebook_build_scripts/
-cell*.py
-scratch/
+# Temporary collaboration notebooks (remove before submission)
+!notebooks_temp/
+!notebooks_temp/**

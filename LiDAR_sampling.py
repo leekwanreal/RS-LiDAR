@@ -1,134 +1,109 @@
-# primary generation script
-import os
-os.environ["USE_TF"] = "0"
-os.environ["USE_TORCH"] = "1"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+"""Phase 2 of LiDAR / RS-LiDAR: target sampling steered by the Phase 1 lookahead pool.
 
+The lookahead dataset (`lookahead_datasets.gen_lookahead_samples`) holds, per prompt, K lookahead
+latents z_{0,k} with their (optionally randomized-smoothing) rewards. Depending on the flags:
+
+- `--use_rag`: closed-form LiDAR guidance. SD1.5 / SDXL add `get_sample_guide` (in
+  `fkd_diffusers/fkd_pipeline_sd.py` / `fkd_pipeline_sdxl.py`) to the noise prediction; FLUX adds the
+  velocity guidance of `rs_flow_lidar.RSFlowLiDARGuidance` (`fkd_diffusers/fkd_pipeline_flux.py`).
+- `--use_smc` / `--use_smc_smoothing`: Feynman-Kac particle resampling (`fkd_diffusers/fkd_class.py`),
+  with RS-SMC scoring each Tweedie estimate with the smoothed reward and an optional sigma(t) schedule.
+- otherwise: best-of-N / vanilla sampling.
+"""
+import argparse
 import json
 import math
+import os
+import sys
+from datetime import datetime
+
+import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from PIL import Image
 from tqdm import tqdm
 
-import matplotlib.pyplot as plt
-import argparse
-from datetime import datetime
-import torch
-import sys
-import types
-import importlib.machinery
-if "wandb" not in sys.modules:
-    try:
-        import wandb
-    except Exception:
-        _mock_wandb = types.ModuleType("wandb")
-        _mock_wandb.__spec__ = importlib.machinery.ModuleSpec("wandb", None)
-        _mock_wandb.__file__ = "wandb"
-        sys.modules["wandb"] = _mock_wandb
+from rslidar_utils import load_geneval_metadata, parse_prompt_indices, setup_runtime, str2bool
 
-# Universal compatibility patch for transformers, diffusers, peft, protobuf, and ImageReward
-try:
-    import google.protobuf
-    if not hasattr(google.protobuf, "runtime_version"):
-        class _RuntimeVersion:
-            DOMAIN = "protobuf"
-        google.protobuf.runtime_version = _RuntimeVersion
-except Exception:
-    pass
+setup_runtime()
 
-try:
-    import transformers
-    if not hasattr(transformers, "EncoderDecoderCache"):
-        class EncoderDecoderCache:
-            pass
-        transformers.EncoderDecoderCache = EncoderDecoderCache
-except Exception:
-    pass
-
-try:
-    from fkd_diffusers.patch_transformers import patch_transformers_for_imagereward
-    patch_transformers_for_imagereward()
-except Exception:
-    pass
-
-import sys
 sys.path.append("fkd_diffusers")
 
-try:
-    from diffusers import DDIMScheduler, UNet2DConditionModel
-except ImportError:
-    DDIMScheduler = UNet2DConditionModel = None
+from diffusers import DDIMScheduler, UNet2DConditionModel  # noqa: E402
 
-try:
-    from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL
-    from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion
-except ImportError:
-    FKDStableDiffusionXL = FKDStableDiffusion = None
+from fkd_diffusers.fkd_pipeline_flux import FluxPipeline_LiDAR  # noqa: E402
+from fkd_diffusers.fkd_pipeline_sd import FKDStableDiffusion  # noqa: E402
+from fkd_diffusers.fkd_pipeline_sdxl import FKDStableDiffusionXL  # noqa: E402
+from fks_utils import do_eval  # noqa: E402
+from lookahead_datasets import gen_lookahead_samples  # noqa: E402
 
-try:
-    from fks_utils import do_eval
-except Exception as e:
-    import traceback
-    print(f"⚠️ Cảnh báo nạp do_eval (LiDAR_sampling): {e}")
-    traceback.print_exc()
-    do_eval = None
 
-try:
-    from lookahead_datasets import gen_lookahead_samples
-except Exception as e:
-    import traceback
-    print(f"⚠️ Cảnh báo nạp lookahead_datasets (LiDAR_sampling): {e}")
-    traceback.print_exc()
-    gen_lookahead_samples = None
+def _extract_pil_images(raw_imgs):
+    """Return the list of PIL images from a pipeline output (object, tuple or list)."""
+    if hasattr(raw_imgs, "images"):
+        return raw_imgs.images
+    if isinstance(raw_imgs, (tuple, list)) and len(raw_imgs) > 0:
+        first = raw_imgs[0]
+        if hasattr(first, "images"):
+            return first.images
+        if isinstance(first, (tuple, list)):
+            return _extract_pil_images(first)
+        return list(raw_imgs)
+    return raw_imgs
 
-from rs_smc_engine import HarmonizedRSLiDARSMCEngine
 
-def parse_prompt_indices(indices_arg):
-    if not indices_arg:
-        return None
-    if isinstance(indices_arg, (list, tuple)):
-        return list(indices_arg)
-    indices_str = str(indices_arg).strip()
-    if indices_str.lower() in ["stratified_100", "100_representative"]:
-        for repr_path in ["prompt_files/geneval_100_representative.json", "Diffusion-LiDAR-Sampling/prompt_files/geneval_100_representative.json"]:
-            if os.path.exists(repr_path):
-                with open(repr_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        return [0, 5, 11, 16, 21, 26, 32, 37, 42, 47, 53, 58, 63, 68, 74, 79, 80, 86, 92, 99, 105, 111, 117, 123, 130, 136, 142, 148, 154, 161, 167, 173, 178, 179, 184, 190, 195, 200, 205, 211, 216, 221, 226, 232, 237, 242, 247, 253, 258, 259, 265, 271, 277, 282, 288, 294, 300, 306, 312, 318, 323, 329, 335, 341, 347, 352, 353, 359, 365, 372, 378, 384, 390, 396, 403, 409, 415, 421, 428, 434, 440, 446, 452, 453, 459, 465, 472, 478, 484, 490, 496, 503, 509, 515, 521, 527, 533, 540, 546, 552]
-    if os.path.exists(indices_str):
-        with open(indices_str, "r", encoding="utf-8") as f:
-            return json.load(f)
-    if "-" in indices_str and "," not in indices_str:
-        parts = indices_str.split("-")
-        return list(range(int(parts[0]), int(parts[1]) + 1))
-    return [int(x.strip()) for x in indices_str.split(",") if x.strip().isdigit()]
-
-# load prompt data
-def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
-    if prompt_path.endswith(".json"):
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+def load_target_pipeline(model_name):
+    """Load the Phase 2 target model with the guidance-enabled pipeline class."""
+    if "mhdang/dpo" in model_name and "xl" not in model_name:
+        pipe = FKDStableDiffusion.from_pretrained("runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16)
+        pipe.unet = UNet2DConditionModel.from_pretrained(
+            "mhdang/dpo-sd1.5-text2image-v1", subfolder="unet", torch_dtype=torch.float16
+        )
+    elif "stabilityai/stable-diffusion-xl-base-1.0" in model_name:
+        print("Using SDXL")
+        pipe = FKDStableDiffusionXL.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0",
+                                                    torch_dtype=torch.float16)
+    elif "flux" in model_name.lower():
+        print("Using FLUX.1-dev with lookahead velocity guidance")
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+        pipe = FluxPipeline_LiDAR.from_pretrained("black-forest-labs/FLUX.1-dev", torch_dtype=dtype)
     else:
-        assert prompt_path.endswith(".jsonl")
-        with open(prompt_path, "r", encoding="utf-8") as f:
-            data = [json.loads(line) for line in f if line.strip()]
-    assert isinstance(data, list)
-    prompt_key = "prompt"
-    if prompt_key not in data[0]:
-        assert "text" in data[0], "Prompt data should have 'prompt' or 'text' key"
-
-        for item in data:
-            item["prompt"] = item["text"]
-    for idx, item in enumerate(data):
-        if "original_idx" not in item:
-            item["original_idx"] = idx
-    if prompt_indices is not None and len(prompt_indices) > 0:
-        data = [data[i] for i in prompt_indices if i < len(data)]
-    elif max_prompts is not None:
-        data = data[:max_prompts]
-    return data
+        pipe = FKDStableDiffusion.from_pretrained(model_name, torch_dtype=torch.float16)
+    if "flux" not in model_name.lower():
+        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+    return pipe
 
 
+def output_folder_name(args):
+    if "flux" in args.model_name.lower():
+        model_tag = "FLUX"
+    elif "xl" in args.model_name.lower():
+        model_tag = "SDXL"
+    else:
+        model_tag = "SD15"
+
+    if args.use_smc:
+        crn_suffix = "_crn" if args.smc_use_crn else ""
+        anneal_suffix = "_anneal" if args.smc_anneal_sigma else ""
+        term_suffix = "" if args.smc_terminal_resample else "_noTerminal"
+        if args.use_smc_smoothing:
+            method_tag = (f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}"
+                          f"{crn_suffix}{anneal_suffix}{term_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}")
+        else:
+            method_tag = (f"{model_tag}_SMC_N{args.num_particles}{term_suffix}"
+                          f"_freq{args.resample_frequency}_lmbda{args.FK_lmbda}")
+        if args.use_rag:
+            method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
+    elif args.use_rag:
+        if model_tag == "FLUX":
+            method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_sflow{args.s_flow}"
+        else:
+            method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
+    else:
+        method_tag = f"{model_tag}_BoN_N{args.num_particles}" if args.num_particles > 1 else f"{model_tag}_Vanilla_N1"
+
+    cur_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"{method_tag}_steps{args.num_inference_steps}_scale{args.scale}_seed{args.seed}_{cur_time}"
 
 
 def main(args):
@@ -138,7 +113,8 @@ def main(args):
             actual_gpu_id = args.gpu_id if args.gpu_id < num_devices else (args.gpu_id % num_devices)
             torch.cuda.set_device(actual_gpu_id)
             device = f"cuda:{actual_gpu_id}"
-            print(f"🎯 Assigned process to GPU {actual_gpu_id} (device {actual_gpu_id + 1}/{num_devices}): {torch.cuda.get_device_name(actual_gpu_id)}")
+            print(f"Assigned process to GPU {actual_gpu_id} (device {actual_gpu_id + 1}/{num_devices}): "
+                  f"{torch.cuda.get_device_name(actual_gpu_id)}")
         else:
             actual_gpu_id = 0
             device = "cuda:0"
@@ -147,7 +123,6 @@ def main(args):
         actual_gpu_id = "cpu"
         device = "cpu"
 
-    # seed everything
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
@@ -155,16 +130,16 @@ def main(args):
     if args.resample_t_end is None:
         args.resample_t_end = args.num_inference_steps
 
-    is_flux = ("flux" in args.model_name.lower())
+    is_flux = "flux" in args.model_name.lower()
     if is_flux:
-        # Cưỡng chế Phase 2 FLUX sinh 1 ảnh duy nhất (batch_size = 1) để bảo vệ VRAM A100 (~21.2 GiB)
+        # FLUX protocol: one target image per prompt unless --num_particles is given explicitly.
         if not any(arg.startswith("--num_particles") for arg in sys.argv):
             args.num_particles = 1
-            print("⚡ [FLUX Table 3 Protocol] Auto-dispatch num_particles = 1 for FLUX Phase 2 (Table 3 standard, keeps VRAM at ~21.2 GiB).")
+            print("FLUX protocol: using num_particles = 1 for Phase 2.")
         if "--s_flow" not in sys.argv:
-            args.s_flow = 40.0  # Official LiDAR Table 3 baseline for FLUX (identical for LiDAR and RS-FlowLiDAR)
+            args.s_flow = 40.0  # LiDAR FLUX setting (shared by LiDAR and RS-LiDAR)
 
-    # Cửa sổ thời gian dẫn đường Flow Matching mặc định luôn là [1.0, 0.95] (chuẩn Table 3)
+    # FLUX guidance window in flow time t (1 = noise, 0 = data).
     if args.guidance_start is None:
         args.guidance_start = 1.0
     if args.guidance_end is None:
@@ -173,115 +148,27 @@ def main(args):
     if args.use_smc:
         assert args.resample_frequency > 0
         if args.num_particles <= 1:
-            print("⚠️ [CẢNH BÁO] args.num_particles <= 1: Tự động vô hiệu hóa SMC resampling (chuyển sang Vanilla unguided sampling vì N=1 không thể resample).")
+            print("num_particles <= 1: SMC resampling is disabled (nothing to resample).")
             args.use_smc = False
 
-    # load prompt data # configure pipeline
-    parsed_indices = parse_prompt_indices(getattr(args, "prompt_indices", None))
+    parsed_indices = parse_prompt_indices(args.prompt_indices)
     prompt_data = load_geneval_metadata(args.prompt_path, max_prompts=args.max_prompt, prompt_indices=parsed_indices)
 
-
-    if "mhdang/dpo" in args.model_name and "xl" not in args.model_name:
-        pipe = FKDStableDiffusion.from_pretrained(
-            "runwayml/stable-diffusion-v1-5", torch_dtype=torch.float16
-        )
-        # load finetuned model
-        unet_id = "mhdang/dpo-sd1.5-text2image-v1"
-        unet = UNet2DConditionModel.from_pretrained(
-            unet_id, subfolder="unet", torch_dtype=torch.float16
-        )
-        pipe.unet = unet
-    elif "stabilityai/stable-diffusion-xl-base-1.0" in args.model_name:
-        print("Using SDXL")
-        pipe = FKDStableDiffusionXL.from_pretrained(
-            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16
-        )
-    elif "black-forest-labs/FLUX.1-dev" in args.model_name or "flux" in args.model_name.lower():
-        print("🚀 Using FLUX.1 with RS-FlowLiDAR Guidance")
-        from fkd_diffusers.fkd_pipeline_flux import FluxPipeline_LiDAR
-        pipe = FluxPipeline_LiDAR.from_pretrained(
-            "black-forest-labs/FLUX.1-dev", torch_dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-        )
-
-    else:
-        pipe = FKDStableDiffusion.from_pretrained(
-            args.model_name, torch_dtype=torch.float16
-        )
-    if "flux" not in args.model_name.lower():
-        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-
-    # set device (preserve assigned device cuda:actual_gpu_id)
-    pipe = pipe.to(device)
-    if "flux" in args.model_name.lower():
-        pipe._execution_device_cache = torch.device(device)
-        for sub_name in ["transformer", "text_encoder_2", "text_encoder", "vae", "image_encoder"]:
-            sub = getattr(pipe, sub_name, None)
-            if sub is not None and hasattr(sub, "to"):
-                try:
-                    sub.to(device)
-                except Exception:
-                    pass
+    pipe = load_target_pipeline(args.model_name)
+    pipe = pipe.to(device)  # FluxPipeline_LiDAR.to also moves every sub-module and pins the execution device
     if hasattr(pipe, "enable_vae_slicing"):
-        try:
-            pipe.enable_vae_slicing()
-        except Exception:
-            pass
+        pipe.enable_vae_slicing()
 
-    # set output directory
-    cur_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    if args.run_name:
-        output_dir = os.path.join(args.output_dir, args.run_name)
-    else:
-        if "flux" in args.model_name.lower():
-            model_tag = "FLUX"
-        elif "xl" in args.model_name.lower():
-            model_tag = "SDXL"
-        else:
-            model_tag = "SD15"
-
-        if args.use_smc:
-            crn_suffix = "_crn" if getattr(args, "smc_use_crn", False) else ""
-            anneal_suffix = "_anneal" if getattr(args, "smc_anneal_sigma", False) else ""
-            term_suffix = "" if getattr(args, "smc_terminal_resample", True) else "_noTerminal"
-            if getattr(args, "use_smc_smoothing", False):
-                method_tag = f"{model_tag}_RSSMC_N{args.num_particles}_M{args.smc_num_mc_samples}_sigma{args.smc_sigma}{crn_suffix}{anneal_suffix}{term_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
-            else:
-                method_tag = f"{model_tag}_SMC_N{args.num_particles}{term_suffix}_freq{args.resample_frequency}_lmbda{args.FK_lmbda}"
-            if args.use_rag:
-                method_tag += f"_LiDAR_topk{args.top_k}_lmbda{int(args.lmbda)}"
-        elif args.use_rag:
-            if model_tag == "FLUX":
-                method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_sflow{args.s_flow}"
-            else:
-                method_tag = f"{model_tag}_LiDAR_N{args.num_particles}_topk{args.top_k}_lmbda{int(args.lmbda)}"
-        else:
-            method_tag = f"{model_tag}_BoN_N{args.num_particles}" if args.num_particles > 1 else f"{model_tag}_Vanilla_N1"
-
-        prefix = f"{method_tag}_steps{args.num_inference_steps}_scale{args.scale}_seed{args.seed}"
-        output_dir = os.path.join(args.output_dir, f"{prefix}_{cur_time}")
-
+    output_dir = os.path.join(args.output_dir, args.run_name or output_folder_name(args))
     os.makedirs(output_dir, exist_ok=True)
 
-    arg_path = os.path.join(output_dir, "args.json")
-    with open(arg_path, "w") as f:
+    with open(os.path.join(output_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent=4)
     metrics_to_compute = args.metrics_to_compute.split("#")
 
-    # cache metric fns
-    if do_eval is not None:
-        do_eval(
-            prompt=["test"],
-            images=[Image.new("RGB", (224, 224))],
-            metrics_to_compute=metrics_to_compute,
-        )
-    else:
-        raise RuntimeError(
-            "❌ Không thể nạp hàm đánh giá `do_eval` từ fks_utils! "
-            "Vui lòng kiểm tra lại log cảnh báo phía trên để khắc phục thư viện phụ thuộc."
-        )
-    metrics_arr = {
-        metric: dict(mean=0, max=0, min=0, std=0) for metric in metrics_to_compute
-    }
+    # Load and warm up the reward models once.
+    do_eval(prompt=["test"], images=[Image.new("RGB", (224, 224))], metrics_to_compute=metrics_to_compute)
+    metrics_arr = {metric: dict(mean=0, max=0, min=0, std=0) for metric in metrics_to_compute}
     n_samples = 0
     average_time = 0
 
@@ -290,25 +177,17 @@ def main(args):
         lookaheads = gen_lookahead_samples(args.lookahead_path, args.top_k, reward_key=args.guidance_reward_fn)
         if len(lookaheads) == 0:
             raise FileNotFoundError(
-                f"\n{'='*70}\n"
-                f"❌ [FAIL-FAST: KHÔNG TÌM THẤY LOOKAHEAD DATASET]\n"
-                f"Bạn đã kích hoạt --use_rag nhưng không tìm thấy dữ liệu lookahead hợp lệ nào tại: '{args.lookahead_path}'!\n"
-                f"Hệ thống dừng ngay lập tức (Fail-Fast) để tránh Phase 2 chạy mù không có guidance (Vanilla) làm lãng phí GPU.\n"
-                f"Giải pháp: Kiểm tra lại tên thư mục Lookahead hoặc chạy Phase 1 trước.\n"
-                f"{'='*70}"
+                f"--use_rag is set but no lookahead data was found at '{args.lookahead_path}'. "
+                f"Check the folder name or run Phase 1 (lookahead_sampling.py) first."
             )
         first_idx = next(iter(lookaheads.data.keys()))
         first_lat = lookaheads[first_idx]["latents"]
-        expected_dim = 128 if ("xl" in args.model_name.lower() or "flux" in args.model_name.lower()) else 64
+        expected_dim = 128 if ("xl" in args.model_name.lower() or is_flux) else 64
         if first_lat.shape[-1] != expected_dim:
             raise ValueError(
-                f"\n{'='*70}\n"
-                f"❌ [LỖI KHÔNG TƯƠNG THÍCH KÍCH THƯỚC LATENT]\n"
-                f"Lookahead dataset '{args.lookahead_path}' có spatial dimension là {first_lat.shape[-1]}x{first_lat.shape[-1]},\n"
-                f"trong khi mô hình hiện tại '{args.model_name}' yêu cầu {expected_dim}x{expected_dim}!\n"
-                f"Nguyên nhân: Phase 1 đã chạy với mô hình khác (hoặc bị tái sử dụng nhầm latents SD 1.5 64x64 cho SDXL 128x128).\n"
-                f"Giải pháp: Vui lòng chạy lại Phase 1 với cờ --overwrite để sinh lookahead latents {expected_dim}x{expected_dim} chuẩn xác!\n"
-                f"{'='*70}"
+                f"Lookahead dataset '{args.lookahead_path}' has {first_lat.shape[-1]}x{first_lat.shape[-1]} latents, "
+                f"but '{args.model_name}' needs {expected_dim}x{expected_dim}. Phase 1 was run with a different "
+                f"model; re-run it with --overwrite for this model."
             )
 
     total_prompts = len(prompt_data)
@@ -316,7 +195,8 @@ def main(args):
         prompts_per_shard = math.ceil(total_prompts / args.num_shards)
         start_idx = args.shard_id * prompts_per_shard
         end_idx = min(start_idx + prompts_per_shard, total_prompts)
-        print(f"🚀 Shard {args.shard_id + 1}/{args.num_shards}: Processing prompts {start_idx} to {end_idx - 1} (Total: {end_idx - start_idx})")
+        print(f"Shard {args.shard_id + 1}/{args.num_shards}: processing prompts {start_idx} to {end_idx - 1} "
+              f"(total: {end_idx - start_idx})")
     else:
         start_idx = 0
         end_idx = total_prompts
@@ -330,22 +210,19 @@ def main(args):
         os.makedirs(prompt_path, exist_ok=True)
 
         results_file = os.path.join(prompt_path, "results.json")
-        if args.resume and not getattr(args, "overwrite", False) and os.path.exists(results_file):
+        if args.resume and not args.overwrite and os.path.exists(results_file):
             try:
                 with open(results_file, "r") as f:
                     res_cached = json.load(f)
                 for metric in metrics_to_compute:
                     if metric in res_cached:
-                        metrics_arr[metric]["mean"] += res_cached[metric]["mean"]
-                        metrics_arr[metric]["max"] += res_cached[metric]["max"]
-                        metrics_arr[metric]["min"] += res_cached[metric]["min"]
-                        metrics_arr[metric]["std"] += res_cached[metric]["std"]
+                        for stat in ("mean", "max", "min", "std"):
+                            metrics_arr[metric][stat] += res_cached[metric][stat]
                 n_samples += 1
                 continue
             except Exception as e:
                 print(f"Error loading cached result for prompt {real_idx}: {e}")
 
-        # dump metadata
         with open(os.path.join(prompt_path, "metadata.jsonl"), "w") as f:
             json.dump(item, f)
 
@@ -355,24 +232,16 @@ def main(args):
             reward_type=args.reward_type,
             num_particles=args.num_particles,
             use_smc=args.use_smc,
-            use_grad=args.use_grad,
             use_rag=args.use_rag,
-            use_smc_smoothing=getattr(args, "use_smc_smoothing", False),
-            use_hybrid_smc=getattr(args, "use_hybrid_smc", False),
-            sigma_high=getattr(args, "sigma_high", 1.0),
-            sigma_low=getattr(args, "sigma_low", 0.25),
-            eta_drift=getattr(args, "eta_drift", 0.4),
-            beta_risk=getattr(args, "beta_risk", 0.5),
-            alpha_couple=getattr(args, "alpha_couple", 0.7),
-            smc_sigma=getattr(args, "smc_sigma", 0.25),
-            smc_num_mc_samples=getattr(args, "smc_num_mc_samples", 4),
-            smc_smoothing_domain=getattr(args, "smc_smoothing_domain", "image"),
-            smc_use_crn=getattr(args, "smc_use_crn", False),
-            smc_smoothing_mode=getattr(args, "smc_smoothing_mode", "loop"),
-            smc_anneal_sigma=getattr(args, "smc_anneal_sigma", False),
-            smc_anneal_schedule=getattr(args, "smc_anneal_schedule", "sqrt_noise"),
-            smc_sigma_min=getattr(args, "smc_sigma_min", None),
-            smc_terminal_resample=getattr(args, "smc_terminal_resample", True),
+            use_smc_smoothing=args.use_smc_smoothing,
+            smc_sigma=args.smc_sigma,
+            smc_num_mc_samples=args.smc_num_mc_samples,
+            smc_use_crn=args.smc_use_crn,
+            smc_smoothing_mode=args.smc_smoothing_mode,
+            smc_anneal_sigma=args.smc_anneal_sigma,
+            smc_anneal_schedule=args.smc_anneal_schedule,
+            smc_sigma_min=args.smc_sigma_min,
+            smc_terminal_resample=args.smc_terminal_resample,
             FK_lmbda=args.FK_lmbda,
             FK_resample_t_start=args.FK_resample_t_start,
             FK_resample_t_end=args.FK_resample_t_end,
@@ -388,7 +257,7 @@ def main(args):
             guidance_reward_fn=args.guidance_reward_fn,
             potential_type=args.potential_type,
             s_flow=args.s_flow,
-            flux_debug=getattr(args, "flux_debug", False),
+            flux_debug=args.flux_debug,
         )
 
         start_time = datetime.now()
@@ -399,27 +268,12 @@ def main(args):
             eta=args.eta,
             fkd_args=fkd_args,
         )
-        end_time = datetime.now()
-        time_taken = end_time - start_time
-
-        def _extract_pil_images(raw_imgs):
-            if hasattr(raw_imgs, "images"):
-                return raw_imgs.images
-            if isinstance(raw_imgs, (tuple, list)) and len(raw_imgs) > 0:
-                first = raw_imgs[0]
-                if hasattr(first, "images"):
-                    return first.images
-                if isinstance(first, (tuple, list)):
-                    return _extract_pil_images(first)
-                return list(raw_imgs)
-            return raw_imgs
+        time_taken = datetime.now() - start_time
 
         images = _extract_pil_images(images)
 
-        eval_prompt = [prompt[0]] * len(images) if isinstance(prompt, list) else [prompt] * len(images)
-        results = do_eval(
-            prompt=eval_prompt, images=images, metrics_to_compute=metrics_to_compute
-        )
+        eval_prompt = [prompt[0]] * len(images)
+        results = do_eval(prompt=eval_prompt, images=images, metrics_to_compute=metrics_to_compute)
 
         results["time_taken"] = time_taken.total_seconds()
         results["prompt"] = prompt
@@ -429,34 +283,24 @@ def main(args):
         average_time += time_taken.total_seconds()
         print(f"Time taken: {average_time / n_samples}")
 
-        # sort images by reward
+        # Sort images (and rewards) by the guidance reward, best first.
         guidance_reward = np.array(results[args.guidance_reward_fn]["result"])
         sorted_idx = np.argsort(guidance_reward)[::-1]
         images = [images[i] for i in sorted_idx]
 
         for metric in metrics_to_compute:
-            results[metric]["result"] = [
-                results[metric]["result"][i] for i in sorted_idx
-            ]
+            results[metric]["result"] = [results[metric]["result"][i] for i in sorted_idx]
 
         for metric in metrics_to_compute:
-            metrics_arr[metric]["mean"] += results[metric]["mean"]
-            metrics_arr[metric]["max"] += results[metric]["max"]
-            metrics_arr[metric]["min"] += results[metric]["min"]
-            metrics_arr[metric]["std"] += results[metric]["std"]
+            for stat in ("mean", "max", "min", "std"):
+                metrics_arr[metric][stat] += results[metric][stat]
 
         for metric in metrics_to_compute:
-            print(
-                metric,
-                metrics_arr[metric]["mean"] / n_samples,
-                metrics_arr[metric]["max"] / n_samples,
-            )
+            print(metric, metrics_arr[metric]["mean"] / n_samples, metrics_arr[metric]["max"] / n_samples)
 
         if args.save_individual_images:
             sample_path = os.path.join(prompt_path, "samples")
-
             os.makedirs(sample_path, exist_ok=True)
-
             for image_idx, image in enumerate(images):
                 image.save(os.path.join(sample_path, f"{image_idx:05}.png"))
 
@@ -469,79 +313,68 @@ def main(args):
             _, ax = plt.subplots(1, n_show, figsize=(n_show * 5, 5))
             if n_show == 1:
                 ax = [ax]
-
             for i, image in enumerate(images):
                 ax[i].imshow(image)
                 ax[i].axis("off")
 
             plt.suptitle(prompt[0])
-            image_fpath = os.path.join(prompt_path, f"grid.png")
-            plt.savefig(image_fpath)
+            plt.savefig(os.path.join(prompt_path, "grid.png"))
             plt.close()
 
         with open(os.path.join(prompt_path, "results.json"), "w") as f:
             json.dump(results, f)
 
-    # save final metrics
     if n_samples > 0:
         for metric in metrics_to_compute:
-            metrics_arr[metric]["mean"] /= n_samples
-            metrics_arr[metric]["max"] /= n_samples
-            metrics_arr[metric]["min"] /= n_samples
-            metrics_arr[metric]["std"] /= n_samples
+            for stat in ("mean", "max", "min", "std"):
+                metrics_arr[metric][stat] /= n_samples
 
     metrics_fname = f"final_metrics_shard_{args.shard_id}.json" if args.num_shards > 1 else "final_metrics.json"
     with open(os.path.join(output_dir, metrics_fname), "w") as f:
         json.dump(metrics_arr, f, indent=4)
 
 
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ("yes", "true", "t", "y", "1"):
-        return True
-    elif v.lower() in ("no", "false", "f", "n", "0"):
-        return False
-    raise argparse.ArgumentTypeError("Boolean value expected.")
-
-
 def get_args():
-    import sys
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Phase 2: target sampling with LiDAR / RS-LiDAR guidance or RS-SMC.")
     parser.add_argument("--output_dir", type=str, default="Target_samples")
     parser.add_argument("--save_individual_images", action="store_true")
     parser.add_argument("--num_particles", type=int, default=4)
     parser.add_argument("--num_inference_steps", type=int, default=100)
     parser.add_argument("--use_smc", type=str2bool, nargs="?", const=True, default=False)
-    parser.add_argument("--use_grad", action="store_true")
-    parser.add_argument("--use_rag", action="store_true")
+    parser.add_argument("--use_rag", action="store_true", help="Enable closed-form lookahead (LiDAR) guidance")
 
-    ## RS-SMC arguments
-    parser.add_argument("--use_smc_smoothing", type=str2bool, nargs="?", const=True, default=False, help="Enable Randomized Smoothing for SMC resampling")
-    parser.add_argument("--use_rs_smc", type=str2bool, nargs="?", const=True, default=False, help="Alias for --use_smc_smoothing")
-    parser.add_argument("--smc_sigma", type=float, default=0.25, help="Gaussian noise standard deviation for RS-SMC (default: 0.25)")
-    parser.add_argument("--smc_num_mc_samples", "--smc_M", dest="smc_num_mc_samples", type=int, default=4, help="Number of Monte Carlo samples M for RS-SMC (default: 4)")
-    parser.add_argument("--M", dest="M", type=int, default=None, help="Alias for number of MC samples M")
-    parser.add_argument("--noise_mode", type=str, default="independent_iid", choices=["independent_iid", "independent_antithetic", "coupled_crn", "stratified_harmonized"], help="Monte Carlo noise sampling mode: 'independent_iid' (default), 'independent_antithetic', or 'coupled_crn'")
-    parser.add_argument("--method", type=str, default=None, choices=["LiDAR", "RS-FlowLiDAR", "Vanilla"], help="High-level method preset: 'LiDAR' (Table 3), 'RS-FlowLiDAR' (Continuous), or 'Vanilla'")
-    parser.add_argument("--sigma_high", type=float, default=1.0, help="Upper noise standard deviation limit (default: 1.0)")
-    parser.add_argument("--sigma_low", type=float, default=0.25, help="Lower noise standard deviation limit (default: 0.25)")
-    parser.add_argument("--eta_drift", type=float, default=0.4, help="Fraction of lookahead drift absorbed in path measure (default: 0.4)")
-    parser.add_argument("--alpha_couple", type=float, default=0.7, help="Coupling strength coefficient (default: 0.7)")
-    parser.add_argument("--s_flow", type=float, default=40.0, help="Velocity guidance scale for Rectified Flows (default: 40.0, Table 3 standard for FLUX)")
-    parser.add_argument("--guidance_start", type=float, default=None, help="Upper bound of guidance window for Flow Matching (default: 1.0 for FLUX Table 3 [0.95, 1.0])")
-    parser.add_argument("--guidance_end", type=float, default=None, help="Lower bound of guidance window for Flow Matching (default: 0.95 for FLUX Table 3 [0.95, 1.0])")
-    parser.add_argument("--flux_debug", action="store_true", default=False, help="FLUX: print per-step guidance diagnostics (t, w_r-w, |dt*dv|/|z|)")
-    parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
-    parser.add_argument("--smc_smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
-    parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")
-    parser.add_argument("--smc_smoothing_mode", type=str, default="loop", choices=["loop", "vectorized"], help="Smoothing execution mode: 'loop' (default, VRAM safe) or 'vectorized'")
-    parser.add_argument("--smc_anneal_sigma", type=str2bool, nargs="?", const=True, default=False, help="Enable Tweedie posterior-grounded Annealed Randomized Smoothing for SMC")
-    parser.add_argument("--smc_anneal_schedule", type=str, default="tweedie_analytical", choices=["tweedie_analytical", "cosine", "linear", "sqrt_noise", "tweedie_snr"], help="Annealing schedule type: 'tweedie_analytical' (default, optimal), 'cosine', 'linear', or legacy 'sqrt_noise'")
-    parser.add_argument("--smc_sigma_min", type=float, default=None, help="Minimum floor for annealed sigma")
-    parser.add_argument("--smc_terminal_resample", type=str2bool, nargs="?", const=True, default=True, help="Whether to perform resampling at terminal step (time_steps - 1). Default: True. Set False to preserve particle diversity.")
-    parser.add_argument("--terminal_resample", type=str2bool, nargs="?", const=True, default=None, help="Alias for --smc_terminal_resample")
-    parser.add_argument("--use_hybrid_smc", type=str2bool, nargs="?", const=True, default=False, help="Enable Harmonized RS-Twisted-SMC Engine with Doob-Tweedie Innovation Residual and 64-bit Seed Replay (Theorem 5.2 / Lemma Double-Counting)")
+    # RS-SMC
+    parser.add_argument("--use_smc_smoothing", type=str2bool, nargs="?", const=True, default=False,
+                        help="Score SMC particles with the randomized-smoothing reward (RS-SMC)")
+    parser.add_argument("--use_rs_smc", type=str2bool, nargs="?", const=True, default=False,
+                        help="Alias for --use_smc_smoothing")
+    parser.add_argument("--smc_sigma", type=float, default=0.25, help="RS-SMC pixel-space noise std sigma")
+    parser.add_argument("--smc_num_mc_samples", "--smc_M", dest="smc_num_mc_samples", type=int, default=4,
+                        help="Number of Monte Carlo samples M for RS-SMC")
+    parser.add_argument("--M", dest="M", type=int, default=None, help="Alias for --smc_num_mc_samples")
+    parser.add_argument("--method", type=str, default=None, choices=["LiDAR", "RS-FlowLiDAR", "Vanilla"],
+                        help="FLUX preset: 'LiDAR' / 'RS-FlowLiDAR' (lookahead velocity guidance) or 'Vanilla'")
+    parser.add_argument("--s_flow", type=float, default=40.0, help="FLUX velocity guidance scale s_flow")
+    parser.add_argument("--guidance_start", type=float, default=None,
+                        help="FLUX guidance window start in flow time (default 1.0)")
+    parser.add_argument("--guidance_end", type=float, default=None,
+                        help="FLUX guidance window end in flow time (default 0.95)")
+    parser.add_argument("--flux_debug", action="store_true", default=False,
+                        help="FLUX: print per-step guidance diagnostics (t, w_r - w, |dt*dv|/|z|)")
+    parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False,
+                        help="RS-SMC: share each noise draw across particles (common random numbers)")
+    parser.add_argument("--smc_smoothing_mode", type=str, default="loop", choices=["loop", "vectorized"],
+                        help="RS-SMC: loop over M (low memory) or score all M*N images at once")
+    parser.add_argument("--smc_anneal_sigma", type=str2bool, nargs="?", const=True, default=False,
+                        help="RS-SMC: anneal sigma(t) over the resampling window")
+    parser.add_argument("--smc_anneal_schedule", type=str, default="tweedie_analytical",
+                        choices=["tweedie_analytical", "cosine", "linear", "sqrt_noise", "tweedie_snr"],
+                        help="sigma(t) schedule; 'sqrt_noise' and 'tweedie_snr' are aliases of 'tweedie_analytical'")
+    parser.add_argument("--smc_sigma_min", type=float, default=None, help="Minimum floor for the annealed sigma(t)")
+    parser.add_argument("--smc_terminal_resample", type=str2bool, nargs="?", const=True, default=True,
+                        help="Also resample at the terminal step (set False to keep particle diversity)")
+    parser.add_argument("--terminal_resample", type=str2bool, nargs="?", const=True, default=None,
+                        help="Alias for --smc_terminal_resample")
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)
@@ -549,12 +382,7 @@ def get_args():
 
     parser.add_argument("--eta", type=float, default=1.0)
     parser.add_argument("--guidance_reward_fn", type=str, default="ImageReward")
-    parser.add_argument(
-        "--metrics_to_compute",
-        type=str,
-        default="ImageReward",
-        help="# separated list of metrics",
-    )
+    parser.add_argument("--metrics_to_compute", type=str, default="ImageReward", help="'#'-separated list of metrics")
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl")
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
 
@@ -566,29 +394,31 @@ def get_args():
     parser.add_argument("--potential_type", type=str, default="diff")
 
     parser.add_argument("--max_prompt", type=int, default=1000)
-    parser.add_argument("--prompt_indices", type=str, default=None, help="Optional subset of prompt indices (e.g. 'stratified_100', '0-99', '0,5,10', or path to JSON)")
+    parser.add_argument("--prompt_indices", type=str, default=None,
+                        help="Optional subset of prompt indices ('stratified_100', '0-99', '0,5,10' or a JSON file)")
     parser.add_argument("--num_shards", type=int, default=1, help="Total number of GPU shards to split prompts")
     parser.add_argument("--shard_id", type=int, default=0, help="Current shard ID (0 to num_shards-1)")
     parser.add_argument("--gpu_id", type=int, default=None, help="Explicit CUDA device ID to run on (e.g. 0 or 1)")
-    parser.add_argument("--reward_type", type=str, choices=["ImageReward", "Clip-Score-only", "HumanPreference", "AS", "mix"], default="ImageReward")
+    parser.add_argument("--reward_type", type=str, choices=["ImageReward", "Clip-Score-only", "HumanPreference", "AS", "mix"],
+                        default="ImageReward")
 
     parser.add_argument("--lookahead_path", type=str, default="100_50_5")
 
-    ## FK redefine
+    # Feynman-Kac resampling (SMC)
     parser.add_argument("--FK_lmbda", type=float, default=10.0)
     parser.add_argument("--FK_resample_t_start", type=int, default=20)
     parser.add_argument("--FK_resample_t_end", type=int, default=80)
 
     parser.add_argument("--run_name", type=str, default="", help="Custom output subfolder name")
     parser.add_argument("--resume", action="store_true", default=True, help="Skip completed prompts if results exist")
-    parser.add_argument("--overwrite", action="store_true", default=False, help="Force re-run and overwrite existing results")
+    parser.add_argument("--overwrite", action="store_true", default=False,
+                        help="Force re-run and overwrite existing results")
     args = parser.parse_args()
 
-    # Fail-Fast: Kiểm tra xung đột cờ dòng lệnh
     raw_m_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--M=') or a.startswith('--smc_M=')]
     raw_mc_flags = [a.split('=')[1] for a in sys.argv if a.startswith('--smc_num_mc_samples=')]
     if raw_m_flags and raw_mc_flags and raw_m_flags[0] != raw_mc_flags[0]:
-        raise ValueError(f"❌ [FAIL-FAST] Phát hiện xung đột cờ dòng lệnh: --smc_num_mc_samples={raw_mc_flags[0]} nhưng --M/--smc_M={raw_m_flags[0]}! Vui lòng chỉ định một giá trị duy nhất.")
+        raise ValueError(f"Conflicting flags: --smc_num_mc_samples={raw_mc_flags[0]} but --M/--smc_M={raw_m_flags[0]}.")
 
     if args.M is not None:
         args.smc_num_mc_samples = args.M
@@ -601,14 +431,9 @@ def get_args():
     if args.use_smc_smoothing:
         args.use_smc = True
 
-    # Xóa sổ hoàn toàn beta_risk: cố định = 0.0
-    args.beta_risk = 0.0
-
-    # Xử lý preset --method cho LiDAR vs RS-FlowLiDAR vs Vanilla
-    # Lưu ý: Cấu hình Phase 2 (s_flow = 40.0, cửa sổ [1.0, 0.95]) của RS-FlowLiDAR giống hệt 100% với LiDAR
+    # FLUX presets only fill in defaults; explicit CLI values (e.g. an s_flow sweep) are kept.
     if args.method in ["LiDAR", "RS-FlowLiDAR"]:
         args.use_rag = True
-        # Preset chỉ điền giá trị mặc định; KHÔNG ghi đè giá trị truyền tường minh trên CLI (cần cho quét s_flow)
         if not any(a.startswith("--s_flow") for a in sys.argv):
             args.s_flow = 40.0
         if not any(a.startswith("--guidance_start") for a in sys.argv):
@@ -621,23 +446,17 @@ def get_args():
         args.s_flow = 0.0
         args.use_smc = False
 
-    # Auto-dispatch scale and sigma for SDXL vs SD 1.5
+    # SDXL defaults (LiDAR Table 2 guidance scale; calibrated RS-SMC sigma).
     if "xl" in args.model_name.lower():
         if args.scale == 12.5:
             args.scale = 8.0
-            print("⚡ Auto-dispatch scale to 8.0 for SDXL (Paper Table 2 standard)")
+            print("SDXL: using guidance scale 8.0")
         if args.use_smc_smoothing and args.smc_sigma == 0.25:
             args.smc_sigma = 0.15
-            print("⚡ Auto-dispatch smc_sigma to 0.15 for SDXL (Calibrated [0.10, 0.20] range)")
-    else:
-        if args.use_smc_smoothing and getattr(args, "smc_sigma", 0.25) == 1.0:
-            # If user had legacy 1.0 default, warn and recommend 0.25
-            pass
+            print("SDXL: using smc_sigma 0.15")
 
     return args
 
 
 if __name__ == "__main__":
-    args = get_args()
-    print(args.seed)
-    main(args)
+    main(get_args())

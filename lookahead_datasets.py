@@ -1,48 +1,16 @@
+"""Phase 1 lookahead pool loader used by Phase 2 (`LiDAR_sampling.py`).
 
-import os
+`gen_lookahead_samples(directory, top_k)` reads every `<prompt_idx>/samples/latent.pt` and
+`<prompt_idx>/results.json` written by `lookahead_sampling.py`, and keeps, per prompt, a random
+subset of `top_k` lookahead latents with their rewards (`<reward_key>.result`, i.e. the smoothed
+rewards when Phase 1 ran with `--use_smoothing`).
+"""
 import json
-import math
+import os
+import random
+
 import torch
 from torch.utils.data import Dataset
-from PIL import Image
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-from tqdm import tqdm
-from transformers import BertTokenizer
-import random
-try:
-    import clip
-except ImportError:
-    clip = None
-
-
-def makedir(path):
-    if not os.path.exists(path):
-        os.makedirs(path, 0o777)
-
-try:
-    from torchvision.transforms import InterpolationMode
-    BICUBIC = InterpolationMode.BICUBIC
-except ImportError:
-    BICUBIC = Image.BICUBIC
-
-def _convert_image_to_rgb(image):
-    return image.convert("RGB")
-
-def _transform(n_px):
-    return Compose([
-        Resize(n_px, interpolation=BICUBIC),
-        CenterCrop(n_px),
-        _convert_image_to_rgb,
-        ToTensor(),
-        Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-    ])
-
-def init_tokenizer():
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    tokenizer.add_special_tokens({'bos_token':'[DEC]'})
-    tokenizer.add_special_tokens({'additional_special_tokens':['[ENC]']})
-    tokenizer.enc_token_id = tokenizer.additional_special_tokens_ids[0]
-    return tokenizer
 
 
 class gen_lookahead_samples(Dataset):
@@ -56,11 +24,8 @@ class gen_lookahead_samples(Dataset):
             f"Lookahead_samples/{clean_dir}",
             f"Lookahead_samples/{basename}",
             f"Lookahead_samples/{basename}_100p",
-            f"/content/drive/MyDrive/RS-LiDAR/Lookahead_samples/{basename}",
-            f"/content/drive/MyDrive/RS-LiDAR/Lookahead_samples/{basename}_100p",
-            f"/content/drive/MyDrive/RS_LiDAR/Lookahead_samples/{basename}",
-            f"/content/drive/MyDrive/RS_LiDAR/Lookahead_samples/{basename}_100p",
         ]
+        # Prefer the first candidate that contains prompt folders, else the first existing one.
         chosen_path = None
         for cand in candidates:
             if cand and os.path.exists(cand):
@@ -72,13 +37,14 @@ class gen_lookahead_samples(Dataset):
                     chosen_path = cand
         if chosen_path is not None:
             self.dataset_path = chosen_path
-            print(f"📁 Lookahead dataset found at: {self.dataset_path}")
+            print(f"Lookahead dataset found at: {self.dataset_path}")
         else:
             self.dataset_path = f"Lookahead_samples/{basename}"
-            print(f"⚠️ Lookahead dataset candidate '{directory}' not found. Defaulting to: {self.dataset_path}")
+            print(f"Lookahead dataset '{directory}' not found. Defaulting to: {self.dataset_path}")
         data = {}
         if os.path.exists(self.dataset_path):
-            prompt_dirs = sorted([d for d in os.listdir(self.dataset_path) if os.path.isdir(os.path.join(self.dataset_path, d)) and d.isdigit()])
+            prompt_dirs = sorted([d for d in os.listdir(self.dataset_path)
+                                  if os.path.isdir(os.path.join(self.dataset_path, d)) and d.isdigit()])
             for d in prompt_dirs:
                 latent_path = f"{self.dataset_path}/{d}/samples/latent.pt"
                 results_path = f"{self.dataset_path}/{d}/results.json"
@@ -88,7 +54,6 @@ class gen_lookahead_samples(Dataset):
                     latent = torch.load(latent_path, map_location="cpu")
                     with open(results_path, "r") as f:
                         label = json.load(f)
-                    metric_key = None
                     if self.reward_key in label and "result" in label[self.reward_key]:
                         metric_key = self.reward_key
                     elif "ImageReward" in label and "result" in label["ImageReward"]:
@@ -99,14 +64,9 @@ class gen_lookahead_samples(Dataset):
 
                     if metric_key is not None:
                         reward = label[metric_key]["result"]
-                        reward_high = label[metric_key].get("result_high", reward)
-                        reward_low = label[metric_key].get("result_low", reward)
                     else:
                         reward = [0.0] * len(latent)
-                        reward_high = reward
-                        reward_low = reward
 
-                    lookahead_seeds = label.get("lookahead_seeds", None)
                     prompt = label["prompt"]
 
                     random.seed(42)
@@ -114,21 +74,14 @@ class gen_lookahead_samples(Dataset):
                     indices = random.sample(range(len(latent)), k)
                     latents = [latent[i] for i in indices]
                     rewards = [reward[i] for i in indices]
-                    rewards_high = [reward_high[i] for i in indices]
-                    rewards_low = [reward_low[i] for i in indices]
-                    seeds = [lookahead_seeds[i] for i in indices] if lookahead_seeds is not None and len(lookahead_seeds) > max(indices) else None
                     prompts = [prompt[i] for i in indices]
                     prompt_idx = int(d)
-                    datapoint = {
+                    data[prompt_idx] = {
                         "latents": torch.stack(latents),
                         "rewards": torch.tensor(rewards),
-                        "rewards_high": torch.tensor(rewards_high),
-                        "rewards_low": torch.tensor(rewards_low),
-                        "seeds": seeds,
                         "prompts": prompts,
-                        "prompt_idx": prompt_idx
+                        "prompt_idx": prompt_idx,
                     }
-                    data[prompt_idx] = datapoint
                 except Exception as e:
                     print(f"Error loading lookahead sample for prompt {d}: {e}")
         self.data = data
