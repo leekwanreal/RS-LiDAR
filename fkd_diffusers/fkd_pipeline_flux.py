@@ -74,6 +74,10 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 )
             except Exception:
                 pass
+        if not hasattr(self, "_internal_dict"):
+            self._internal_dict = {}
+        if not hasattr(self, "vae_scale_factor"):
+            self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) and hasattr(self.vae, "config") and hasattr(self.vae.config, "block_out_channels") else 8
         self.flow_guidance_module = RSFlowLiDARGuidance(s_flow=12.5, lambda_r=5000.0)
 
     @classmethod
@@ -83,6 +87,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
             if cls is not FluxPipeline and issubclass(cls, FluxPipeline):
                 pipe = FluxPipeline.from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
                 pipe.__class__ = cls
+                if not hasattr(pipe, "vae_scale_factor"):
+                    pipe.vae_scale_factor = 2 ** (len(pipe.vae.config.block_out_channels) - 1) if getattr(pipe, "vae", None) and hasattr(pipe.vae, "config") and hasattr(pipe.vae.config, "block_out_channels") else 8
                 if not hasattr(pipe, "flow_guidance_module"):
                     pipe.flow_guidance_module = RSFlowLiDARGuidance(s_flow=12.5, lambda_r=5000.0)
                 return pipe
@@ -160,6 +166,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
         # Nếu không có fkd_args hoặc không bật use_rag, gọi pipeline mặc định
         if fkd_args is None or not fkd_args.get("use_rag", False):
             if hasattr(super(), "__call__"):
+                call_sig = inspect.signature(super().__call__).parameters
+                filtered_kwargs = {k: v for k, v in kwargs.items() if k in call_sig}
                 return super().__call__(
                     prompt=prompt,
                     prompt_2=prompt_2,
@@ -175,7 +183,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     pooled_prompt_embeds=pooled_prompt_embeds,
                     output_type=output_type,
                     return_dict=return_dict,
-                    **kwargs,
+                    **filtered_kwargs,
                 )
 
         # Trích xuất dữ liệu Lookahead từ rag_dataset
@@ -200,23 +208,52 @@ class FluxPipeline_LiDAR(FluxPipeline):
         self.flow_guidance_module.lambda_r = lmbda
 
         # Xác định device và dtype chuẩn xác từ transformer hoặc VAE
-        if hasattr(self, "transformer") and self.transformer is not None and hasattr(self.transformer, "parameters") and len(list(self.transformer.parameters())) > 0:
-            trans_param = next(self.transformer.parameters())
+        trans_param = None
+        if hasattr(self, "transformer") and self.transformer is not None and hasattr(self.transformer, "parameters"):
+            try:
+                params = list(self.transformer.parameters())
+                if len(params) > 0:
+                    trans_param = params[0]
+            except Exception:
+                pass
+
+        vae_param = None
+        if hasattr(self, "vae") and self.vae is not None and hasattr(self.vae, "parameters"):
+            try:
+                params = list(self.vae.parameters())
+                if len(params) > 0:
+                    vae_param = params[0]
+            except Exception:
+                pass
+
+        if trans_param is not None and hasattr(trans_param, "device") and hasattr(trans_param, "dtype"):
             device = trans_param.device
             dtype = trans_param.dtype
-        elif hasattr(self, "vae") and self.vae is not None and hasattr(self.vae, "parameters") and len(list(self.vae.parameters())) > 0:
-            vae_param = next(self.vae.parameters())
+        elif vae_param is not None and hasattr(vae_param, "device") and hasattr(vae_param, "dtype"):
             device = vae_param.device
             dtype = vae_param.dtype
         else:
-            device = getattr(self, "_execution_device", getattr(self, "device", torch.device("cuda" if torch.cuda.is_available() else "cpu")))
+            try:
+                device = getattr(self, "_execution_device", None)
+            except Exception:
+                device = None
+            if device is None:
+                try:
+                    device = getattr(self, "device", None)
+                except Exception:
+                    device = None
+            if device is None:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             dtype = torch.bfloat16 if (torch.cuda.is_available() and torch.cuda.is_bf16_supported()) else torch.float32
 
         # Chuẩn bị sigmas và mu cho dynamic shifting trong FLUX scheduler
-        sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
-        if hasattr(self, "scheduler") and hasattr(self.scheduler, "config"):
-            if getattr(self.scheduler.config, "use_flow_sigmas", False):
-                sigmas = None
+        if timesteps is not None:
+            sigmas = None
+        else:
+            sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
+            if hasattr(self, "scheduler") and hasattr(self.scheduler, "config"):
+                if getattr(self.scheduler.config, "use_flow_sigmas", False):
+                    sigmas = None
 
         mu = None
         if hasattr(self, "scheduler") and hasattr(self.scheduler, "config") and getattr(self.scheduler.config, "use_dynamic_shifting", False):
@@ -247,12 +284,16 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     self.scheduler,
                     num_inference_steps,
                     device,
+                    timesteps=timesteps,
                     sigmas=sigmas,
                     mu=mu,
                 )
             except Exception:
                 try:
-                    self.scheduler.set_timesteps(num_inference_steps, device=device, sigmas=sigmas, mu=mu)
+                    if timesteps is not None:
+                        self.scheduler.set_timesteps(timesteps=timesteps, device=device)
+                    else:
+                        self.scheduler.set_timesteps(num_inference_steps, device=device, sigmas=sigmas, mu=mu)
                 except TypeError:
                     try:
                         self.scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
@@ -261,6 +302,9 @@ class FluxPipeline_LiDAR(FluxPipeline):
             timesteps = self.scheduler.timesteps
         elif timesteps is None:
             timesteps = torch.linspace(1.0, 0.0, num_inference_steps + 1, device=device)
+
+        # Xác định thang đo thời gian của timesteps (FlowMatchEulerDiscreteScheduler dùng thang đo 1..1000)
+        is_discrete_1000 = bool((timesteps.max() > 1.0) if isinstance(timesteps, torch.Tensor) else (max(timesteps) > 1.0))
 
         batch_size = len(prompt) if isinstance(prompt, list) else 1
         num_channels = 16
@@ -320,6 +364,10 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=dtype)
         else:
             latents = latents.to(device=device, dtype=dtype)
+            if hasattr(self, "_pack_latents") and latents.ndim == 4:
+                latents = self._pack_latents(latents, batch_size, num_channels, latent_h, latent_w)
+            if latent_image_ids is None and hasattr(self, "_prepare_latent_image_ids"):
+                latent_image_ids = self._prepare_latent_image_ids(batch_size, height // 16, width // 16, device, dtype)
 
         if latent_image_ids is not None and hasattr(latent_image_ids, "to"):
             latent_image_ids = latent_image_ids.to(device=device)
@@ -353,6 +401,10 @@ class FluxPipeline_LiDAR(FluxPipeline):
         num_warmup_steps = max(len(timesteps) - num_inference_steps * sched_order, 0) if sched is not None else 0
         has_prog = hasattr(self, "progress_bar")
 
+        # Thiết lập begin_index cho scheduler (chuẩn Diffusers FluxPipeline)
+        if sched is not None and hasattr(sched, "set_begin_index"):
+            sched.set_begin_index(0)
+
         def _run_denoising_loop(prog_bar=None):
             nonlocal latents
             for i, t in enumerate(timesteps):
@@ -370,9 +422,9 @@ class FluxPipeline_LiDAR(FluxPipeline):
                         packed_latents = latents
 
                     # Chuẩn bị timestep và guidance vector chuẩn FLUX
-                    trans_param = next(self.transformer.parameters(), None) if hasattr(self.transformer, "parameters") else None
-                    t_dev = trans_param.device if trans_param is not None else device
-                    t_dtype = trans_param.dtype if trans_param is not None else dtype
+                    trans_param = next(iter(self.transformer.parameters()), None) if hasattr(self.transformer, "parameters") else None
+                    t_dev = trans_param.device if (trans_param is not None and hasattr(trans_param, "device")) else device
+                    t_dtype = trans_param.dtype if (trans_param is not None and hasattr(trans_param, "dtype")) else dtype
 
                     packed_latents = packed_latents.to(device=t_dev, dtype=t_dtype)
                     p_emb = prompt_embeds.to(device=t_dev, dtype=t_dtype) if prompt_embeds is not None else None
@@ -383,7 +435,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     if p_emb is not None and callable(self.transformer):
                         guidance_vec = torch.tensor([guidance_scale], device=t_dev, dtype=torch.float32).expand(latents.shape[0]) if (hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False)) else None
                         timestep_input = t.expand(latents.shape[0]).to(device=t_dev, dtype=t_dtype) if isinstance(t, torch.Tensor) else torch.tensor([t], device=t_dev, dtype=t_dtype).expand(latents.shape[0])
-                        t_scaled = timestep_input / 1000.0 if timestep_input.max() > 1.0 else timestep_input
+                        t_scaled = timestep_input / 1000.0 if is_discrete_1000 else timestep_input
 
                         v_pred = self.transformer(
                             hidden_states=packed_latents,
@@ -393,6 +445,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
                             encoder_hidden_states=p_emb,
                             txt_ids=txt_ids,
                             img_ids=img_ids,
+                            joint_attention_kwargs=getattr(self, "joint_attention_kwargs", None),
                             return_dict=False,
                         )[0]
                     else:
@@ -401,13 +454,13 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     v_pred = torch.zeros_like(latents)
 
                 # 2. Tính toán Vector Gia Số Vận Tốc Lái Lookahead (LiDAR / RS-LiDAR)
-                t_norm = t_curr / 1000.0 if t_curr > 1.0 else t_curr
+                t_norm = t_curr / 1000.0 if is_discrete_1000 else t_curr
                 if (lookahead_latents is not None and rewards is not None and 
                     t_end <= t_norm <= t_start):
                     
                     spatial_latents = latents
                     if hasattr(self, "_unpack_latents") and latents.ndim == 3:
-                        spatial_latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 16))
+                        spatial_latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 8))
 
                     delta_v = self.flow_guidance_module.compute_velocity_guidance(
                         z_t=spatial_latents,
@@ -425,13 +478,19 @@ class FluxPipeline_LiDAR(FluxPipeline):
                         v_pred = v_pred + delta_v.to(dtype=v_pred.dtype, device=v_pred.device)
 
                 # 3. Bước cập nhật tích phân Euler hoặc qua Scheduler
+                latents_dtype = latents.dtype
                 if sched is not None and hasattr(sched, "step"):
                     try:
                         latents = sched.step(v_pred, t, latents, return_dict=False)[0]
                     except Exception:
-                        latents = latents - dt * v_pred
+                        scaled_dt = (dt / 1000.0) if is_discrete_1000 else dt
+                        latents = latents - scaled_dt * v_pred
                 else:
-                    latents = latents - dt * v_pred
+                    scaled_dt = (dt / 1000.0) if is_discrete_1000 else dt
+                    latents = latents - scaled_dt * v_pred
+
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
 
                 if prog_bar is not None and hasattr(prog_bar, "update"):
                     if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % sched_order == 0):
@@ -443,30 +502,33 @@ class FluxPipeline_LiDAR(FluxPipeline):
         else:
             _run_denoising_loop(None)
 
-        # Giải mã ảnh sạch ở bước cuối
-        if hasattr(self, "_unpack_latents") and latents.ndim == 3:
-            latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 16))
-
-        if hasattr(self, "vae") and self.vae is not None:
-            vae_param = next(self.vae.parameters(), None) if hasattr(self.vae, "parameters") else None
-            vae_dev = vae_param.device if vae_param is not None else device
-            vae_dtype = vae_param.dtype if vae_param is not None else dtype
-
-            scaling = getattr(self.vae.config, "scaling_factor", 0.3611) if hasattr(self.vae, "config") else 0.3611
-            shift = getattr(self.vae.config, "shift_factor", 0.1159) if hasattr(self.vae, "config") else 0.1159
-            scaled_latents = ((latents / scaling) + shift).to(device=vae_dev, dtype=vae_dtype)
-            decoded_chunks = []
-            for idx in range(scaled_latents.shape[0]):
-                chunk = scaled_latents[idx : idx + 1]
-                dec = self.vae.decode(chunk, return_dict=False)[0]
-                decoded_chunks.append(dec)
-            decoded_tensor = torch.cat(decoded_chunks, dim=0)
-            if hasattr(self, "image_processor") and self.image_processor is not None:
-                images = self.image_processor.postprocess(decoded_tensor, output_type=output_type)
-            else:
-                images = decoded_tensor
-        else:
+        # Giải mã ảnh sạch ở bước cuối hoặc giữ nguyên latents đóng gói nếu output_type == "latent"
+        if output_type == "latent":
             images = latents
+        else:
+            if hasattr(self, "_unpack_latents") and latents.ndim == 3:
+                latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 8))
+
+            if hasattr(self, "vae") and self.vae is not None:
+                vae_param = next(iter(self.vae.parameters()), None) if hasattr(self.vae, "parameters") else None
+                vae_dev = vae_param.device if (vae_param is not None and hasattr(vae_param, "device")) else device
+                vae_dtype = vae_param.dtype if (vae_param is not None and hasattr(vae_param, "dtype")) else dtype
+
+                scaling = getattr(self.vae.config, "scaling_factor", 0.3611) if hasattr(self.vae, "config") else 0.3611
+                shift = getattr(self.vae.config, "shift_factor", 0.1159) if hasattr(self.vae, "config") else 0.1159
+                scaled_latents = ((latents / scaling) + shift).to(device=vae_dev, dtype=vae_dtype)
+                decoded_chunks = []
+                for idx in range(scaled_latents.shape[0]):
+                    chunk = scaled_latents[idx : idx + 1]
+                    dec = self.vae.decode(chunk, return_dict=False)[0]
+                    decoded_chunks.append(dec)
+                decoded_tensor = torch.cat(decoded_chunks, dim=0)
+                if hasattr(self, "image_processor") and self.image_processor is not None:
+                    images = self.image_processor.postprocess(decoded_tensor, output_type=output_type)
+                else:
+                    images = decoded_tensor
+            else:
+                images = latents
 
         if not return_dict:
             return (images,)
