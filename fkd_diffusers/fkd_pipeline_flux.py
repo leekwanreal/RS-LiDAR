@@ -80,6 +80,45 @@ class FluxPipeline_LiDAR(FluxPipeline):
         if not hasattr(self, "vae_scale_factor"):
             self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1) if getattr(self, "vae", None) and hasattr(self.vae, "config") and hasattr(self.vae.config, "block_out_channels") else 8
         self.flow_guidance_module = RSFlowLiDARGuidance(s_flow=12.5, lambda_r=5000.0)
+        self._execution_device_cache = None
+
+    @property
+    def device(self) -> torch.device:
+        r"""
+        Xác định device chuẩn xác của pipeline từ transformer hoặc các sub-modules.
+        Tránh trường hợp Diffusers _get_signature_keys trả về rỗng khiến device bị rơi về CPU.
+        """
+        if hasattr(self, "_execution_device_cache") and self._execution_device_cache is not None:
+            return self._execution_device_cache
+        for sub_name in ["transformer", "text_encoder_2", "text_encoder", "vae"]:
+            sub = getattr(self, sub_name, None)
+            if sub is not None and isinstance(sub, torch.nn.Module):
+                dev = getattr(sub, "device", None)
+                if dev is not None and dev.type not in ("cpu", "meta"):
+                    return dev
+                try:
+                    params = list(sub.parameters())
+                    if len(params) > 0 and params[0].device.type not in ("cpu", "meta"):
+                        return params[0].device
+                except Exception:
+                    pass
+        for sub_name in ["transformer", "text_encoder_2", "text_encoder", "vae"]:
+            sub = getattr(self, sub_name, None)
+            if sub is not None and isinstance(sub, torch.nn.Module):
+                dev = getattr(sub, "device", None)
+                if dev is not None:
+                    return dev
+                try:
+                    params = list(sub.parameters())
+                    if len(params) > 0:
+                        return params[0].device
+                except Exception:
+                    pass
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    @property
+    def _execution_device(self) -> torch.device:
+        return self.device
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
@@ -120,6 +159,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
         dtype = kwargs.get("dtype", dtype)
 
         target_device = torch.device(device) if device is not None else getattr(self, "device", None)
+        if target_device is not None:
+            self._execution_device_cache = target_device
         
         for sub_name in ["transformer", "text_encoder", "text_encoder_2", "vae", "image_encoder"]:
             sub = getattr(self, sub_name, None)
@@ -177,9 +218,9 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     "guidance_scale": guidance_scale,
                     "num_images_per_prompt": num_images_per_prompt,
                     "generator": generator,
-                    "latents": latents,
-                    "prompt_embeds": prompt_embeds,
-                    "pooled_prompt_embeds": pooled_prompt_embeds,
+                    "latents": latents.to(self.device) if (latents is not None and hasattr(latents, "to")) else latents,
+                    "prompt_embeds": prompt_embeds.to(self.device) if (prompt_embeds is not None and hasattr(prompt_embeds, "to")) else prompt_embeds,
+                    "pooled_prompt_embeds": pooled_prompt_embeds.to(self.device) if (pooled_prompt_embeds is not None and hasattr(pooled_prompt_embeds, "to")) else pooled_prompt_embeds,
                     "output_type": output_type,
                     "return_dict": return_dict,
                     **kwargs,

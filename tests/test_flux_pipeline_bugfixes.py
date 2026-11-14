@@ -321,6 +321,37 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         self.assertIn("prompt", called_kwargs)
         self.assertEqual(called_kwargs["num_inference_steps"], 28)
 
+    def test_09_device_property_and_execution_device_resolution(self):
+        """Khẳng định: pipe.device và pipe._execution_device luôn phân giải đúng device của transformer/submodules."""
+        pipe = FluxPipeline_LiDAR()
+        mock_param = torch.nn.Parameter(torch.zeros(2, 2))
+        pipe.transformer = torch.nn.Linear(2, 2)
+        pipe.transformer.weight = mock_param
+
+        # Ban đầu trên CPU
+        self.assertEqual(pipe.device.type, "cpu")
+        self.assertEqual(pipe._execution_device.type, "cpu")
+
+        # Sau khi đặt _execution_device_cache hoặc gán target device
+        pipe._execution_device_cache = torch.device("cuda:0")
+        self.assertEqual(pipe.device, torch.device("cuda:0"))
+        self.assertEqual(pipe._execution_device, torch.device("cuda:0"))
+
+    def test_10_vanilla_call_preserves_device_alignment(self):
+        """Khẳng định: Trong chế độ Vanilla, latents và prompt_embeds được chuyển đúng device trước khi gọi super."""
+        from diffusers import FluxPipeline
+        pipe = FluxPipeline_LiDAR()
+        pipe._execution_device_cache = torch.device("cpu")
+
+        test_latents = torch.zeros(1, 16, 128, 128)
+        with unittest.mock.patch.object(FluxPipeline, "__call__", autospec=True, return_value=MagicMock()) as mock_call:
+            pipe(prompt="a bench", latents=test_latents, fkd_args={"use_rag": False})
+
+        self.assertTrue(mock_call.called)
+        called_kwargs = mock_call.call_args[1]
+        self.assertIn("latents", called_kwargs)
+        self.assertEqual(called_kwargs["latents"].device, pipe.device)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

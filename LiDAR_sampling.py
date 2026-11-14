@@ -213,6 +213,7 @@ def main(args):
     # set device (preserve assigned device cuda:actual_gpu_id)
     pipe = pipe.to(device)
     if "flux" in args.model_name.lower():
+        pipe._execution_device_cache = torch.device(device)
         for sub_name in ["transformer", "text_encoder_2", "text_encoder", "vae", "image_encoder"]:
             sub = getattr(pipe, sub_name, None)
             if sub is not None and hasattr(sub, "to"):
