@@ -79,6 +79,16 @@ def str2bool(v):
     raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
+def prompt_seed(base_seed, prompt_idx):
+    """Seed used for one prompt under `--per_prompt_seed`: the base seed plus the prompt index.
+
+    Re-seeding the global torch RNG with this value before each prompt makes that prompt's noise
+    independent of the prompts processed before it, so runs of different methods stay paired and a
+    run resumed with `--resume` draws the same noise as an uninterrupted one.
+    """
+    return int(base_seed) + int(prompt_idx)
+
+
 def parse_prompt_indices(indices_arg):
     """Parse `--prompt_indices`.
 

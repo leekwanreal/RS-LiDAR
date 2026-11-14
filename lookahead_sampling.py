@@ -29,7 +29,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from rslidar_utils import load_geneval_metadata, parse_prompt_indices, setup_runtime, str2bool
+from rslidar_utils import load_geneval_metadata, parse_prompt_indices, prompt_seed, setup_runtime, str2bool
 
 setup_runtime()
 
@@ -490,6 +490,8 @@ def main(args):
                     f">= {args.num_particles} particles). Searched: {candidates}"
                 )
 
+        if args.per_prompt_seed:
+            torch.manual_seed(prompt_seed(args.seed, real_idx))
         start_time = datetime.now()
         with torch.inference_mode():
             if reused_latent_file is not None:
@@ -667,6 +669,8 @@ def get_args():
     parser.add_argument("--prompt_path", type=str, default="prompt_files/geneval_metadata.jsonl")
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--per_prompt_seed", type=str2bool, nargs="?", const=True, default=False,
+                        help="Re-seed torch with seed + prompt index before each prompt (paired, resume-safe runs)")
     parser.add_argument("--max_prompt", type=int, default=1000)
     parser.add_argument("--prompt_indices", type=str, default=None,
                         help="Optional subset of prompt indices ('stratified_100', '0-99', '0,5,10' or a JSON file)")

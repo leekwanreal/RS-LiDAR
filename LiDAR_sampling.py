@@ -23,7 +23,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from rslidar_utils import load_geneval_metadata, parse_prompt_indices, setup_runtime, str2bool
+from rslidar_utils import load_geneval_metadata, parse_prompt_indices, prompt_seed, setup_runtime, str2bool
 
 setup_runtime()
 
@@ -260,6 +260,8 @@ def main(args):
             flux_debug=args.flux_debug,
         )
 
+        if args.per_prompt_seed:
+            torch.manual_seed(prompt_seed(args.seed, real_idx))
         start_time = datetime.now()
         images = pipe(
             prompt,
@@ -387,6 +389,8 @@ def get_args():
     parser.add_argument("--model_name", type=str, default="runwayml/stable-diffusion-v1-5")
 
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--per_prompt_seed", type=str2bool, nargs="?", const=True, default=False,
+                        help="Re-seed torch with seed + prompt index before each prompt (paired, resume-safe runs)")
     parser.add_argument("--adaptive_resampling", action="store_true")
     parser.add_argument("--resample_frequency", type=int, default=20)
     parser.add_argument("--resample_t_start", type=int, default=1000)
