@@ -388,6 +388,7 @@ def main(args):
             guidance_reward_fn=args.guidance_reward_fn,
             potential_type=args.potential_type,
             s_flow=args.s_flow,
+            flux_debug=getattr(args, "flux_debug", False),
         )
 
         start_time = datetime.now()
@@ -530,6 +531,7 @@ def get_args():
     parser.add_argument("--s_flow", type=float, default=40.0, help="Velocity guidance scale for Rectified Flows (default: 40.0, Table 3 standard for FLUX)")
     parser.add_argument("--guidance_start", type=float, default=None, help="Upper bound of guidance window for Flow Matching (default: 1.0 for FLUX Table 3 [0.95, 1.0])")
     parser.add_argument("--guidance_end", type=float, default=None, help="Lower bound of guidance window for Flow Matching (default: 0.95 for FLUX Table 3 [0.95, 1.0])")
+    parser.add_argument("--flux_debug", action="store_true", default=False, help="FLUX: print per-step guidance diagnostics (t, w_r-w, |dt*dv|/|z|)")
     parser.add_argument("--pareto_rho", type=float, default=0.5, help="Pareto trade-off weight parameter (default: 0.5)")
     parser.add_argument("--smc_smoothing_domain", type=str, default="image", choices=["image", "latent"], help="Noise injection domain: 'image' (default) or 'latent'")
     parser.add_argument("--smc_use_crn", type=str2bool, nargs="?", const=True, default=False, help="Use Common Random Numbers for RS-SMC across particles")
@@ -606,9 +608,13 @@ def get_args():
     # Lưu ý: Cấu hình Phase 2 (s_flow = 40.0, cửa sổ [1.0, 0.95]) của RS-FlowLiDAR giống hệt 100% với LiDAR
     if args.method in ["LiDAR", "RS-FlowLiDAR"]:
         args.use_rag = True
-        args.s_flow = 40.0
-        args.guidance_start = 1.0
-        args.guidance_end = 0.95
+        # Preset chỉ điền giá trị mặc định; KHÔNG ghi đè giá trị truyền tường minh trên CLI (cần cho quét s_flow)
+        if not any(a.startswith("--s_flow") for a in sys.argv):
+            args.s_flow = 40.0
+        if not any(a.startswith("--guidance_start") for a in sys.argv):
+            args.guidance_start = 1.0
+        if not any(a.startswith("--guidance_end") for a in sys.argv):
+            args.guidance_end = 0.95
         args.use_smc = False
     elif args.method == "Vanilla":
         args.use_rag = False

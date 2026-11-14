@@ -22,6 +22,15 @@ class MockRagDataset:
         }
 
 
+class MockTransformer(torch.nn.Module):
+    """Transformer giả: trả vận tốc 0 cùng shape với hidden_states (pipeline đã fail-fast khi thiếu transformer)."""
+    def forward(self, hidden_states, **kwargs):
+        return (torch.zeros_like(hidden_states),)
+
+
+MOCK_EMBEDS = dict(prompt_embeds=torch.zeros((1, 8, 16)), pooled_prompt_embeds=torch.zeros((1, 8)))
+
+
 class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
     """
     Kiểm thử tích hợp luồng dữ liệu End-to-End cho FluxPipeline_LiDAR:
@@ -34,6 +43,7 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(42)
         self.pipe = FluxPipeline_LiDAR()
+        self.pipe.transformer = MockTransformer()
         self.K = 4
         self.C = 16
         self.H = 128
@@ -65,6 +75,7 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
             timesteps=timesteps,
             latents=latents_init.clone(),
             fkd_args=fkd_args,
+            **MOCK_EMBEDS,
         )
         self.assertIsNotNone(out)
         self.assertTrue(hasattr(out, "images"))
@@ -121,10 +132,24 @@ class TestFluxPipelineLiDARDataFlow(unittest.TestCase):
             timesteps=timesteps,
             latents=latents_init.clone(),
             fkd_args=fkd_args,
+            **MOCK_EMBEDS,
         )
         self.assertIsNotNone(out)
         self.assertEqual(self.pipe.flow_guidance_module.t_start, 1.0)
         self.assertEqual(self.pipe.flow_guidance_module.t_end, 0.95)
+
+    def test_05_bf16_inputs_use_fp32_potential(self):
+        """Hồi quy: latent bf16 (FLUX A100) phải cho cùng w_r - w như FP32; bf16 từng làm tròn ||.||^2 ~ 2.4e5 về một giá trị."""
+        guider = RSFlowLiDARGuidance(s_flow=40.0, lambda_r=5000.0, t_start=1.0, t_end=0.95)
+        torch.manual_seed(0)
+        t = 0.964
+        z0 = torch.randn((3, 16, 128, 128)) * 0.8
+        z_t = (1 - t) * torch.randn((1, 16, 128, 128)) * 0.8 + t * torch.randn((1, 16, 128, 128))
+        rewards = torch.tensor([0.30, 0.31, 0.29])
+        dv32, d32 = guider.compute_velocity_guidance(z_t, z0, rewards, sigma_t=t, return_diagnostics=True)
+        dv16, d16 = guider.compute_velocity_guidance(z_t.bfloat16(), z0.bfloat16(), rewards, sigma_t=t, return_diagnostics=True)
+        self.assertTrue(torch.allclose(d32["w_diff"], d16["w_diff"], atol=1e-2), f"fp32 {d32['w_diff']} vs bf16 {d16['w_diff']}")
+        self.assertEqual(dv16.dtype, torch.bfloat16, "delta_v phải trả về đúng dtype của z_t.")
 
 
 if __name__ == "__main__":

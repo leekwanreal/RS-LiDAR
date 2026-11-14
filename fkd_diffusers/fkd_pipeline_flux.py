@@ -386,7 +386,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     elif len(enc_out) == 2:
                         prompt_embeds, pooled_prompt_embeds = enc_out
             except Exception as e:
-                pass
+                # Fail-fast: nuốt lỗi ở đây khiến prompt_embeds=None và vòng lặp sinh ảnh rác.
+                raise RuntimeError(f"❌ [FLUX LiDAR] encode_prompt thất bại: {e}") from e
 
         # Đảm bảo device và dtype đồng bộ cho embeddings
         if prompt_embeds is not None and hasattr(prompt_embeds, "to"):
@@ -517,9 +518,9 @@ class FluxPipeline_LiDAR(FluxPipeline):
                                 return_dict=False,
                             )[0]
                     else:
-                        v_pred = packed_latents
+                        raise RuntimeError("❌ [FLUX LiDAR] Thiếu prompt_embeds hoặc transformer không gọi được; dừng thay vì sinh ảnh rác.")
                 else:
-                    v_pred = torch.zeros_like(latents)
+                    raise RuntimeError("❌ [FLUX LiDAR] Pipeline không có transformer.")
 
                 # 2. Tính toán Vector Gia Số Vận Tốc Lái Lookahead (LiDAR / RS-LiDAR)
                 t_norm = t_curr / 1000.0 if is_discrete_1000 else t_curr
@@ -530,7 +531,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     if hasattr(self, "_unpack_latents") and latents.ndim == 3:
                         spatial_latents = self._unpack_latents(latents, height, width, getattr(self, "vae_scale_factor", 8))
 
-                    delta_v = self.flow_guidance_module.compute_velocity_guidance(
+                    flux_debug = bool(fkd_args.get("flux_debug", False))
+                    g_kwargs = dict(
                         z_t=spatial_latents,
                         lookahead_z0=lookahead_latents,
                         smoothed_rewards=rewards,
@@ -538,7 +540,18 @@ class FluxPipeline_LiDAR(FluxPipeline):
                         t_start=t_start,
                         t_end=t_end,
                     )
-                    
+                    if flux_debug:
+                        delta_v, diag = self.flow_guidance_module.compute_velocity_guidance(**g_kwargs, return_diagnostics=True)
+                    else:
+                        delta_v, diag = self.flow_guidance_module.compute_velocity_guidance(**g_kwargs), {}
+                    if flux_debug and diag.get("w_diff") is not None:
+                        scaled_dt_dbg = (dt / 1000.0) if is_discrete_1000 else dt
+                        z_norm = spatial_latents.float().norm().item()
+                        kick = scaled_dt_dbg * delta_v.float().norm().item()
+                        print(f"   [flux_debug] step {i:02d} t={t_norm:.4f} dt={scaled_dt_dbg:.4f} "
+                              f"w_r-w={[round(x, 3) for x in diag['w_diff'][0].tolist()]} "
+                              f"|dt*dv|/|z|={kick / max(z_norm, 1e-8):.4f}")
+
                     if hasattr(self, "_pack_latents") and latents.ndim == 3:
                         delta_v_packed = self._pack_latents(delta_v, batch_size, num_channels, latent_h, latent_w)
                         v_pred = v_pred + delta_v_packed.to(dtype=v_pred.dtype, device=v_pred.device)
@@ -548,11 +561,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 # 3. Bước cập nhật tích phân Euler hoặc qua Scheduler
                 latents_dtype = latents.dtype
                 if sched is not None and hasattr(sched, "step"):
-                    try:
-                        latents = sched.step(v_pred, t, latents, return_dict=False)[0]
-                    except Exception:
-                        scaled_dt = (dt / 1000.0) if is_discrete_1000 else dt
-                        latents = latents - scaled_dt * v_pred
+                    latents = sched.step(v_pred, t, latents, return_dict=False)[0]
                 else:
                     scaled_dt = (dt / 1000.0) if is_discrete_1000 else dt
                     latents = latents - scaled_dt * v_pred

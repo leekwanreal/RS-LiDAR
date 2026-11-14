@@ -44,8 +44,9 @@ class RSFlowLiDARGuidance:
         sigma_t: float,
         bypass_fast_path: bool = False,
         t_start: Optional[float] = None,
-        t_end: Optional[float] = None
-    ) -> torch.Tensor:
+        t_end: Optional[float] = None,
+        return_diagnostics: bool = False
+    ):
         r"""
         Tính toán vector gia số vận tốc lái dẫn đường chuẩn xác cho Flow Matching:
             \Delta v_t(z_t) = - (s_flow / t) * \sum_{k=1}^K (w_k^r - w_k) z_{0,k}
@@ -58,41 +59,51 @@ class RSFlowLiDARGuidance:
             bypass_fast_path: Cho phép tắt Fast-path để kiểm tra hành vi số học tại biên.
             t_start: Mốc thời gian bắt đầu lái cục bộ (nếu None lấy theo self.t_start).
             t_end: Mốc thời gian kết thúc lái cục bộ (nếu None lấy theo self.t_end).
-            
+            return_diagnostics: Nếu True, trả thêm dict {"w_diff": [B, K]} để chẩn đoán.
+
         Returns:
-            Gia số vận tốc delta_v [B, C, H, W].
+            Gia số vận tốc delta_v [B, C, H, W] (cùng dtype với z_t),
+            hoặc (delta_v, diagnostics) nếu return_diagnostics=True.
+
+        Ghi chú số học: khoảng cách, softmax và Delta z_0 luôn tính bằng FP32.
+        Với D = 16*128*128, ||.||^2 ~ 2.4e5; bf16 có bước lượng tử 1024 ở độ lớn này
+        nên làm tròn các khoảng cách tới K ứng viên về cùng một giá trị, phá vỡ w_k.
         """
         win_start = t_start if t_start is not None else getattr(self, "t_start", 0.98)
         win_end = t_end if t_end is not None else getattr(self, "t_end", 0.20)
 
         # 1. Fast-Path Early Return (Cửa sổ hoạt động an toàn [win_end, win_start])
         if not bypass_fast_path:
+            outside = False
             if win_start >= 0.999:
                 # Nếu lái ngay từ bước nhiễu thuần túy t=1.0 (như Table 3 FLUX [0.95, 1.0])
                 if sigma_t < win_end or sigma_t > win_start:
-                    return torch.zeros_like(z_t)
+                    outside = True
             else:
                 # Mặc định an toàn cho liên tục [0.20, 0.98]
                 if sigma_t <= win_end or sigma_t >= win_start:
-                    return torch.zeros_like(z_t)
-            
+                    outside = True
+            if outside:
+                zeros = torch.zeros_like(z_t)
+                return (zeros, {"w_diff": None}) if return_diagnostics else zeros
+
         device = z_t.device
-        dtype = z_t.dtype
+        out_dtype = z_t.dtype
+        dtype = torch.float32  # FP32 bắt buộc cho ma trận thế năng (xem docstring)
         B, C, H, W = z_t.shape
         K = lookahead_z0.shape[0]
 
         # Đảm bảo tuyệt đối đồng bộ device và dtype giữa các tensor
-        if lookahead_z0.device != device or lookahead_z0.dtype != dtype:
-            lookahead_z0 = lookahead_z0.to(device=device, dtype=dtype)
-        if smoothed_rewards.device != device:
-            smoothed_rewards = smoothed_rewards.to(device=device, dtype=torch.float32)
-        
+        z_t = z_t.to(dtype=dtype)
+        lookahead_z0 = lookahead_z0.to(device=device, dtype=dtype)
+        smoothed_rewards = smoothed_rewards.to(device=device, dtype=dtype)
+
         # 2. VAE Whitening cho khoảng cách Mahalanobis (Tương thích kích thước động)
         if self.whitening_weights.shape[1] == C:
             w_weights = self.whitening_weights.to(device, dtype=dtype)
         else:
             w_weights = torch.ones((1, C, 1, 1), device=device, dtype=dtype)
-            
+
         z_t_w = z_t * w_weights
         z0_w = lookahead_z0 * w_weights
         
@@ -124,5 +135,8 @@ class RSFlowLiDARGuidance:
         # 6. Gia số vận tốc lái chuẩn của Flow Matching:
         # \Delta v_t = - (s_flow / t) * \Delta z_0
         velocity_shift_flat = - (self.s_flow / t_val) * z0_shift_flat
-        
-        return velocity_shift_flat.view(B, C, H, W)
+
+        delta_v = velocity_shift_flat.view(B, C, H, W).to(dtype=out_dtype)
+        if return_diagnostics:
+            return delta_v, {"w_diff": w_diff.squeeze(-1).detach().cpu()}
+        return delta_v
