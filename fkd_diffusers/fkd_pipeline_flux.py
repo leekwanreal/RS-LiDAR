@@ -168,24 +168,29 @@ class FluxPipeline_LiDAR(FluxPipeline):
         if fkd_args is None or not fkd_args.get("use_rag", False):
             if hasattr(super(), "__call__"):
                 call_sig = inspect.signature(super().__call__).parameters
-                filtered_kwargs = {k: v for k, v in kwargs.items() if k in call_sig}
-                return super().__call__(
-                    prompt=prompt,
-                    prompt_2=prompt_2,
-                    height=height,
-                    width=width,
-                    num_inference_steps=num_inference_steps,
-                    timesteps=timesteps,
-                    guidance_scale=guidance_scale,
-                    num_images_per_prompt=num_images_per_prompt,
-                    generator=generator,
-                    latents=latents,
-                    prompt_embeds=prompt_embeds,
-                    pooled_prompt_embeds=pooled_prompt_embeds,
-                    output_type=output_type,
-                    return_dict=return_dict,
-                    **filtered_kwargs,
-                )
+                call_candidates = {
+                    "prompt": prompt,
+                    "prompt_2": prompt_2,
+                    "height": height,
+                    "width": width,
+                    "num_inference_steps": num_inference_steps,
+                    "guidance_scale": guidance_scale,
+                    "num_images_per_prompt": num_images_per_prompt,
+                    "generator": generator,
+                    "latents": latents,
+                    "prompt_embeds": prompt_embeds,
+                    "pooled_prompt_embeds": pooled_prompt_embeds,
+                    "output_type": output_type,
+                    "return_dict": return_dict,
+                    **kwargs,
+                }
+                if "timesteps" in call_sig and timesteps is not None:
+                    call_candidates["timesteps"] = timesteps
+                elif "sigmas" in call_sig and kwargs.get("sigmas", None) is not None:
+                    call_candidates["sigmas"] = kwargs["sigmas"]
+
+                filtered_kwargs = {k: v for k, v in call_candidates.items() if k in call_sig}
+                return super().__call__(**filtered_kwargs)
 
         # Trích xuất dữ liệu Lookahead từ rag_dataset
         rag_dataset = fkd_args.get("rag_dataset", None)

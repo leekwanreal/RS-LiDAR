@@ -307,6 +307,20 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         self.assertIsNotNone(out1)
         self.assertEqual(pipe.scheduler.step_index, 28)
 
+    def test_08_vanilla_call_does_not_pass_timesteps_to_super(self):
+        """Khẳng định: Chế độ Vanilla (use_rag=False) không truyền timesteps vào super().__call__() của FluxPipeline."""
+        from diffusers import FluxPipeline
+        pipe = FluxPipeline_LiDAR()
+
+        with unittest.mock.patch.object(FluxPipeline, "__call__", autospec=True, return_value=MagicMock()) as mock_call:
+            pipe(prompt="a bench", num_inference_steps=28, timesteps=[1000.0, 500.0], fkd_args={"use_rag": False})
+
+        self.assertTrue(mock_call.called)
+        called_kwargs = mock_call.call_args[1]
+        self.assertNotIn("timesteps", called_kwargs, "timesteps không được có trong kwargs truyền cho super().__call__!")
+        self.assertIn("prompt", called_kwargs)
+        self.assertEqual(called_kwargs["num_inference_steps"], 28)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
