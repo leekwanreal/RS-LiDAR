@@ -236,6 +236,55 @@ class TestFluxPipelineBugfixes(unittest.TestCase):
         self.assertTrue(torch.allclose(out.images, init_lat, atol=1e-5),
                         "Khi s_flow = 0.0, latents không được bị ô nhiễm bởi lookahead!")
 
+    def test_06_default_scheduler_timesteps_and_current_timestep_reset(self):
+        """Khẳng định: Khi không truyền timesteps (timesteps=None), retrieve_timesteps hoạt động trơn tru không cảnh báo và _current_timestep được dọn dẹp sạch."""
+        pipe = FluxPipeline_LiDAR()
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler()
+
+        captured_timesteps = []
+        trans_param = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
+        mock_transformer = MagicMock()
+        mock_transformer.config.guidance_embeds = True
+        mock_transformer.parameters.return_value = [trans_param]
+        def transformer_forward(**kwargs):
+            t_input = kwargs.get("timestep")
+            captured_timesteps.append(t_input.item() if isinstance(t_input, torch.Tensor) else float(t_input))
+            return (torch.zeros_like(kwargs.get("hidden_states")),)
+        mock_transformer.side_effect = transformer_forward
+        pipe.transformer = mock_transformer
+
+        pipe.encode_prompt = MagicMock(return_value=(
+            torch.randn(1, 512, 64),
+            torch.randn(1, 768),
+            torch.zeros(512, 3),
+        ))
+
+        fkd_args = {
+            "use_rag": True,
+            "top_k": 1,
+            "s_flow": 0.0,
+            "guidance_start": 1.0,
+            "guidance_end": 0.95,
+        }
+
+        out = pipe(
+            prompt="A wooden bench in a park",
+            prompt_idx=0,
+            height=1024,
+            width=1024,
+            num_inference_steps=28,
+            timesteps=None,  # Tự động sinh qua FlowMatchEulerDiscreteScheduler
+            output_type="latent",
+            fkd_args=fkd_args,
+        )
+
+        self.assertEqual(len(captured_timesteps), 28)
+        self.assertAlmostEqual(captured_timesteps[0], 1.0, places=4)
+        # Bước cuối phải < 0.05 (chuẩn 0.001 hoặc 0.0357) và không phải 1.0
+        self.assertLess(captured_timesteps[-1], 0.05)
+        # Khẳng định _current_timestep đã được dọn sạch về None
+        self.assertIsNone(pipe._current_timestep)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

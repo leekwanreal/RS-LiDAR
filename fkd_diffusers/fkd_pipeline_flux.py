@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import inspect
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -280,20 +281,29 @@ class FluxPipeline_LiDAR(FluxPipeline):
         if hasattr(self, "scheduler") and hasattr(self.scheduler, "set_timesteps"):
             try:
                 from diffusers.pipelines.flux.pipeline_flux import retrieve_timesteps
-                timesteps, num_inference_steps = retrieve_timesteps(
-                    self.scheduler,
-                    num_inference_steps,
-                    device,
-                    timesteps=timesteps,
-                    sigmas=sigmas,
-                    mu=mu,
-                )
+                if timesteps is not None:
+                    timesteps, num_inference_steps = retrieve_timesteps(
+                        self.scheduler,
+                        num_inference_steps,
+                        device,
+                        timesteps=timesteps,
+                    )
+                else:
+                    timesteps, num_inference_steps = retrieve_timesteps(
+                        self.scheduler,
+                        num_inference_steps,
+                        device,
+                        sigmas=sigmas,
+                        mu=mu,
+                    )
             except Exception:
                 try:
                     if timesteps is not None:
                         self.scheduler.set_timesteps(timesteps=timesteps, device=device)
-                    else:
+                    elif sigmas is not None:
                         self.scheduler.set_timesteps(num_inference_steps, device=device, sigmas=sigmas, mu=mu)
+                    else:
+                        self.scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
                 except TypeError:
                     try:
                         self.scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
@@ -364,10 +374,11 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 latents = torch.randn((batch_size, num_channels, latent_h, latent_w), generator=generator, device=device, dtype=dtype)
         else:
             latents = latents.to(device=device, dtype=dtype)
-            if hasattr(self, "_pack_latents") and latents.ndim == 4:
-                latents = self._pack_latents(latents, batch_size, num_channels, latent_h, latent_w)
-            if latent_image_ids is None and hasattr(self, "_prepare_latent_image_ids"):
-                latent_image_ids = self._prepare_latent_image_ids(batch_size, height // 16, width // 16, device, dtype)
+
+        if hasattr(self, "_pack_latents") and latents.ndim == 4:
+            latents = self._pack_latents(latents, batch_size, num_channels, latent_h, latent_w)
+        if latent_image_ids is None and hasattr(self, "_prepare_latent_image_ids"):
+            latent_image_ids = self._prepare_latent_image_ids(batch_size, height // 16, width // 16, device, dtype)
 
         if latent_image_ids is not None and hasattr(latent_image_ids, "to"):
             latent_image_ids = latent_image_ids.to(device=device)
@@ -393,6 +404,12 @@ class FluxPipeline_LiDAR(FluxPipeline):
         self.flow_guidance_module.t_start = t_start
         self.flow_guidance_module.t_end = t_end
 
+        # Chuẩn bị guidance vector chuẩn FLUX trước vòng lặp
+        if hasattr(self, "transformer") and hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False):
+            guidance_vec = torch.full([1], guidance_scale, device=device, dtype=torch.float32).expand(latents.shape[0])
+        else:
+            guidance_vec = None
+
         # -------------------------------------------------------------
         # Vòng lặp giải vi phân Euler ngược thời gian (t = 1.0 -> 0.0)
         # -------------------------------------------------------------
@@ -408,6 +425,7 @@ class FluxPipeline_LiDAR(FluxPipeline):
         def _run_denoising_loop(prog_bar=None):
             nonlocal latents
             for i, t in enumerate(timesteps):
+                self._current_timestep = t
                 t_curr = t.item() if isinstance(t, torch.Tensor) else float(t)
                 t_next = timesteps[i + 1].item() if (i + 1 < len(timesteps) and isinstance(timesteps[i + 1], torch.Tensor)) else (float(timesteps[i + 1]) if i + 1 < len(timesteps) else 0.0)
                 dt = t_curr - t_next  # dt > 0
@@ -431,23 +449,24 @@ class FluxPipeline_LiDAR(FluxPipeline):
                     pooled_emb = pooled_prompt_embeds.to(device=t_dev, dtype=t_dtype) if pooled_prompt_embeds is not None else None
                     txt_ids = text_ids.to(device=t_dev) if text_ids is not None else None
                     img_ids = latent_image_ids.to(device=t_dev) if latent_image_ids is not None else None
+                    g_vec = guidance_vec.to(device=t_dev, dtype=torch.float32) if guidance_vec is not None else None
 
                     if p_emb is not None and callable(self.transformer):
-                        guidance_vec = torch.tensor([guidance_scale], device=t_dev, dtype=torch.float32).expand(latents.shape[0]) if (hasattr(self.transformer, "config") and getattr(self.transformer.config, "guidance_embeds", False)) else None
                         timestep_input = t.expand(latents.shape[0]).to(device=t_dev, dtype=t_dtype) if isinstance(t, torch.Tensor) else torch.tensor([t], device=t_dev, dtype=t_dtype).expand(latents.shape[0])
                         t_scaled = timestep_input / 1000.0 if is_discrete_1000 else timestep_input
 
-                        v_pred = self.transformer(
-                            hidden_states=packed_latents,
-                            timestep=t_scaled,
-                            guidance=guidance_vec,
-                            pooled_projections=pooled_emb,
-                            encoder_hidden_states=p_emb,
-                            txt_ids=txt_ids,
-                            img_ids=img_ids,
-                            joint_attention_kwargs=getattr(self, "joint_attention_kwargs", None),
-                            return_dict=False,
-                        )[0]
+                        with (self.transformer.cache_context("cond") if hasattr(self.transformer, "cache_context") else contextlib.nullcontext()):
+                            v_pred = self.transformer(
+                                hidden_states=packed_latents,
+                                timestep=t_scaled,
+                                guidance=g_vec,
+                                pooled_projections=pooled_emb,
+                                encoder_hidden_states=p_emb,
+                                txt_ids=txt_ids,
+                                img_ids=img_ids,
+                                joint_attention_kwargs=getattr(self, "joint_attention_kwargs", None),
+                                return_dict=False,
+                            )[0]
                     else:
                         v_pred = packed_latents
                 else:
@@ -501,6 +520,8 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 _run_denoising_loop(progress_bar)
         else:
             _run_denoising_loop(None)
+
+        self._current_timestep = None
 
         # Giải mã ảnh sạch ở bước cuối hoặc giữ nguyên latents đóng gói nếu output_type == "latent"
         if output_type == "latent":
