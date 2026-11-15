@@ -347,8 +347,16 @@ def _cache_mismatches(res_cached, args):
         reasons.append(f"noise_mode: '{cached_mode}' != '{args.noise_mode}'")
     if cached_sig is not None and abs(cached_sig - args.sigma) > 1e-4:
         reasons.append(f"sigma: {cached_sig} != {args.sigma}")
-    if cached_beta is not None and args.beta_risk != 0.0 and abs(cached_beta - args.beta_risk) > 1e-4:
+    if cached_beta is not None and abs(cached_beta - args.beta_risk) > 1e-4:
         reasons.append(f"beta_risk: {cached_beta} != {args.beta_risk}")
+    if args.reuse_latents_from and not getattr(args, "no_reuse_latents", False):
+        cached_reuse = s_info.get("reused_latents_from")
+        wanted = os.path.basename(os.path.normpath(args.reuse_latents_from))
+        # cached value is the reused latent.pt path: <pool>/<prompt_idx>/samples/latent.pt
+        cached_pool = (os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(os.path.normpath(cached_reuse)))))
+                       if cached_reuse else None)
+        if cached_pool != wanted:
+            reasons.append(f"candidate pool: {cached_pool or 'freshly sampled'} != {wanted}")
     return reasons
 
 
@@ -457,6 +465,12 @@ def main(args):
                                 lat_valid = False
                                 print(f"[Prompt {real_idx:05d}] cached results.json does not match "
                                       f"({', '.join(mismatch_reasons)}); recomputing.")
+                    if lat_valid:
+                        missing = [m for m in reward_metrics
+                                   if not (isinstance(res_cached.get(m), dict) and "result" in res_cached[m])]
+                        if missing:
+                            lat_valid = False
+                            print(f"[Prompt {real_idx:05d}] cached results.json lacks {missing}; recomputing.")
                     if lat_valid:
                         for metric in metrics_to_compute:
                             if metric in res_cached:

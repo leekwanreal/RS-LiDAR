@@ -58,6 +58,7 @@ class gen_lookahead_samples(Dataset):
                         metric_key = self.reward_key
                     elif "ImageReward" in label and "result" in label["ImageReward"]:
                         metric_key = "ImageReward"
+                        print(f"Warning: prompt {d} has no '{self.reward_key}' rewards; using ImageReward instead.")
                     else:
                         first_metric = [k for k in label.keys() if isinstance(label[k], dict) and "result" in label[k]]
                         metric_key = first_metric[0] if first_metric else None

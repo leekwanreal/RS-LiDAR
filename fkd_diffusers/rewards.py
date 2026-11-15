@@ -76,7 +76,8 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
     if images is None or len(images) == 0:
         return []
     if hpsv2 is None:
-        return [0.0] * len(images)
+        raise ImportError("HumanPreference was requested but `hpsv2` could not be imported; "
+                          "install hpsv2 (and its BPE vocab) instead of silently scoring 0.")
     import numpy as np
     device = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     try:
@@ -129,8 +130,8 @@ def do_human_preference_score(*, images, prompts, use_paths=False):
                 scores.append(val)
         return scores
     except Exception as e:
-        print(f"Warning computing HPS on {device}: {e}")
-        return [0.0] * len(images)
+        print(f"Error computing HPS on {device}: {e}")
+        raise
 
 
 # Compute CLIP-Score and diversity
@@ -202,7 +203,8 @@ def do_clip_score(*, images, prompts):
     if images is None or len(images) == 0:
         return []
     if clip is None:
-        return [0.0] * len(images)
+        raise ImportError("Clip-Score was requested but `clip` could not be imported; "
+                          "install git+https://github.com/openai/CLIP.git instead of silently scoring 0.")
     dev = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
     try:
         if REWARDS_DICT["Clip-Score"] is None:
@@ -214,8 +216,8 @@ def do_clip_score(*, images, prompts):
             ]
         return clip_result
     except Exception as e:
-        print(f"Warning computing CLIP score: {e}")
-        return [0.0] * len(images)
+        print(f"Error computing CLIP score: {e}")
+        raise
 
 
 def do_AS(*, images, prompts):
