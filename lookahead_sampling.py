@@ -319,6 +319,20 @@ def sample_lookahead_latents(pipe, model_name, prompt, num_inference_steps):
                 output_type="latent").images
 
 
+def sample_lookahead_latents_batched(pipe, model_name: str, prompt: List[str], num_inference_steps: int,
+                                     batch_size: int = 0) -> torch.Tensor:
+    """`sample_lookahead_latents` over chunks of at most `batch_size` particles, concatenated along dim 0.
+
+    With `batch_size <= 0` or `batch_size >= len(prompt)` this is a single call, identical to the legacy path.
+    Smaller chunks bound the activation memory (FLUX with 50 particles at 1024^2 does not fit a 40 GB GPU).
+    """
+    if batch_size <= 0 or batch_size >= len(prompt):
+        return sample_lookahead_latents(pipe, model_name, prompt, num_inference_steps)
+    chunks = [sample_lookahead_latents(pipe, model_name, prompt[i:i + batch_size], num_inference_steps)
+              for i in range(0, len(prompt), batch_size)]
+    return torch.cat(chunks, dim=0)
+
+
 def _cache_mismatches(res_cached, args):
     """List hyper-parameter mismatches between a cached smoothed `results.json` and the current run."""
     s_info = res_cached["smoothing"]
@@ -503,7 +517,8 @@ def main(args):
                     latents = cached_reused_latents[:args.num_particles].to(device)
                 cached_reused_latents = None
             else:
-                latents = sample_lookahead_latents(pipe, args.model_name, prompt, args.num_inference_steps)
+                latents = sample_lookahead_latents_batched(pipe, args.model_name, prompt, args.num_inference_steps,
+                                                           args.lookahead_batch_size)
 
             if "xl" in args.model_name or "XL" in args.model_name:
                 latents = latents.to(torch.float32)
@@ -671,6 +686,8 @@ def get_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--per_prompt_seed", type=str2bool, nargs="?", const=True, default=False,
                         help="Re-seed torch with seed + prompt index before each prompt (paired, resume-safe runs)")
+    parser.add_argument("--lookahead_batch_size", type=int, default=0,
+                        help="Generate the lookahead particles in chunks of this size (0 = all at once)")
     parser.add_argument("--max_prompt", type=int, default=1000)
     parser.add_argument("--prompt_indices", type=str, default=None,
                         help="Optional subset of prompt indices ('stratified_100', '0-99', '0,5,10' or a JSON file)")
