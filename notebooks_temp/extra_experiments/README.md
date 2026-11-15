@@ -33,7 +33,7 @@
 
 | Phần | Nội dung |
 |---|---|
-| Thẻ việc | 👤 người chạy · 🧪 thí nghiệm · 📓 notebook (có nút **Mở trên Colab**) · 🖥️ GPU · ⏱️ thời gian · 🔗 việc phải xong trước · 📤 thứ phải nộp |
+| Thẻ việc | 👤 người chạy · 🧪 thí nghiệm · 📓 notebook (tên file; tải về máy rồi mở, xem [mục 3](#3-cách-chạy-một-notebook)) · 🖥️ GPU · ⏱️ thời gian · 🔗 việc phải xong trước · 📤 thứ phải nộp |
 | ▶ Các bước | Làm lần lượt từng bước. Bước có **⏸** là chỗ phải **dừng lại đọc kết quả** (và thường chụp màn hình) trước khi chạy tiếp |
 | ⚠️ Lưu ý | Lỗi hay gặp, cách xử lý, và cách **chạy thử 100 prompt** nếu muốn xem xu hướng trước (tuỳ chọn) |
 | 📊 Đọc kết quả và làm gì tiếp | Bảng 3 cột. Dòng **✅** = kết quả tốt, **⚠️** = lẫn lộn, **❌** = xấu; mỗi dòng nói nghĩa là gì và việc tiếp theo |
@@ -118,7 +118,10 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 
 Áp dụng cho mọi việc; phần riêng của từng việc nằm ở mục 4.
 
-1. Bấm **Mở trên Colab** ở thẻ việc. Notebook luôn lấy code mới nhất từ GitHub khi chạy, nên không cần tải gì về.
+1. **Mở notebook từ file trên máy, không mở thẳng từ GitHub** (kiểu link `colab.research.google.com/github/...`). Mở từ GitHub thì khi chạy xong, phiên Colab thường không tự kết thúc và vẫn tiếp tục tốn compute unit. Cách mở đúng:
+   - Lấy file `.ipynb` về máy: `git pull` trong bản clone của repo (thư mục `notebooks_temp/extra_experiments/`), hoặc bấm vào tên notebook ở thẻ việc trên GitHub → nút **Download raw file**.
+   - Trên Colab: **File → Upload notebook** → chọn file vừa tải.
+   - Khi nhóm báo notebook có bản mới thì tải lại file. Code `.py` thì không cần: notebook tự lấy bản mới nhất từ GitHub khi chạy.
 2. **Runtime → Change runtime type**: chọn GPU theo thẻ việc. Với A100, bật **High-RAM**.
 3. Sửa đúng các biến được ghi trong **▶ Các bước** (không sửa gì khác).
 4. Chạy theo đúng cách ghi trong bước:
@@ -145,7 +148,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E2 (xem [tham khảo](#ref-e2)) |
-| 📓 Notebook | [E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb](E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb) |
+| 📓 Notebook | [E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb](E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb) |
 | 🖥️ GPU | **L4** (A100 cũng được) |
 | ⏱️ Thời gian | ~0.5–1 h; thêm ~0.6 h (A100) / ~1.5 h (L4) nếu phải chấm lại pool RS |
 | 🔗 Cần xong trước | — |
@@ -183,7 +186,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E1 (xem [tham khảo](#ref-e1)) |
-| 📓 Notebook | [E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb](E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb) |
+| 📓 Notebook | [E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb](E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** hoặc A100 |
 | ⏱️ Thời gian | ~17 h A100 (~40 h L4), chia nhiều phiên Colab |
 | 🔗 Cần xong trước | Nên sau T1 |
@@ -224,7 +227,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E3 (xem [tham khảo](#ref-e3)) |
-| 📓 Notebook | [E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) |
+| 📓 Notebook | [E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **A100** cho mục 5 (sinh 3 pool mới); L4 được cho phần sau |
 | ⏱️ Thời gian | ~6 h A100 |
 | 🔗 Cần xong trước | — |
@@ -261,7 +264,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E5 (xem [tham khảo](#ref-e5)) |
-| 📓 Notebook | [E4](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb)<br>[E5](E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb) |
+| 📓 Notebook | [E4](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb)<br>[E5](E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** |
 | ⏱️ Thời gian | ~6–8 h |
 | 🔗 Cần xong trước | [T6](#t6) xong, đã qua [cổng E4](#5-cổng-quyết-định) |
@@ -331,7 +334,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | [FLUX LiDAR (notebook 1)](E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) |
+| 📓 Notebook | [FLUX LiDAR (notebook 1)](E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) |
 | 🖥️ GPU | **A100 + High-RAM** (bắt buộc) |
 | ⏱️ Thời gian | ~10–14 h Phase 1 + Phase 2 (ước lượng), chia nhiều phiên Colab |
 | 🔗 Cần xong trước | Có `HF_TOKEN` ([mục 2.2](#22-hugging-face-token-chỉ-người-chạy-e6)) |
@@ -372,7 +375,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | [FLUX RS σ = 0.25 (notebook 2)](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) |
+| 📓 Notebook | [FLUX RS σ = 0.25 (notebook 2)](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) |
 | 🖥️ GPU | **A100 + High-RAM** |
 | ⏱️ Thời gian | ~8–10 h (ước lượng) |
 | 🔗 Cần xong trước | [T2](#t2) xong (cùng `PROMPT_PRESET`) |
@@ -411,7 +414,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E4 (xem [tham khảo](#ref-e4)) |
-| 📓 Notebook | [E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) |
+| 📓 Notebook | [E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** |
 | ⏱️ Thời gian | chạy thử theo task ~5 phút; phần còn lại ~4–6 h A100 (L4 chậm hơn khoảng 2 lần) |
 | 🔗 Cần xong trước | — |
@@ -453,7 +456,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | [FLUX Vanilla (notebook 3)](E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb)<br>[FLUX RS σ = 1.0 (notebook 4)](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) · [**Mở trên Colab**](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) |
+| 📓 Notebook | [FLUX Vanilla (notebook 3)](E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb)<br>[FLUX RS σ = 1.0 (notebook 4)](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) |
 | 🖥️ GPU | **A100 + High-RAM** |
 | ⏱️ Thời gian | notebook 3: ~5–8 h; notebook 4: ~8–10 h (ước lượng) |
 | 🔗 Cần xong trước | [T4](#t4) xong |
@@ -495,6 +498,7 @@ Các kết quả khác (E1, E2, E3, E6) không chặn việc của ai; hướng 
 
 ## 6. Quy tắc chung
 
+0. **Mở notebook từ file trên máy** (Colab → **File → Upload notebook**), **không mở từ GitHub**, vì mở từ GitHub thì chạy xong phiên thường không tự kết thúc. Xem [mục 3](#3-cách-chạy-một-notebook).
 1. **Không chạy cùng một run ở hai máy cùng lúc.** Mỗi người chỉ chạy việc của mình.
 2. **Không sửa cấu hình ngoài những gì ghi trong ▶ Các bước.** Muốn thử cấu hình khác thì báo trước, vì số trong bài phải khớp một cấu hình duy nhất.
 3. **E1, E3: để mỗi run Phase 2 chạy một mạch** (seed toàn cục, để ghép cặp với Table 1). E4, E5, E6 dùng seed theo prompt nên chạy tiếp được sau khi bị ngắt.
@@ -532,7 +536,7 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 <a id="ref-e1"></a>
 ### E1 — Smoothing có chỉ là hạ nhiệt độ không?
 
-📓 **Notebook:** [E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb](E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb) · [Mở trên Colab](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb)
+📓 **Notebook:** [E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb](E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb)
 
 **Mục đích.** Đây là phản biện nguy hiểm nhất. Làm trơn kéo các điểm reward lại gần nhau, trông giống như hạ nhiệt độ λ của softmax LiDAR, hoặc như cắt bớt các điểm reward ngoại lai. Nếu LiDAR ở λ thích hợp, hoặc LiDAR với reward bị cắt, đạt được bằng RS-LiDAR, thì đóng góp của bài chỉ còn là "chỉnh siêu tham số". Lý thuyết (Prop 2, mục 4.3) nói hai thứ này khác nhau: hạ λ không đổi thứ tự ứng viên, còn làm trơn thì có. E1 kiểm chứng điều đó bằng thực nghiệm.
 
@@ -559,7 +563,7 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 <a id="ref-e2"></a>
 ### E2 — Smoothing đổi ứng viên thắng ở đâu, và có đổi đúng không?
 
-📓 **Notebook:** [E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb](E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb) · [Mở trên Colab](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb)
+📓 **Notebook:** [E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb](E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb)
 
 **Mục đích.** Kiểm chứng trực tiếp cơ chế của bài. Lý thuyết nói reward model có những "spike" (điểm cao giả do mẫu pixel nhỏ), và làm trơn loại chúng khỏi thứ hạng. Với λ = 5000, LiDAR gần như chọn đúng một ứng viên điểm cao nhất, nên câu hỏi đo được là: **làm trơn đổi ứng viên thắng ở bao nhiêu prompt, và ứng viên mới có tốt hơn trên các metric không dùng để tối ưu không?** Hạ λ không bao giờ đổi ứng viên thắng, nên đây là đối chứng sạch nhất.
 
@@ -585,7 +589,7 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 <a id="ref-e3"></a>
 ### E3 — So sánh cùng số lần gọi reward
 
-📓 **Notebook:** [E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) · [Mở trên Colab](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb)
+📓 **Notebook:** [E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb)
 
 **Mục đích.** RS-LiDAR gọi reward K × M = 50 × 4 = 200 lần, LiDAR chỉ 50 lần. Reviewer sẽ hỏi: nếu cho LiDAR cùng 200 lần gọi reward, tức 200 ứng viên, thì LiDAR có bắt kịp không?
 
@@ -607,7 +611,7 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 <a id="ref-e4"></a>
 ### E4 — Reward rời rạc: dẫn hướng bằng bộ chấm GenEval
 
-📓 **Notebook:** [E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) · [Mở trên Colab](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb)
+📓 **Notebook:** [E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb)
 
 **Mục đích.** Cho thấy một năng lực mà phương pháp khác không có. Reward ở đây là **0 hoặc 1**: "ảnh có đúng prompt theo GenEval không" (detector Mask2Former + phân loại màu CLIP, giống hệt bộ chấm).
 - Gradient guidance không dùng được vì reward không khả vi.
@@ -639,7 +643,7 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 <a id="ref-e5"></a>
 ### E5 — Nhiều reward cùng lúc (IR + HPS)
 
-📓 **Notebook:** [E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb](E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb) · [Mở trên Colab](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb)
+📓 **Notebook:** [E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb](E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb)
 
 **Mục đích.** Cho thấy RS-TTA dùng được nguyên vẹn cho mục tiêu gồm nhiều reward. Về lý thuyết: với tổng có trọng số và nhiễu dùng chung, làm trơn tổng bằng tổng các reward đã làm trơn, và Prop 2 vẫn đúng với J = J_IR + J_HPS. Lý thuyết **không** nói làm trơn giúp nhiều hơn khi có nhiều reward (mỗi spike bị nhân trọng số ½), nên nếu thấy điều đó thì chỉ được viết như một quan sát thực nghiệm.
 
@@ -665,12 +669,12 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 
 📓 **Notebook** (thư mục [E6_flow_matching/](E6_flow_matching/)):
 
-| Thứ tự | Notebook | Vai trò | Colab |
-|---|---|---|---|
-| 1 | [FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) | LiDAR: sinh pool 50 ứng viên + Phase 2 | [Mở](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) |
-| 2 | [FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) | **RS-FlowLiDAR chính**: chấm lại pool của bước 1 bằng R̄σ + Phase 2 | [Mở](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) |
-| 3 | [FLUX_Vanilla_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb) | Mốc không dẫn hướng. **Bỏ qua nếu Drive đã có run Vanilla 553 prompt** | [Mở](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb) |
-| 4 (tuỳ chọn) | [FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) | Ablation σ = 1.0 trên cùng pool | [Mở](https://colab.research.google.com/github/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) |
+| Thứ tự | Notebook | Vai trò |
+|---|---|---|
+| 1 | [FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) | LiDAR: sinh pool 50 ứng viên + Phase 2 |
+| 2 | [FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) | **RS-FlowLiDAR chính**: chấm lại pool của bước 1 bằng R̄σ + Phase 2 |
+| 3 | [FLUX_Vanilla_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb) | Mốc không dẫn hướng. **Bỏ qua nếu Drive đã có run Vanilla 553 prompt** |
+| 4 (tuỳ chọn) | [FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) | Ablation σ = 1.0 trên cùng pool |
 
 **Mục đích.** Bài hiện chỉ có SD 1.5 và SDXL (diffusion), và Limitation (vi) tự nhận chưa thử rectified flow. E6 cho thấy phương pháp chuyển sang FLUX được.
 
