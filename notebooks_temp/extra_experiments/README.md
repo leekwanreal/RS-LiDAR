@@ -71,7 +71,7 @@ Việc của hai người chỉ phụ thuộc nhau ở một chỗ: **T7** (Hi�
 
 **Khi thiếu GPU, ưu tiên:** E2 > E1 > E3 > E4 > E6 > E5.
 
-**Ngân sách Colab (ước lượng, kiểm tra lại bảng giá trên trang Colab):** A100 tốn khoảng 11–15 compute unit mỗi giờ, L4 khoảng 5. Phần của Hiếu (chủ yếu L4) cần khoảng 380–430 unit; phần của Quân (FLUX bắt buộc A100) khoảng 500–650 unit. Colab Pro có 100 unit/tháng, nên mỗi người cần **Colab Pro+ (500 unit/tháng) hoặc mua thêm unit** cho khoảng 2 tháng tới hạn nộp.
+**Ngân sách Colab:** tốc độ tiêu thụ đo thực tế (16/11/2026): **L4 1.94 unit/giờ, A100 6.5 unit/giờ**. Phần của Hiếu (khoảng 80 giờ GPU, chủ yếu L4, một phần A100 cho E3) cần khoảng 180–220 unit; phần của Quân (khoảng 45 giờ A100 cho FLUX + khoảng 10 giờ L4 cho E4) khoảng 300–350 unit. Số giờ là ước lượng. Colab Pro có 100 unit/tháng; Pro+ có 500–600 unit/tháng (xem trang đăng ký), đủ cho phần của mỗi người trong một tháng. Tốc độ tiêu thụ xem ở Colab → biểu tượng RAM/Disk góc phải → **View resources**.
 
 ---
 
