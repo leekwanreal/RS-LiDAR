@@ -49,7 +49,7 @@ Thời gian là cho bản đủ trên A100, ước lượng; L4 chậm hơn kho�
 | Việc | Thí nghiệm | GPU | Thời gian | Cần xong trước |
 |---|---|---|---|---|
 | [**T1**](#t1) | E2 · flip rate | L4 | ~1 h | — |
-| [**T3**](#t3) | E1 · nhiệt độ λ và cắt reward | L4/A100 | ~17 h | nên sau T1 |
+| [**T3**](#t3) | E1 · nhiệt độ λ và cắt reward | L4/A100 | ~19 h | nên sau T1 |
 | [**T5**](#t5) | E3 · cùng số lần gọi reward | A100 → L4 | ~6 h | — |
 | [**T7**](#t7) | E4 dự phòng **hoặc** E5 | L4 | ~6–8 h | T6 + [cổng E4](#5-cổng-quyết-định) |
 | [**T9**](#t9) | GenEval cho FLUX (⛔ chưa có notebook) | — | — | T2, T4 |
@@ -67,7 +67,7 @@ Việc của hai người chỉ phụ thuộc nhau ở hai chỗ: **T7** (Hiếu
 
 **Khi thiếu GPU, ưu tiên:** E2 > E1 > E3 > E4 > E6 > E5.
 
-**Ngân sách Colab (ước lượng, kiểm tra lại bảng giá trên trang Colab):** A100 tốn khoảng 11–15 compute unit mỗi giờ, L4 khoảng 5. Phần của Hiếu (chủ yếu L4) cần khoảng 350–400 unit; phần của Quân (FLUX bắt buộc A100) khoảng 500–650 unit. Colab Pro có 100 unit/tháng, nên mỗi người cần **Colab Pro+ (500 unit/tháng) hoặc mua thêm unit** cho khoảng 2 tháng tới hạn nộp.
+**Ngân sách Colab (ước lượng, kiểm tra lại bảng giá trên trang Colab):** A100 tốn khoảng 11–15 compute unit mỗi giờ, L4 khoảng 5. Phần của Hiếu (chủ yếu L4) cần khoảng 380–430 unit; phần của Quân (FLUX bắt buộc A100) khoảng 500–650 unit. Colab Pro có 100 unit/tháng, nên mỗi người cần **Colab Pro+ (500 unit/tháng) hoặc mua thêm unit** cho khoảng 2 tháng tới hạn nộp.
 
 ---
 
@@ -188,19 +188,19 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 | 🧪 Thí nghiệm | E1 (xem [tham khảo](#ref-e1)) |
 | 📓 Notebook | [E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb](E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** hoặc A100 |
-| ⏱️ Thời gian | ~17 h A100 (~40 h L4), chia nhiều phiên Colab |
+| ⏱️ Thời gian | ~19 h A100 (~45 h L4), chia nhiều phiên Colab |
 | 🔗 Cần xong trước | Nên sau T1 |
-| 📤 Nộp lại | Ảnh chụp bảng ESS (mục 5); `E1_summary.csv` |
+| 📤 Nộp lại | Ảnh chụp bảng độ mạnh dẫn hướng (mục 5); `E1_summary.csv` |
 
 **▶ Các bước**
 
 1. Mở notebook, chọn GPU. Mục 4 giữ `PROMPT_MODE = "ALL"`.
 2. Chọn cell đầu tiên của mục 7 → menu **Runtime → Run before** (chạy tới hết mục 6).
-3. ⏸ **Mục 5:** chụp bảng ESS. Kiểm tra: ở λ = 1, ESS phải lớn (≥ 10); ở λ = 30, ESS gần 1.
-4. Nếu ESS ở λ = 1 đã < 10: sửa `LAMBDAS_LIDAR` ở mục 6 sang dải nhỏ hơn (ví dụ `[0.3, 1, 3, 10]`). Nếu ESS ở λ = 30 vẫn > 2: dời dải lên (ví dụ `[3, 10, 30, 100]`). Sửa `LAMBDAS_RS` theo cùng hướng, chạy lại cell mục 6, báo nhóm.
-5. Chọn cell đầu tiên của mục 7 → **Runtime → Run after** (7 run Phase 2, rồi GenEval và bảng).
+3. ⏸ **Mục 5:** chụp bảng độ mạnh dẫn hướng (mất vài phút CPU). Đọc cột `LiDAR: ‖wʳ−w‖₁` (0 = không dẫn hướng, tối đa 2) và ba dòng in bên dưới ("LiDAR đạt 25% / 50% / 90% độ mạnh của λ = 5000 từ λ ≈ …"). Dải `[10, 30, 100, 300, 1000]` là đúng nếu mốc 25% nằm ở λ ≤ 10 và mốc 90% nằm ở λ ≥ 100.
+4. Nếu mốc 25% đã ở λ > 10: thêm λ nhỏ hơn vào `LAMBDAS_LIDAR` ở mục 6 (ví dụ `[3, 10, 30, 100, 300]`). Nếu mốc 90% ở λ ≥ 3000: dời dải lên (ví dụ `[30, 100, 300, 1000, 3000]`). Đặt `LAMBDAS_RS` là hai giá trị quanh mốc 50%. Chạy lại cell mục 6, báo nhóm.
+5. Chọn cell đầu tiên của mục 7 → **Runtime → Run after** (8 run Phase 2, rồi GenEval và bảng).
 6. Phiên Colab hết giờ: mở lại, **Run all**. Run đã xong tự bỏ qua.
-7. Nộp ảnh bảng ESS và `E1_summary.csv`.
+7. Nộp ảnh bảng độ mạnh dẫn hướng và `E1_summary.csv`.
 
 **⚠️ Lưu ý**
 
@@ -541,8 +541,8 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 **Mục đích.** Đây là phản biện nguy hiểm nhất. Làm trơn kéo các điểm reward lại gần nhau, trông giống như hạ nhiệt độ λ của softmax LiDAR, hoặc như cắt bớt các điểm reward ngoại lai. Nếu LiDAR ở λ thích hợp, hoặc LiDAR với reward bị cắt, đạt được bằng RS-LiDAR, thì đóng góp của bài chỉ còn là "chỉnh siêu tham số". Lý thuyết (Prop 2, mục 4.3) nói hai thứ này khác nhau: hạ λ không đổi thứ tự ứng viên, còn làm trơn thì có. E1 kiểm chứng điều đó bằng thực nghiệm.
 
 **Thiết kế.** Cùng pool 50 ứng viên của Table 1, chạy Phase 2 với:
-- LiDAR ở λ ∈ {1, 3, 10, 30} (vùng chuyển từ "gần như không dẫn hướng" sang "chọn gần như argmax"). Độ lệch chuẩn ImageReward giữa các ứng viên của một prompt khoảng 0.8, nên từ λ ≈ 30 trở lên trọng số đã dồn gần hết vào một ứng viên, giống hệt λ = 5000. Bảng ESS ở mục 5 xác nhận lại trên dữ liệu thật;
-- RS-LiDAR ở λ ∈ {3, 10}, để so từng cặp ở cùng λ;
+- LiDAR ở λ ∈ {10, 30, 100, 300, 1000}. Trong trọng số LiDAR, λ·r không đứng một mình mà cạnh tranh với số hạng khoảng cách ‖xₜ − √ᾱₜ·zₖ‖²/2(1−ᾱₜ), cộng trên 4×64×64 chiều latent (`fkd_pipeline_sd.py`, hàm `get_sample_guide`). Vì vậy vùng chuyển từ "gần như không dẫn hướng" sang "bão hoà" nằm ở λ cỡ hàng chục đến hàng trăm; mô phỏng với latent ngẫu nhiên cho ‖wʳ − w‖₁ ≈ 0.5 ở λ = 10, ≈ 1.9 ở λ = 300 và gần bão hoà từ λ ≈ 1000. Mục 5 đo lại trên pool thật;
+- RS-LiDAR ở λ ∈ {30, 100}, giữa vùng chuyển tiếp, để so từng cặp ở cùng λ;
 - LiDAR-Clip: reward mỗi prompt bị cắt ở phân vị 90% (5 ứng viên đứng đầu hoà nhau), λ = 5000;
 - mốc LiDAR và RS-LiDAR λ = 5000 của Table 1 (notebook tự tìm trên Drive, không thấy thì tự chạy).
 
@@ -552,9 +552,9 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 |---|---|---|
 | 1–3 | Kiểm tra GPU, nối Google Drive, tải code mới nhất từ GitHub, cài thư viện, kiểm tra môi trường | Cell kiểm tra môi trường dừng thì: Runtime → Restart session, chạy lại từ đầu |
 | 4 | Nạp cấu hình chung (bảng cấu hình chung ở trên) | Đặt `PROMPT_MODE` |
-| 5 | Tìm hai pool ứng viên của Table 1 trên Drive (dừng nếu không thấy). Nếu pool RS không cùng 50 ứng viên với pool LiDAR, chấm lại chúng bằng reward làm trơn. In bảng ESS: với mỗi λ, LiDAR thực sự dùng trung bình bao nhiêu ứng viên | Đọc bảng ESS, chụp màn hình |
-| 6 | Tạo pool LiDAR-Clip: cùng ứng viên, nhưng điểm của mỗi prompt bị cắt ở phân vị 90% (chỉ ghi lại file điểm, vài giây). In danh sách 7 run sẽ chạy | Sửa `LAMBDAS_LIDAR` nếu bảng ESS cho thấy dải λ chưa đúng |
-| 7 | Sinh ảnh cuối (Phase 2) cho 7 run, lần lượt. Mỗi run ghi vào `MyDrive/RS-LiDAR/Target_samples/E1_...`; run đã xong tự bỏ qua | Chờ. ~2.4 h mỗi run với 553 prompt trên A100 |
+| 5 | Tìm hai pool ứng viên của Table 1 trên Drive (dừng nếu không thấy). Nếu pool RS không cùng 50 ứng viên với pool LiDAR, chấm lại chúng bằng reward làm trơn. In bảng độ mạnh dẫn hướng ‖wʳ − w‖₁ theo λ, đo trên pool thật có tính số hạng khoảng cách (vài phút CPU) | Đọc bảng, chụp màn hình |
+| 6 | Tạo pool LiDAR-Clip: cùng ứng viên, nhưng điểm của mỗi prompt bị cắt ở phân vị 90% (chỉ ghi lại file điểm, vài giây). In danh sách 8 run sẽ chạy | Sửa `LAMBDAS_LIDAR` nếu bảng ở mục 5 cho thấy dải λ chưa đúng |
+| 7 | Sinh ảnh cuối (Phase 2) cho 8 run, lần lượt. Mỗi run ghi vào `MyDrive/RS-LiDAR/Target_samples/E1_...`; run đã xong tự bỏ qua | Chờ. ~2.4 h mỗi run với 553 prompt trên A100 |
 | 8 | Chấm GenEval (Mask2Former) cho mọi run, kể cả hai run Table 1 | Chờ |
 | 9 | Lập bảng: mỗi run so với LiDAR λ = 5000 trên IR, CLIP, HPS, Aesthetic, GenEval, kèm khoảng tin cậy 95% | Gửi `E1_summary.csv` |
 
