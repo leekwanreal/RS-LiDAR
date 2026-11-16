@@ -4,11 +4,11 @@
 
 **Hạn chót (giờ AoE):** đăng ký abstract **14/1/2027**, nộp bài **22/1/2027**.
 
-**Mục tiêu:** cả ba reviewer chấm 7/10. Phần viết và lý thuyết đã xong; điểm bây giờ phụ thuộc vào 6 thí nghiệm E1–E6, mỗi thí nghiệm trả lời một câu hỏi reviewer chắc chắn sẽ hỏi.
+**Mục tiêu:** cả ba reviewer chấm 7/10. Phần viết và lý thuyết đã xong; điểm bây giờ phụ thuộc vào 7 thí nghiệm E1–E7, mỗi thí nghiệm trả lời một câu hỏi reviewer chắc chắn sẽ hỏi.
 
 **Ý tưởng của bài trong một câu:** thay vì chấm mỗi ứng viên bằng **một lần** gọi reward model, ta chấm bằng **trung bình reward trên M bản nhiễu Gauss** của ảnh (điểm làm trơn R̄σ). Áp dụng cho LiDAR (RS-LiDAR) và SMC (RS-SMC).
 
-**Phân công:** **Hiếu** làm T1, T3, T5, T7 ([mục 4A](#4a-việc-của-hiếu)); **Quân** làm T2, T4, T6, T8, T9 ([mục 4B](#4b-việc-của-quân)). Mỗi người chỉ cần đọc phần của mình, làm theo thứ tự.
+**Phân công:** **Hiếu** làm T1, T3, T5, T7 ([mục 4A](#4a-việc-của-hiếu)); **Quân** làm T2, T4, T6, T8, T9 ([mục 4B](#4b-việc-của-quân)); **tác giả** làm T10 ([mục 4C](#4c-việc-của-tác-giả)). Mỗi người chỉ cần đọc phần của mình, làm theo thứ tự.
 
 ---
 
@@ -18,10 +18,10 @@
 1. [Bảng phân công](#1-bảng-phân-công)
 2. [Chuẩn bị một lần](#2-chuẩn-bị-một-lần)
 3. [Cách chạy một notebook](#3-cách-chạy-một-notebook)
-4. Từng việc: [4A. Hiếu](#4a-việc-của-hiếu) · [4B. Quân](#4b-việc-của-quân)
+4. Từng việc: [4A. Hiếu](#4a-việc-của-hiếu) · [4B. Quân](#4b-việc-của-quân) · [4C. Tác giả](#4c-việc-của-tác-giả)
 5. [Cổng quyết định sau E4](#5-cổng-quyết-định)
 6. [Quy tắc chung](#6-quy-tắc-chung)
-7. [Tham khảo: chi tiết thí nghiệm E1–E6](#7-tham-khảo-chi-tiết-thí-nghiệm)
+7. [Tham khảo: chi tiết thí nghiệm E1–E7](#7-tham-khảo-chi-tiết-thí-nghiệm)
 
 ---
 
@@ -67,11 +67,17 @@ Thời gian là cho bản đủ trên A100, ước lượng; L4 chậm hơn kho�
 | [**T8**](#t8) | E6 · FLUX notebook 3 (Vanilla), 4 (σ = 1.0) | **A100** | ~5–18 h | T4 |
 | [**T9**](#t9) | E6 · chấm GenEval cho FLUX | L4 | chưa đo (ngắn, không sinh ảnh) | T2, T4 |
 
+### 👤 Tác giả: T10
+
+| Việc | Thí nghiệm | GPU | Thời gian | Cần xong trước |
+|---|---|---|---|---|
+| [**T10**](#t10) | E7 · SMC ở nhiệt độ λ_FK khác | A100 (hoặc L4) | 2 run bắt buộc + tối đa 1 run có điều kiện, chưa đo (ước lượng 1–1.5 h/run A100) | — |
+
 Việc của hai người chỉ phụ thuộc nhau ở một chỗ: **T7** (Hiếu) chờ **T6** (Quân) xong và qua [cổng E4](#5-cổng-quyết-định).
 
-**Khi thiếu GPU, ưu tiên:** E2 > E1 > E3 > E4 > E6 > E5.
+**Khi thiếu GPU, ưu tiên:** E2 > E1 > E3 > E7 > E4 > E6 > E5.
 
-**Ngân sách Colab:** tốc độ tiêu thụ đo thực tế (16/11/2026): **L4 1.94 unit/giờ, A100 6.5 unit/giờ**. Phần của Hiếu (khoảng 80 giờ GPU, chủ yếu L4, một phần A100 cho E3) cần khoảng 180–220 unit; phần của Quân (khoảng 45 giờ A100 cho FLUX + khoảng 10 giờ L4 cho E4) khoảng 300–350 unit. Số giờ là ước lượng. Colab Pro có 100 unit/tháng; Pro+ có 500–600 unit/tháng (xem trang đăng ký), đủ cho phần của mỗi người trong một tháng. Tốc độ tiêu thụ xem ở Colab → biểu tượng RAM/Disk góc phải → **View resources**.
+**Ngân sách Colab:** tốc độ tiêu thụ đo thực tế (16/11/2026): **L4 1.94 unit/giờ, A100 6.5 unit/giờ**. Phần của Hiếu (khoảng 80 giờ GPU, chủ yếu L4, một phần A100 cho E3) cần khoảng 180–220 unit; phần của Quân (khoảng 45 giờ A100 cho FLUX + khoảng 10 giờ L4 cho E4) khoảng 300–350 unit; phần của tác giả (T10, 2–3 run A100) khoảng 15–30 unit. Số giờ là ước lượng. Colab Pro có 100 unit/tháng; Pro+ có 500–600 unit/tháng (xem trang đăng ký), đủ cho phần của mỗi người trong một tháng. Tốc độ tiêu thụ xem ở Colab → biểu tượng RAM/Disk góc phải → **View resources**.
 
 ---
 
@@ -857,6 +863,79 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 ---
 
+<a id="4c-việc-của-tác-giả"></a>
+## 4C. Việc của tác giả (T10)
+
+<a id="t10"></a>
+### T10 · Tác giả · E7: SMC ở nhiệt độ λ_FK khác có đuổi kịp RS-SMC không
+
+| | |
+|---|---|
+| 👤 Người chạy | **Tác giả** (người đã chạy Table 2) |
+| 🧪 Thí nghiệm | E7 (xem [tham khảo](#ref-e7)) |
+| 📓 Notebook | `notebooks_temp/colab/RS_SMC_Table8_Replication_Colab.ipynb`, đúng notebook đã chạy Table 2 ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/colab/RS_SMC_Table8_Replication_Colab.ipynb)) |
+| 🖥️ GPU | **A100** (L4 cũng được, chậm hơn) |
+| ⏱️ Thời gian | 2 run bắt buộc + tối đa 1 run có điều kiện. Chưa đo; ước lượng 1–1.5 h A100 mỗi run (suy từ tốc độ sinh 4 ảnh DDPM-100 ở Appendix E) |
+| 🔗 Cần xong trước | — |
+| 📤 Nộp lại | Ảnh chụp mục 4 và mục 6 (số phút chạy) của từng run; file `final_metrics.json` của từng run |
+
+**🎯 Mục tiêu.** Section 6.3 nói smoothing nén độ chênh reward gần như đều tay, giống việc hạ nhiệt độ. Trong SMC, nhiệt độ là λ_FK. Câu reviewer sẽ hỏi: *SMC ở λ_FK khác 10 có đạt được RS-SMC không?* E1 trả lời câu này cho LiDAR; T10 trả lời cho SMC, ở N = 4 (nơi gain lớn nhất, 0.563 → 0.744).
+
+**▶ Các bước**
+
+1. Tải notebook (trang file trên GitHub → **Download raw file**), Colab → **File → Upload notebook**.
+2. **Runtime → Change runtime type** → **A100 GPU** → **Save**.
+3. Ở cell mục 4, đặt: `EXECUTION_MODE = "SINGLE_RUN"`, `METHOD = "Vanilla-SMC"`, `NUM_PARTICLES = 4`, `FK_LMBDA = 3.0`. Các biến khác **giữ nguyên** (bảng 🔧).
+4. **Runtime → Run all**. Cho phép Google Drive.
+5. ⏸ **Mục 4:** kiểm tra các dòng `Phương pháp: Vanilla-SMC`, `Số hạt mục tiêu N: 4`, `Feynman-Kac λ: 3.0`, `Tập prompt: ALL (553 prompts)`, và dòng `Thư mục kết quả` có `_N4_` và `_lmbda3.0_`. Thư mục phải **khác** run λ = 10 của Table 2 (tên có `_lmbda10.0_`); dòng `Tiến độ sẵn có` phải là `0/553`. Chụp.
+6. ⏸ **Mục 6:** chờ đến dòng `✅ Hoàn thành thực nghiệm đơn lẻ trong … phút!`. Chụp (đây cũng là số đo thời gian SMC đầu tiên, dùng cho ngân sách).
+7. Mở `Target_samples/<RUN_NAME>/final_metrics.json` trên Drive: ghi `ImageReward.mean` (cột Mean của Table 2) và `ImageReward.max` (cột Best-of-N).
+8. Lặp bước 3–7 với `FK_LMBDA = 30.0`. **Dừng ở đây** nếu cả hai run có `mean` dưới 0.744 và run λ = 30 không cao hơn rõ run λ = 10 (0.563). Nếu run λ = 30 vẫn tăng rõ so với 0.563 (xu hướng chưa dừng), chạy thêm **đúng một** run `FK_LMBDA = 100.0` rồi dừng.
+9. **Chỉ khi** một trong hai run có `mean` ≥ **0.744**: chạy thêm `METHOD = "RS-SMC"`, `NUM_PARTICLES = 4`, `FK_LMBDA` = đúng giá trị đó; các biến smoothing giữ nguyên (`SMC_SIGMA = 0.25`, `SMC_ANNEAL_SIGMA = True`, `SMC_ANNEAL_SCHEDULE = "tweedie_analytical"`, `SMC_NUM_MC_SAMPLES = 4`, `SMC_USE_CRN = False`).
+
+**🔧 Tham số**
+
+| Biến (mục 4) | Giá trị | Có đổi không |
+|---|---|---|
+| `METHOD` | `"Vanilla-SMC"` (run 1, 2); `"RS-SMC"` (run 3, có điều kiện) | Theo bước 3 và 9 |
+| `NUM_PARTICLES` | 4 | Không |
+| `FK_LMBDA` | 3.0, rồi 30.0 | Theo bước 3 và 8 |
+| `PROMPT_MODE` | `"ALL"` | Không |
+| `NUM_INFERENCE_STEPS`, `ETA` | 100, 1.0 | Không |
+| `RESAMPLE_FREQUENCY`, `RESAMPLE_T_START`, `RESAMPLE_T_END` | 20, 20, 80 | Không (lịch resampling của Table 2) |
+| `SEED` | 100 | Không |
+| `OVERWRITE` | False | Không |
+
+**📦 Đầu ra**
+
+| Ở đâu | Nội dung |
+|---|---|
+| Mục 4 | Bảng cấu hình và tên thư mục kết quả |
+| Mục 6 | Số phút chạy |
+| `Target_samples/<RUN_NAME>/final_metrics.json` | `ImageReward.mean` (trung bình mọi hạt) và `ImageReward.max` (trung bình hạt tốt nhất mỗi prompt), cùng dạng với các file Table 2 |
+
+**🌟 Kết quả lý tưởng**
+
+- Mốc (Table 2, N = 4, λ_FK = 10): SMC mean **0.563** / Best-of-N **0.684**; RS-SMC mean **0.744** / Best-of-N **0.816**.
+- Lý tưởng: SMC ở cả λ_FK = 3 và λ_FK = 30 có mean **dưới 0.744**, tốt nhất là thấp rõ.
+- Mốc kiểm tra: mỗi run đủ 553 prompt; thời gian mỗi run cùng cỡ với run λ = 10 cũ. Nếu một run xong nhanh bất thường (vài phút) thì nó đang đọc lại thư mục cũ: xem lại bước 5.
+
+**⚠️ Lưu ý**
+
+- Tên thư mục chứa giá trị λ, nên run mới **không** ghi đè run λ = 10 của Table 2.
+- Bị ngắt giữa chừng: **Run all** lại với đúng cấu hình; notebook tự chạy tiếp các prompt còn thiếu (`--resume`).
+- Không đổi lịch resampling, số bước hay seed: số mới phải so được trực tiếp với Table 2.
+
+**📊 Đọc kết quả và làm gì tiếp**
+
+| Kết quả | Nghĩa là | Làm gì tiếp |
+|---|---|---|
+| ✅ SMC mean < 0.744 ở cả λ_FK = 3 và 30 | Đổi nhiệt độ không thay được smoothing trong SMC | Gửi hai file JSON; thêm một câu vào Section 6.2 và một dòng ở appendix |
+| ⚠️ SMC mean ≥ 0.744 ở một λ | Ở λ đó SMC đuổi kịp mốc RS-SMC λ = 10 | Chạy bước 9. Nếu RS-SMC ở cùng λ vẫn hơn SMC ở λ đó: vẫn là ✅ (so cùng nhiệt độ), báo cả ba số |
+| ❌ RS-SMC không hơn SMC ở cùng λ tốt nhất | Lợi ích của RS-SMC ở N = 4 có thể chỉ là do λ_FK = 10 chưa tối ưu cho SMC | Báo nhóm ngay; phải xem lại cách trình bày RS-SMC trong bài |
+
+---
+
 <a id="5-cổng-quyết-định"></a>
 ## 5. Cổng quyết định
 
@@ -896,6 +975,7 @@ Phần này giải thích **vì sao** chạy từng thí nghiệm, nó vào đâ
 | [E4](#ref-e4) | Reward rời rạc | "Phương pháp làm được gì mà cách khác không làm được?" | Section 6, mục riêng + contribution mới |
 | [E5](#ref-e5) | Nhiều reward (IR + HPS) | "Chỉ một reward thì hẹp" | Appendix |
 | [E6](#ref-e6) | Flow matching (FLUX.1-dev) | "Có dùng được cho rectified flow không?" | Hàng FLUX hoặc bảng nhỏ ở Section 6; gỡ Limitation (vi) |
+| [E7](#ref-e7) | SMC ở λ_FK khác | "SMC chỉ cần chỉnh λ_FK là bằng RS-SMC?" | Một câu ở Section 6.2 + một dòng appendix |
 
 Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 
@@ -1077,3 +1157,14 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 **Môi trường FLUX (đọc trước khi chạy).** Cell cài đặt ghim `transformers>=4.43.3,<4.45`, nhưng các bản này cần `tokenizers 0.19`, không có bản dựng sẵn cho Python 3.13 (runtime mặc định của Colab). Khi đó pip lỗi mà cell không dừng, và notebook chạy bằng bản transformers/diffusers có sẵn của Colab. Đây có lẽ là cấu hình đã chạy được trong lần hiệu chỉnh s_flow trước, nhưng phiên bản không cố định. Việc cần làm: sau cell cài đặt, chạy `!pip list | grep -i -E "transformers|diffusers|tokenizers|peft|torchao|accelerate"` và **ghi lại** các phiên bản khi chạy thành công; nếu gặp lỗi lạ, đổi runtime sang **2026.07 (Python 3.12)** (Runtime → Change runtime type → Runtime version) để pip cài đúng bản đã ghim.
 
 **Vanilla** không dùng seed theo prompt (giống run Vanilla 553 cũ), nên không ghép cặp nhiễu với LiDAR/RS; nó chỉ là mốc tham khảo.
+
+<a id="ref-e7"></a>
+### E7 — SMC ở nhiệt độ λ_FK khác
+
+📓 **Notebook:** `notebooks_temp/colab/RS_SMC_Table8_Replication_Colab.ipynb` (notebook của Table 2), việc [T10](#t10).
+
+**Mục đích.** Câu hỏi "smoothing có chỉ là hạ nhiệt độ không" của E1, nhưng cho SMC, nơi nhiệt độ là λ_FK. RS-SMC là một trong hai phương pháp của bài, và gain ở N = 4 (+0.181) là gain lớn nhất của Table 2.
+
+**Thiết kế (bản tối thiểu, chọn vì chi phí).** Chỉ chạy SMC, chỉ N = 4, λ_FK ∈ {3, 30} cạnh mốc 10 đã có. λ = 3 là phép so sánh chính (nhiệt độ thấp hơn là thứ smoothing có thể "giả làm"); λ = 30 cho chiều ngược lại. RS-SMC chỉ chạy lại ở đúng λ mà SMC đạt ≥ 0.744. **Không** chạy: thêm seed (gain +0.08 đến +0.18 lớn hơn nhiều độ lệch giữa seed ước tính, cỡ 0.01), N = 32, sweep λ cho RS-SMC, chấm held-out.
+
+**Vị trí trong bài.** Một câu ở Section 6.2 ("SMC with λ_FK ∈ {3, 30} reaches … at N = 4, below RS-SMC") và một dòng ở appendix.
