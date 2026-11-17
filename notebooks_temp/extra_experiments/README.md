@@ -33,7 +33,7 @@
 
 | Phần | Nội dung |
 |---|---|
-| Thẻ việc | 👤 người chạy · 🧪 thí nghiệm · 📓 notebook (tên file + link trang GitHub để tải về) · 🖥️ GPU · ⏱️ thời gian · 🔗 việc phải xong trước · 📤 thứ phải nộp |
+| Thẻ việc | 👤 người chạy · 🧪 thí nghiệm · 📓 notebook (tên file, bấm vào để mở file trong repo) · 🖥️ GPU · ⏱️ thời gian · 🔗 việc phải xong trước · 📤 thứ phải nộp |
 | 🎯 Mục tiêu | Việc này trả lời câu hỏi gì |
 | ▶ Các bước | Làm lần lượt, từng thao tác bấm. Bước có **⏸** là chỗ phải **dừng lại đọc kết quả** (và chụp màn hình) trước khi đi tiếp; bước đó ghi rõ phải thấy dòng nào |
 | 🔧 Tham số | Biến nào giữ nguyên, biến nào được đổi và đổi theo quy tắc nào |
@@ -48,14 +48,27 @@
 
 Thời gian là cho bản đủ trên A100, ước lượng; L4 chậm hơn khoảng 2–3 lần (chưa đo).
 
+**Bản Run all (17/11/2026).** Mọi notebook đã cấu hình sẵn: chỉ cần chọn GPU rồi **Runtime → Run all**. Notebook tự bỏ qua phần đã xong, tự chọn các tham số trước đây phải chọn tay (E4), và **tự ngắt máy** khi chạy xong (cell cuối, `AUTO_DISCONNECT = True`). Các bước ⏸ trong từng thẻ là để chụp màn hình output sau khi chạy, không phải dừng giữa chừng. Số run sinh ảnh cuối (Phase 2) của từng thí nghiệm:
+
+| Thí nghiệm | Run Phase 2 mới | Ghi chú |
+|---|---|---|
+| E2 (T1) | 0 | Chỉ phân tích hai pool Table 1 và chấm ứng viên thắng |
+| E1 (T3) | 4 | LiDAR λ = 100, 1000; LiDAR-Clip q = 0.8, 0.95 |
+| E3 (T5) | 1 | LiDAR K = 200 (thêm 3 pool Phase 1: seed 200, 300, 400) |
+| E4 (T6) | 2 | LiDAR (0/1) và RS-LiDAR (R̄σ); tự dừng sau chạy thử nếu dưới 2 task đạt |
+| E4 dự phòng (T7) | 0 hoặc 2 | Chỉ khi cổng E4 yêu cầu |
+| E5 | 0 | Bỏ (17/11) |
+| E6 (T2, T4, T8, T9) | 2 hoặc 3 | FLUX LiDAR (kèm sinh pool), RS σ = 0.25; Vanilla chỉ khi Drive chưa có; σ = 1.0 bỏ; T9 chỉ chấm điểm |
+| E7 (T10) | 2 (+ tối đa 1) | SMC N = 4, λ_FK = 3 và 30; thêm 1 run nếu đạt điều kiện ở thẻ T10 |
+
 ### 👤 Hiếu: T1 → T3 → T5 → T7
 
 | Việc | Thí nghiệm | GPU | Thời gian | Cần xong trước |
 |---|---|---|---|---|
 | [**T1**](#t1) | E2 · flip rate | L4 | ~1 h | — |
-| [**T3**](#t3) | E1 · nhiệt độ λ và cắt reward | L4/A100 | ~12–20 h | nên sau T1 |
-| [**T5**](#t5) | E3 · cùng số lần gọi reward | A100 → L4 | ~6 h | — |
-| [**T7**](#t7) | E4 dự phòng **hoặc** E5 | L4 | ~6–8 h | T6 + [cổng E4](#5-cổng-quyết-định) |
+| [**T3**](#t3) | E1 · nhiệt độ λ và cắt reward | L4/A100 | ~6–10 h | nên sau T1 |
+| [**T5**](#t5) | E3 · cùng số lần gọi reward (chỉ K = 200) | A100 → L4 | ~3–5 h | — |
+| [**T7**](#t7) | E4 dự phòng, **chỉ khi** cổng E4 yêu cầu (E5 đã bỏ 17/11) | L4 | 0 hoặc ~4–6 h | T6 + [cổng E4](#5-cổng-quyết-định) |
 
 ### 👤 Quân: T2 → T4 → T6 → T8 → T9
 
@@ -64,14 +77,14 @@ Thời gian là cho bản đủ trên A100, ước lượng; L4 chậm hơn kho�
 | [**T2**](#t2) | E6 · FLUX notebook 1 (LiDAR) | **A100** | ~10–14 h | `HF_TOKEN` |
 | [**T4**](#t4) | E6 · FLUX notebook 2 (RS σ = 0.25) | **A100** | ~8–10 h | T2 |
 | [**T6**](#t6) | E4 · reward rời rạc | L4 | ~5 phút + 4–6 h | — |
-| [**T8**](#t8) | E6 · FLUX notebook 3 (Vanilla), 4 (σ = 1.0) | **A100** | ~5–18 h | T4 |
+| [**T8**](#t8) | E6 · FLUX notebook 3 (Vanilla; bỏ qua nếu Drive đã có). Notebook 4 (σ = 1.0) đã bỏ 17/11 | **A100** | 0 hoặc ~5–8 h | T4 |
 | [**T9**](#t9) | E6 · chấm GenEval cho FLUX | L4 | chưa đo (ngắn, không sinh ảnh) | T2, T4 |
 
 ### 👤 Tác giả: T10
 
 | Việc | Thí nghiệm | GPU | Thời gian | Cần xong trước |
 |---|---|---|---|---|
-| [**T10**](#t10) | E7 · SMC ở nhiệt độ λ_FK khác | A100 (hoặc L4) | 2 run bắt buộc + tối đa 1 run có điều kiện, chưa đo (ước lượng 1–1.5 h/run A100) | — |
+| [**T10**](#t10) | E7 · SMC ở nhiệt độ λ_FK khác | A100 (hoặc L4) | 2 run bắt buộc (2 notebook cấu hình sẵn) + tối đa 1 run có điều kiện, ước lượng 1–1.5 h/run A100 | — |
 
 Việc của hai người chỉ phụ thuộc nhau ở một chỗ: **T7** (Hiếu) chờ **T6** (Quân) xong và qua [cổng E4](#5-cổng-quyết-định).
 
@@ -129,7 +142,7 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E5 **dùng lại po
 Áp dụng cho mọi việc; phần riêng của từng việc nằm ở mục 4.
 
 1. **Mở notebook từ file trên máy, không mở thẳng từ GitHub** (kiểu link `colab.research.google.com/github/...`). Mở từ GitHub thì khi chạy xong, phiên Colab thường không tự kết thúc và vẫn tiếp tục tốn compute unit. Cách mở đúng:
-   - Lấy file `.ipynb` về máy: `git pull` trong bản clone của repo (thư mục `notebooks_temp/extra_experiments/`), hoặc bấm vào tên notebook ở thẻ việc trên GitHub → nút **Download raw file**.
+   - Lấy file `.ipynb` về máy: `git pull` trong bản clone của repo (thư mục `notebooks_temp/extra_experiments/`), hoặc bấm vào tên notebook ở thẻ việc để mở file trong repo rồi tải file đó về.
    - Trên Colab: **File → Upload notebook** → chọn file vừa tải.
    - Khi nhóm báo notebook có bản mới thì tải lại file. Code `.py` thì không cần: notebook tự lấy bản mới nhất từ GitHub khi chạy.
 2. **Runtime → Change runtime type**: chọn GPU theo thẻ việc. Với A100, bật **High-RAM**.
@@ -172,7 +185,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E2 (xem [tham khảo](#ref-e2)) |
-| 📓 Notebook | `E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb)) |
+| 📓 Notebook | [`E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb`](E2_flip_rate/E2_FlipRate_SpikeEvidence_SD15_Colab.ipynb) |
 | 🖥️ GPU | **L4** (A100 cũng được) |
 | ⏱️ Thời gian | ~0.5–1 h; thêm ~0.6 h (A100) / ~1.5 h (L4) nếu phải chấm lại pool RS (ước lượng) |
 | 🔗 Cần xong trước | — |
@@ -182,7 +195,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **▶ Các bước**
 
-1. **Tải notebook về máy:** mở trang file trên GitHub (link ở thẻ) → bấm nút **Download raw file** (biểu tượng ⬇ ở góc phải trên khung code). Hoặc `git pull` nếu đã clone repo.
+1. **Lấy notebook về máy:** `git pull` trong bản clone của repo rồi dùng file ở link trong thẻ (file trong repo). Không mở bằng link `colab.research.google.com/github/...`.
 2. Vào https://colab.research.google.com → **File → Upload notebook** → chọn file vừa tải.
 3. **Runtime → Change runtime type** → *Hardware accelerator*: **L4 GPU** → **Save**.
 4. **Không sửa biến nào** (xem bảng tham số bên dưới).
@@ -251,9 +264,9 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E1 (xem [tham khảo](#ref-e1)) |
-| 📓 Notebook | `E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb)) |
+| 📓 Notebook | [`E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb`](E1_temperature_clipping/E1_Temperature_Clipping_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** hoặc A100 |
-| ⏱️ Thời gian | 8 run Phase 2, mỗi run ước lượng 1.5–2.5 h A100 (chưa đo; L4 chậm hơn khoảng 2–3 lần). Chia nhiều phiên Colab |
+| ⏱️ Thời gian | 4 run Phase 2 (LiDAR λ = 100, 1000; LiDAR-Clip q = 0.8, 0.95), mỗi run ước lượng 1.5–2.5 h A100, tổng khoảng 6–10 h (chưa đo; L4 chậm hơn khoảng 2–3 lần). Chia nhiều phiên Colab |
 | 🔗 Cần xong trước | Nên sau T1 |
 | 📤 Nộp lại | Ảnh chụp mục 5 và mục 6; `E1_summary.csv`; thời gian thực của run đầu tiên |
 
@@ -261,31 +274,30 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **▶ Các bước**
 
-1. **Tải lại notebook** (bản đã sửa dải λ ngày 16/11): trang file trên GitHub → **Download raw file**. Không dùng bản tải trước ngày đó.
+1. **Lấy lại notebook** (bản đã sửa dải λ ngày 16/11): `git pull` rồi dùng file trong repo ở link trong thẻ. Không dùng bản tải trước ngày đó.
 2. Colab → **File → Upload notebook** → chọn file.
 3. **Runtime → Change runtime type** → **L4 GPU** (hoặc **A100 GPU** + bật **High-RAM**) → **Save**.
-4. Bấm vào **cell code đầu tiên ngay dưới tiêu đề "## 7. Chạy Phase 2 cho từng run"** → **Runtime → Run before** (Ctrl + F8). Lệnh này chạy mục 1–6 rồi dừng. Cho phép Google Drive khi được hỏi.
-5. ⏸ **Mục 3:** cell kiểm tra môi trường phải in ✅ hết. Có ❌ → Restart session → làm lại bước 4.
+4. **Runtime → Run all** (Ctrl + F9). Cho phép Google Drive khi được hỏi. Notebook chạy hết mục 1–9 (4 run Phase 2, GenEval, bảng) rồi tự ngắt máy. Các bước 5–13 là để kiểm tra output và chụp màn hình.
+5. ⏸ **Mục 3:** cell kiểm tra môi trường phải in ✅ hết. Có ❌ (notebook dừng ở đó) → Restart session → Run all lại.
 6. ⏸ **Mục 4:** phải in `E1_temperature_clipping: 553 prompt | …`.
 7. ⏸ **Mục 5** (vài phút CPU). Chụp màn hình. Kiểm tra theo thứ tự:
    - `Pool LiDAR :` và `Pool RS-LiDAR :` là đường dẫn, không phải `None`.
    - Dòng `79 bước có guidance: t = 990 … 210`.
    - Bảng 4 cột × 10 dòng (λ = 1 … 20000).
    - Ba dòng `LiDAR đạt 25% / 50% / 90% độ mạnh của λ = 5000 từ λ ≈ …`.
-8. **Quyết định dải λ** từ ba dòng ở bước 7:
+8. **Kiểm tra dải λ** từ ba dòng ở bước 7 (xem lại sau khi chạy; mặc định đúng trong đa số trường hợp):
 
    | Ba dòng in ra | Làm gì |
    |---|---|
-   | Mốc 25% ở λ ≤ 10 **và** mốc 90% ở λ trong 100–1000 | Giữ nguyên, sang bước 9 |
-   | Mốc 25% ở λ > 10 | Mục 6: đổi thành `LAMBDAS_LIDAR = [3, 10, 30, 100, 300]` |
-   | Mốc 90% ở λ ≥ 3000 | Mục 6: đổi thành `LAMBDAS_LIDAR = [30, 100, 300, 1000, 3000]` |
+   | Mốc 50% ở λ trong khoảng 30–300 **và** mốc 90% ở λ trong khoảng 300–3000 | Giữ nguyên `LAMBDAS_LIDAR = [100, 1000]`, sang bước 9 |
+   | Một trong hai mốc nằm ngoài khoảng trên | Mục 6: đổi `LAMBDAS_LIDAR` thành **[giá trị trong lưới gần mốc 50% nhất, giá trị gần mốc 90% nhất]** |
 
-   Nếu đổi `LAMBDAS_LIDAR` thì đổi luôn `LAMBDAS_RS` thành **hai giá trị trong `LAMBDAS_LIDAR` gần mốc 50% nhất**. Sau đó chạy lại cell mục 6 (Shift + Enter) và báo nhóm giá trị mới.
+   Chỉ chạy 2 giá trị λ: λ thấp hơn gần như không dẫn hướng và Figure 8 của bài LiDAR đã cho thấy IR ở đó thấp hẳn. `LAMBDAS_RS` để trống. Nếu đổi thì chạy lại cell mục 6 (Shift + Enter) và báo nhóm giá trị mới.
 9. ⏸ **Mục 6:** chụp màn hình.
    - Hai dòng `Mốc LiDAR λ=5000 :` và `Mốc RS-LiDAR λ=5000 :` nên là đường dẫn. Nếu là `None`, notebook sẽ tự chạy lại mốc (thêm 1–2 run).
-   - Dòng `📁 LiDAR_winsor0.9: 553 prompt`.
-   - Danh sách run dạng `• LiDAR λ=10 -> Target_samples/E1_LiDAR_SD15_n50_DDPM100_lmbda10_seed100`. Với dải mặc định phải có đúng **8 dòng**: 5 LiDAR, 2 RS-LiDAR, 1 LiDAR-Clip.
-10. Bấm vào cell code đầu tiên của **mục 7** → **Runtime → Run after** (Ctrl + F10). Notebook chạy lần lượt 8 run, rồi GenEval (mục 8) và bảng (mục 9).
+   - Hai dòng `📁 LiDAR_winsor0.8: 553 prompt` và `📁 LiDAR_winsor0.95: 553 prompt`.
+   - Danh sách run dạng `• LiDAR λ=100 -> Target_samples/E1_LiDAR_SD15_n50_DDPM100_lmbda100_seed100`. Với dải mặc định phải có đúng **4 dòng**: 2 LiDAR (λ = 100, 1000), 2 LiDAR-Clip (q = 0.8, 0.95).
+10. (Không cần thao tác: Run all đã chạy tiếp mục 7–9, lần lượt 4 run, rồi GenEval và bảng.)
 11. **Ghi lại thời gian** của run đầu tiên: từ lúc in dòng `▶ <tên run đầu>` đến lúc in dòng `▶ <tên run thứ hai>` (gửi nhóm để chỉnh ước lượng).
 12. **Phiên Colab hết giờ:** upload lại notebook (nếu cần), chọn GPU, **Run all**. Run đã xong được bỏ qua và in `✅ Phase 2 đã đủ 553 prompt: <tên run>`. Nếu notebook báo `Run dở dang (…)`: vào Drive xoá đúng thư mục được in ra, rồi **Run all** lại.
 13. ⏸ **Mục 9:** chụp bảng. Gửi `MyDrive/RS-LiDAR/extra_experiments/E1_temperature_clipping/E1_summary.csv`.
@@ -295,9 +307,9 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 | Biến | Ở mục | Mặc định | Có đổi không |
 |---|---|---|---|
 | `PROMPT_MODE` | 4 | `"ALL"` | Không (chỉ đổi khi chạy thử, xem Lưu ý) |
-| `LAMBDAS_LIDAR` | 6 | `[10, 30, 100, 300, 1000]` | **Chỉ** theo bảng ở bước 8 |
-| `LAMBDAS_RS` | 6 | `[30, 100]` | **Chỉ** khi đã đổi `LAMBDAS_LIDAR` |
-| `WINSOR_Q` | 6 | `0.9` | Không |
+| `LAMBDAS_LIDAR` | 6 | `[100, 1000]` | **Chỉ** theo bảng ở bước 8 |
+| `LAMBDAS_RS` | 6 | `[]` | Không (thêm `[100]` chỉ khi còn dư GPU) |
+| `WINSOR_QS` | 6 | `[0.8, 0.95]` | Không |
 
 **📦 Đầu ra**
 
@@ -307,20 +319,19 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 | 5 | Cột `LiDAR: % bước đổi ứng viên` | Tỉ lệ bước mà reward đổi được ứng viên chi phối |
 | 5 | Hai cột `RS-LiDAR: …` | Như trên nhưng với R̄σ |
 | 5 | Dòng `Độ lệch chuẩn reward trong một prompt: {...}` | Độ trải của R và của R̄σ giữa các ứng viên |
-| 9 | Bảng `summarize`, mốc là `LiDAR λ=5000`, file `E1_summary.csv` | Các dòng: `LiDAR λ=5000`, `RS-LiDAR λ=5000`, `LiDAR λ=10 … 1000`, `RS-LiDAR λ=30`, `RS-LiDAR λ=100`, `LiDAR-Clip q=0.9` |
+| 9 | Bảng `summarize`, mốc là `LiDAR λ=5000`, file `E1_summary.csv` | Các dòng: `LiDAR λ=5000`, `RS-LiDAR λ=5000`, `LiDAR λ=100`, `LiDAR λ=1000`, `LiDAR-Clip q=0.8`, `LiDAR-Clip q=0.95` |
 
 **🌟 Kết quả lý tưởng**
 
 - **Mục 5:**
   - Cột `LiDAR: ‖wʳ−w‖₁` **tăng dần** theo λ, từ gần 0 ở λ = 1 rồi **chững lại** (không vượt 2) ở λ lớn.
-  - Mốc 25% ở λ ≤ 10, mốc 90% ở khoảng λ = 100–1000.
+  - Mốc 50% ở khoảng λ = 30–300, mốc 90% ở khoảng λ = 300–3000.
   - Nếu độ lệch chuẩn của RS-LiDAR nhỏ hơn của LiDAR (dòng cuối) thì đường RS-LiDAR lệch sang phải (cần λ lớn hơn); đó là bình thường.
 - **Mục 9, kiểm tra trước:** dòng `LiDAR λ=5000` có IR ≈ 0.350, GenEval ≈ 0.481; dòng `RS-LiDAR λ=5000` có IR ≈ 0.383, GenEval ≈ 0.499 (mốc ở đầu mục 4).
 - **Mục 9, kết quả mong muốn:**
   - `RS-LiDAR λ=5000`: `ΔIR` và `ΔGenEval` **dương, có `*`**.
   - **Mọi** dòng `LiDAR λ=…` và `LiDAR-Clip` có IR **và** GenEval **thấp hơn** dòng `RS-LiDAR λ=5000`.
   - Các dòng `LiDAR λ=…`: IR tăng theo λ rồi chững lại, không dòng nào vượt `LiDAR λ=5000` rõ rệt.
-  - So từng cặp cùng λ: `RS-LiDAR λ=30` > `LiDAR λ=30`, `RS-LiDAR λ=100` > `LiDAR λ=100` trên IR và GenEval.
   - CLIP và HPS của các dòng RS-LiDAR không thấp hơn LiDAR có ý nghĩa.
 
 **⚠️ Lưu ý**
@@ -335,7 +346,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|---|
 | ✅ RS-LiDAR λ = 5000 cao hơn mọi LiDAR λ và LiDAR-Clip trên IR và GenEval, có `*` | Smoothing không phải hạ nhiệt độ hay cắt ngoại lai | Gửi CSV; viết vào Section 6 |
 | ⚠️ Hơn nhưng không có `*` ở GenEval | Chỉ chắc chắn trên IR | Viết claim cho IR; GenEval ghi là xu hướng |
-| ⚠️ Chỉ LiDAR-Clip bắt kịp | Smoothing giống một cách loại ngoại lai, nhưng không cần chọn ngưỡng | Báo nhóm để thêm Clip ở ngưỡng 0.8 và 0.95 (cần sửa code) |
+| ⚠️ LiDAR-Clip bắt kịp ở một ngưỡng nhưng không ở ngưỡng kia | Cắt ngoại lai chỉ bằng smoothing khi chọn đúng ngưỡng; smoothing không cần chọn ngưỡng | Báo nhóm; viết claim kèm điều kiện ngưỡng |
 | ❌ LiDAR ở một λ nào đó bắt kịp hoặc vượt | Có thể chỉ là hiệu ứng nhiệt độ | Bỏ claim "beyond temperature"; E4 (T6) lên ưu tiên số 1 |
 
 ---
@@ -347,9 +358,9 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E3 (xem [tham khảo](#ref-e3)) |
-| 📓 Notebook | `E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb)) |
+| 📓 Notebook | [`E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb`](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **A100** cho mục 5 (sinh 3 pool mới); L4 được cho phần sau |
-| ⏱️ Thời gian | ~6 h A100 (ước lượng) |
+| ⏱️ Thời gian | ~3–5 h A100 (ước lượng: 3 pool Phase 1 + 1 run Phase 2) |
 | 🔗 Cần xong trước | — |
 | 📤 Nộp lại | Ảnh chụp mục 5 và mục 8; `E3_summary.csv` |
 
@@ -357,13 +368,13 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **▶ Các bước**
 
-1. Tải notebook (trang file trên GitHub → **Download raw file**), Colab → **File → Upload notebook**.
+1. Lấy notebook từ repo (`git pull`, file ở link trong thẻ), Colab → **File → Upload notebook**.
 2. **Runtime → Change runtime type** → **A100 GPU**, bật **High-RAM** → **Save**.
 3. Không sửa biến nào. **Runtime → Run all**. Cho phép Google Drive.
 4. ⏸ **Mục 3–4:** như T1 (✅ hết; `E3_compute_matched: 553 prompt | …`).
 5. ⏸ **Mục 5:** lần lượt in `▶ Pool seed 200`, `▶ Pool seed 300`, `▶ Pool seed 400`, mỗi pool kèm log sinh ảnh của `lookahead_sampling.py` (pool đã có sẵn thì in `✅ Phase 1 đã đủ 553 prompt: …` và bỏ qua). Dòng cuối là danh sách 4 đường dẫn pool (seed 100, 200, 300, 400). Chụp màn hình.
 6. **Muốn chuyển sang L4 sau mục 5 (tiết kiệm CU):** bấm **Runtime → Disconnect and delete runtime**, đổi sang **L4 GPU**, rồi **Run all**. Mục 5 tự bỏ qua vì pool đã có; mục 6 tạo lại pool ghép trên đĩa Colab (vài phút).
-7. ⏸ **Mục 7:** dòng đầu in một dict có `LiDAR K=50` và `RS-LiDAR K=50 M=4` trỏ tới hai run Table 1 (không phải `None`). Sau đó chạy `▶ LiDAR K=100` và `▶ LiDAR K=200`.
+7. ⏸ **Mục 7:** dòng đầu in một dict có `LiDAR K=50` và `RS-LiDAR K=50 M=4` trỏ tới hai run Table 1 (không phải `None`). Sau đó chạy `▶ LiDAR K=200` (bản gọn 17/11: không còn K = 100).
 8. ⏸ **Mục 8:** chụp bảng. Gửi `MyDrive/RS-LiDAR/extra_experiments/E3_compute_matched/E3_summary.csv`.
 
 **🔧 Tham số**
@@ -379,7 +390,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|---|
 | 5 | 3 pool mới trong `MyDrive/RS-LiDAR/Lookahead_samples/` | 150 ứng viên mới mỗi prompt |
 | 6 | `LiDAR_K100`, `LiDAR_K200` trên đĩa Colab | Pool 100 và 200 ứng viên (pool nhỏ nằm trong pool lớn) |
-| 8 | Bảng `summarize`, **mốc là `RS-LiDAR K=50 M=4`**, file `E3_summary.csv` | Các dòng: `LiDAR K=50`, `RS-LiDAR K=50 M=4`, `LiDAR K=100`, `LiDAR K=200` |
+| 8 | Bảng `summarize`, **mốc là `RS-LiDAR K=50 M=4`**, file `E3_summary.csv` | Các dòng: `LiDAR K=50`, `RS-LiDAR K=50 M=4`, `LiDAR K=200` |
 
 **🌟 Kết quả lý tưởng**
 
@@ -390,7 +401,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 **⚠️ Lưu ý**
 
 - **Chạy thử (tuỳ chọn):** đặt `PROMPT_MODE = "100_REPRESENTATIVE"` (100 prompt, khoảng 1/5 thời gian). Bản thử ở thư mục riêng; nhớ đổi lại `"ALL"`.
-- Run `LiDAR K=100/200` dùng seed toàn cục: bị ngắt giữa run thì xoá thư mục được in ra rồi chạy lại.
+- Run `LiDAR K=200` dùng seed toàn cục: bị ngắt giữa run thì xoá thư mục được in ra rồi chạy lại.
 
 **📊 Đọc kết quả và làm gì tiếp**
 
@@ -409,7 +420,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E4 dự phòng **hoặc** E5 (xem [tham khảo E4](#ref-e4), [E5](#ref-e5)) |
-| 📓 Notebook | E4: `E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb` ([GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb))<br>E5: `E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb` ([GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb)) |
+| 📓 Notebook | E4: [`E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb`](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb)<br>E5: [`E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb`](E5_multi_reward/E5_MultiReward_IR_HPS_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** |
 | ⏱️ Thời gian | ~6–8 h (ước lượng) |
 | 🔗 Cần xong trước | [T6](#t6) xong, đã qua [cổng E4](#5-cổng-quyết-định) |
@@ -422,14 +433,14 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 **▶ Các bước, nhánh E4 dự phòng** (khi cổng E4 ghi "T7 = E4 dự phòng")
 
 1. Tải notebook E4, upload lên Colab, chọn **L4 GPU**.
-2. Mục 7: **giữ nguyên** `E4_TAGS` mà T6 đã chốt (hỏi Quân giá trị chính xác).
-3. Mục 9: sửa `SIGMA_D, M_D = 0.05, 16`.
+2. Mục 7: không sửa gì; notebook tự chọn lại đúng task như T6 (kết quả chạy thử đã lưu trên Drive).
+3. Mục 9: sửa dòng `SIGMA_D, M_D = SIGMA_AUTO, 8` thành `SIGMA_D, M_D = 0.05, 16`.
 4. **Runtime → Run all**. Mục 6 không chạy thử lại vì kết quả đã lưu trên Drive (`E4_pilot_raw.json`).
 5. ⏸ Mục 9: dòng tổng kết từng task giống T6. Mục 11: chụp bảng.
 6. Gửi `E4_summary_<hậu tố>_sig0.05_M16.csv` và `E4_geneval_by_task_<hậu tố>_sig0.05_M16.csv`.
 7. Nếu vẫn không đạt và nhóm đồng ý: lặp lại với `SIGMA_D = 0.03`.
 
-**▶ Các bước, nhánh E5** (khi cổng E4 ghi "T7 = E5")
+**▶ Các bước, nhánh E5: ĐÃ BỎ (17/11/2026, giới hạn GPU).** Không chạy. Phần dưới giữ lại để tham khảo.
 
 1. Tải notebook E5, upload lên Colab, chọn **L4 GPU**.
 2. Không sửa biến nào. **Runtime → Run all**.
@@ -503,7 +514,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | `E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb)) |
+| 📓 Notebook | [`E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb`](E6_flow_matching/FLUX_LiDAR_n50_sflow3_all553_seed42_Colab.ipynb) |
 | 🖥️ GPU | **A100 + High-RAM** (bắt buộc) |
 | ⏱️ Thời gian | ~10–14 h Phase 1 + Phase 2 (ước lượng), chia nhiều phiên Colab |
 | 🔗 Cần xong trước | Có `HF_TOKEN` ([mục 2.2](#22-hugging-face-token-chỉ-người-chạy-e6)) |
@@ -513,18 +524,17 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **▶ Các bước**
 
-1. Tải notebook (trang file trên GitHub → **Download raw file**), Colab → **File → Upload notebook**.
+1. Lấy notebook từ repo (`git pull`, file ở link trong thẻ), Colab → **File → Upload notebook**.
 2. **Runtime → Change runtime type** → **A100 GPU**, bật **High-RAM** → **Save**.
 3. Kiểm tra 🔑 Secrets có `HF_TOKEN`, công tắc *Notebook access* đang bật.
-4. Chạy lần lượt từng cell của **mục 1–3** (Shift + Enter).
+4. **Runtime → Run all**. Cho phép Google Drive khi được hỏi. Notebook chạy hết Phase 1, Phase 2, bảng kết quả rồi tự ngắt máy (mục 10). Các bước sau là để kiểm tra output và chụp màn hình.
    - Mục 1 phải in `✅ Tuyệt vời! GPU A100 có đủ VRAM …`.
-   - Mục 2: cho phép Google Drive.
-   - Mục 3 phải in `✅ Môi trường đã sẵn sàng 100%!`.
-5. Bấm **+ Code** để thêm một cell ngay dưới mục 3, dán `!pip list | grep -i -E "transformers|diffusers|tokenizers|peft|torchao|accelerate"`, chạy, **chụp màn hình**.
-6. Chạy **mục 4**: phải in `✅ Đã đăng nhập Hugging Face thành công!`. Nếu in `⚠️ CẢNH BÁO: Thiếu HF_TOKEN!` thì dừng, làm lại bước 3.
-7. **Mục 5:** kiểm tra các giá trị như bảng tham số bên dưới, **không sửa gì**.
-8. (Tuỳ chọn) Xoá dấu `#` ở 3 dòng của mục 10 để tự ngắt máy khi xong.
-9. Bấm vào cell code của **mục 5** → **Runtime → Run after** (Ctrl + F10).
+   - Mục 3 phải in `✅ Môi trường đã sẵn sàng 100%!`; dòng cuối mục 3 in phiên bản `transformers`, `diffusers`, `tokenizers`, `peft`, `torchao`, `accelerate`: **chụp màn hình**.
+5. ⏸ **Mục 4:** phải in `✅ Đã đăng nhập Hugging Face thành công!`. Nếu in `⚠️ CẢNH BÁO: Thiếu HF_TOKEN!` (notebook sẽ lỗi khi tải FLUX) thì làm lại bước 3 rồi Run all.
+6. **Mục 5:** các giá trị phải như bảng tham số bên dưới (không sửa gì).
+7. (Không cần thao tác.)
+8. (Không cần thao tác: tự ngắt máy đã bật sẵn ở mục 10.)
+9. (Không cần thao tác.)
 10. ⏸ **Mục 6** (Phase 1, phần lâu nhất) kết thúc bằng `✅ Hoàn thành Phase 1! Dữ liệu đã lưu tại: …/Lookahead_samples/FLUX_100_50_8`.
 11. ⏸ **Mục 6.1:** chụp 3 dòng:
     - `📊 Tìm thấy 553 prompt lookahead đã hoàn thành.`
@@ -586,7 +596,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | `E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb)) |
+| 📓 Notebook | [`E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb`](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig0.25_M4_sflow3_all553_seed42_Colab.ipynb) |
 | 🖥️ GPU | **A100 + High-RAM** |
 | ⏱️ Thời gian | ~8–10 h (ước lượng) |
 | 🔗 Cần xong trước | [T2](#t2) xong (cùng `PROMPT_PRESET`) |
@@ -597,9 +607,9 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 **▶ Các bước**
 
 1. Tải notebook, upload lên Colab, chọn **A100 GPU + High-RAM**.
-2. Làm bước 3–6 như T2. Ảnh `pip list` phải ra **đúng** các phiên bản ở T2; khác thì dừng và báo nhóm.
+2. Làm bước 3 như T2, rồi **Runtime → Run all**. Ảnh phiên bản thư viện (cuối mục 3) phải ra **đúng** các phiên bản ở T2; khác thì báo nhóm.
 3. **Mục 5:** kiểm tra theo bảng tham số bên dưới, không sửa gì.
-4. Bấm vào cell code của **mục 5** → **Runtime → Run after**.
+4. (Không cần thao tác: Run all chạy hết rồi tự ngắt máy.)
 5. ⏸ **Mục 6:** notebook nạp latents từ `Lookahead_samples/FLUX_100_50_8` rồi chấm lại, ghi vào `Lookahead_samples/FLUX_100_50_8_rs_sig0.25_M4_iid`. **Không** được thấy thanh tiến trình sinh ảnh Hyper-SD cho 50 ứng viên; nếu thấy thì dừng và báo nhóm. Chụp màn hình.
 6. ⏸ **Mục 6.1:** đủ 3 dòng ✅ như T2.
 7. ⏸ **Mục 7** kết thúc bằng `✅ Hoàn thành Phase 2! Kết quả lưu tại: …/results/FLUX_RSLiDAR_N1_n50_sig0.25_M4_sflow3.0_w1.0-0.95_all553_pps`.
@@ -657,7 +667,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E4 (xem [tham khảo](#ref-e4)) |
-| 📓 Notebook | `E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb)) |
+| 📓 Notebook | [`E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb`](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** |
 | ⏱️ Thời gian | Chạy thử theo task ~5 phút; phần còn lại ~4–6 h A100, L4 chậm hơn khoảng 2 lần (ước lượng) |
 | 🔗 Cần xong trước | — |
@@ -669,15 +679,15 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 1. Tải notebook, upload lên Colab, chọn **L4 GPU**.
 2. Không sửa gì ở mục 4 (`PROMPT_MODE = "ALL"`).
-3. Bấm vào cell code đầu tiên **dưới tiêu đề "## 7. Chọn task cho E4"** → **Runtime → Run before**. Lệnh này chạy mục 1–6, trong đó mục 6 là chạy thử theo task.
+3. **Runtime → Run all**. Notebook chạy thử theo task (mục 6), **tự chọn** `E4_TAGS` (mục 7) và σ (mục 8) theo quy tắc đã định trước, chấm toàn bộ (mục 9), chạy 2 run Phase 2 (mục 10), in bảng (mục 11) rồi tự ngắt máy. Nếu dưới 2 task qua chạy thử, notebook **tự dừng ở mục 7** (không tốn GPU cho Phase 2).
 4. ⏸ **Mục 3–4:** như T1 (✅ hết; `E4_discrete_reward: 553 prompt | …`).
 5. ⏸ **Mục 5:** `Pool:` là đường dẫn (không phải `None`); có dòng `✅ GenEval sẵn sàng.`
-6. ⏸ **Mục 6:** gửi nhóm ba thứ: bảng 6 dòng (6 task), lưới ảnh `E4_pilot_grid.png` và dòng `Gợi ý E4_TAGS = […]`.
-7. **Cả nhóm thống nhất** danh sách task. Mục 7: sửa `E4_TAGS` theo đó. **Chốt ở đây, không đổi sau khi đã thấy kết quả.**
-8. Chạy lần lượt các cell code của **mục 7** rồi **mục 8**: bấm vào từng cell, **Shift + Enter**. Mục 7 chọn task, mục 8 hiệu chỉnh σ (vài phút).
-9. ⏸ **Mục 7:** dòng `E4: N prompt {…} | hậu tố tên run: _…` (ví dụ `_to-cnt-col`). Ghi lại hậu tố.
-10. ⏸ **Mục 8:** bảng 4 dòng (σ = 0.05, 0.1, 0.25, 0.5). Chọn **σ lớn nhất** thoả cả hai: cột `R̄σ trên ứng viên đúng` ≥ 0.5 **và** cột `số mức R̄σ khác nhau` ≥ 4. Sửa `SIGMA_D` ở mục 9 thành σ đó (giữ `M_D = 8`). Chụp bảng.
-11. Bấm vào cell code đầu tiên của **mục 9** → **Runtime → Run after**. Lệnh này chấm toàn bộ, chạy 2 run Phase 2 và in bảng.
+6. ⏸ **Mục 6:** chụp bảng 6 dòng (6 task), lưới ảnh `E4_pilot_grid.png` và dòng `Gợi ý E4_TAGS = […]`.
+7. ⏸ **Mục 7:** dòng `✅ E4_TAGS = […]` và `E4: N prompt {…} | hậu tố tên run: _…` (ví dụ `_to-cnt-col`). Ghi lại hậu tố. Nếu notebook dừng ở đây với `❌ Chỉ … task qua chạy thử` thì gửi nhóm ảnh mục 6 và dừng E4.
+8. ⏸ **Mục 8:** bảng 4 dòng (σ = 0.05, 0.1, 0.25, 0.5) và dòng `✅ σ chọn tự động: …` (quy tắc: σ lớn nhất có `R̄σ trên ứng viên đúng` ≥ 0.5 **và** `số mức R̄σ khác nhau` ≥ 4). Chụp bảng.
+9. (Không cần thao tác: Run all chạy tiếp mục 9–11.)
+10. Bị ngắt giữa chừng: **Run all** lại. Kết quả chạy thử và điểm từng prompt đã lưu trên Drive nên được dùng lại; task và σ được chọn lại đúng như lần đầu.
+11. (Không cần thao tác.)
 12. ⏸ **Mục 9:** mỗi task một dòng dạng `two_object  99 prompt | ứng viên đúng … | prompt toàn 0 …% | lẫn đúng/sai …% | toàn 1 …%`. Chụp.
 13. ⏸ **Mục 11:** chụp bảng `summarize` và bảng `GenEval theo task`.
 14. Gửi các file trong `MyDrive/RS-LiDAR/extra_experiments/E4_discrete_reward/`.
@@ -719,7 +729,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 - Quy tắc giữ task: ít nhất 50% prompt có ít nhất một ứng viên đúng. single_object luôn bị loại (đã chạm trần).
 - Mục 9 lưu điểm từng prompt lên Drive; bị ngắt thì chạy lại là tiếp đúng chỗ. Phase 2 dùng seed theo prompt (`_pps`) nên cũng tiếp được.
-- Chỉ được đổi `E4_TAGS` và `SIGMA_D`.
+- Không sửa biến nào; `E4_TAGS` và `SIGMA_D` được chọn tự động theo quy tắc ở mục 6 và 8.
 - Trong bài phải ghi: GenEval ở thí nghiệm này là metric được tối ưu; held-out là IR, HPS, CLIP, Aesthetic.
 
 **📊 Đọc kết quả và làm gì tiếp**
@@ -728,7 +738,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|---|
 | ✅ Chạy thử: ≥ 2 task qua. Kết quả cuối: GenEval của RS-LiDAR (R̄σ) cao hơn LiDAR (0/1) ≥ +0.03, có `*`; IR/HPS không giảm có ý nghĩa | Có năng lực mới: dẫn hướng bằng verifier rời rạc | Contribution mới cho Section 6. Xem [cổng E4](#5-cổng-quyết-định): T7 = E5 |
 | ⚠️ Hơn nhưng không có `*` | Có xu hướng, chưa chắc | Cổng E4: T7 = E4 dự phòng |
-| ❌ Chạy thử: chỉ 0–1 task qua | Ứng viên lookahead quá mờ, verifier không có tín hiệu | **Dừng ngay sau mục 6**, không tốn GPU. Báo nhóm: cần reward "mềm" (độ tin cậy detector), phải viết thêm code |
+| ❌ Chạy thử: chỉ 0–1 task qua | Ứng viên lookahead quá mờ, verifier không có tín hiệu | Notebook **tự dừng ở mục 7**, không tốn GPU. Báo nhóm: cần reward "mềm" (độ tin cậy detector), phải viết thêm code |
 | ❌ Kết quả cuối: RS không hơn | σ chưa hợp | Cổng E4: T7 = E4 dự phòng |
 
 ---
@@ -740,7 +750,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | Notebook 3: `E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb` ([GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb))<br>Notebook 4: `E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb` ([GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb)) |
+| 📓 Notebook | Notebook 3: [`E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb`](E6_flow_matching/FLUX_Vanilla_all553_seed42_Colab.ipynb)<br>Notebook 4: [`E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb`](E6_flow_matching/FLUX_RSFlowLiDAR_n50_sig1.0_M4_sflow3_all553_seed42_Colab.ipynb) |
 | 🖥️ GPU | **A100 + High-RAM** |
 | ⏱️ Thời gian | Notebook 3: ~5–8 h; notebook 4: ~8–10 h (ước lượng) |
 | 🔗 Cần xong trước | [T4](#t4) xong |
@@ -754,11 +764,11 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 1. Mở `MyDrive/RS-LiDAR/results/`. Nếu đã có thư mục `FLUX_Vanilla_N1_steps28_all553` với 553 thư mục con thì **bỏ qua notebook 3**.
 2. Nếu chưa có: tải notebook 3, upload, chọn **A100 + High-RAM**, làm bước 3–6 như T2.
-3. Mục 5: `METHOD = "Vanilla"`, `PROMPT_PRESET = "all"`, không sửa gì. Bấm vào cell mục 5 → **Runtime → Run after**.
+3. Mục 5: `METHOD = "Vanilla"`, `PROMPT_PRESET = "all"`, không sửa gì. **Runtime → Run all** (tự ngắt máy khi xong).
 4. Notebook 3 **không có Phase 1** (không sinh ứng viên). ⏸ Mục 7 kết thúc bằng `✅ Hoàn thành Phase 2! Kết quả lưu tại: …/results/FLUX_Vanilla_N1_steps28_all553`.
 5. ⏸ Mục 8: chụp bảng.
 
-**▶ Các bước, notebook 4 (σ = 1.0)**
+**▶ Các bước, notebook 4 (σ = 1.0): ĐÃ BỎ (17/11/2026, giới hạn GPU).** Không chạy. Phần dưới giữ lại để tham khảo.
 
 1. Chỉ chạy khi T4 cho RS ≈ LiDAR hoặc RS thấp hơn, **hoặc** khi còn GPU.
 2. Làm y như T4 nhưng mở notebook 4. Mục 5 phải có `SMOOTH_SIGMA = 1.0`, `SMOOTH_M = 4`, `REUSE_LIDAR_POOL = True`.
@@ -796,7 +806,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E6 (xem [tham khảo](#ref-e6)) |
-| 📓 Notebook | `E6_flow_matching/FLUX_GenEval_Scoring_Colab.ipynb` ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/extra_experiments/E6_flow_matching/FLUX_GenEval_Scoring_Colab.ipynb)) |
+| 📓 Notebook | [`E6_flow_matching/FLUX_GenEval_Scoring_Colab.ipynb`](E6_flow_matching/FLUX_GenEval_Scoring_Colab.ipynb) |
 | 🖥️ GPU | **L4** (A100 cũng được) |
 | ⏱️ Thời gian | Chưa đo. Chỉ chấm 1 ảnh/prompt cho mỗi run, không sinh ảnh, nên ngắn hơn nhiều so với T2/T4 |
 | 🔗 Cần xong trước | [T2](#t2) và [T4](#t4). Có thêm T8 thì bảng có thêm dòng Vanilla và σ = 1.0 |
@@ -806,7 +816,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **▶ Các bước**
 
-1. Tải notebook (trang file trên GitHub → **Download raw file**), Colab → **File → Upload notebook**.
+1. Lấy notebook từ repo (`git pull`, file ở link trong thẻ), Colab → **File → Upload notebook**.
 2. **Runtime → Change runtime type** → **L4 GPU** → **Save**. Không cần `HF_TOKEN`.
 3. **Runtime → Run all**. Cho phép Google Drive bằng tài khoản có lối tắt `RS-LiDAR` (cùng tài khoản đã chạy T2/T4).
 4. ⏸ **Mục 3:** cell kiểm tra môi trường in ✅ hết. Có ❌ → **Runtime → Restart session** → **Run all** lại.
@@ -873,7 +883,7 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 |---|---|
 | 👤 Người chạy | **Tác giả** (người đã chạy Table 2) |
 | 🧪 Thí nghiệm | E7 (xem [tham khảo](#ref-e7)) |
-| 📓 Notebook | `notebooks_temp/colab/RS_SMC_Table8_Replication_Colab.ipynb`, đúng notebook đã chạy Table 2 ([trang file trên GitHub](https://github.com/leekwanreal/RS-LiDAR/blob/main/notebooks_temp/colab/RS_SMC_Table8_Replication_Colab.ipynb)) |
+| 📓 Notebook | [`notebooks_temp/colab/RS_SMC_Table8_Replication_Colab.ipynb`](../colab/RS_SMC_Table8_Replication_Colab.ipynb), đúng notebook đã chạy Table 2 |
 | 🖥️ GPU | **A100** (L4 cũng được, chậm hơn) |
 | ⏱️ Thời gian | 2 run bắt buộc + tối đa 1 run có điều kiện. Chưa đo; ước lượng 1–1.5 h A100 mỗi run (suy từ tốc độ sinh 4 ảnh DDPM-100 ở Appendix E) |
 | 🔗 Cần xong trước | — |
@@ -883,14 +893,14 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **▶ Các bước**
 
-1. Tải notebook (trang file trên GitHub → **Download raw file**), Colab → **File → Upload notebook**.
+1. Lấy notebook từ repo (`git pull`, file ở link trong thẻ), Colab → **File → Upload notebook**.
 2. **Runtime → Change runtime type** → **A100 GPU** → **Save**.
-3. Ở cell mục 4, đặt: `EXECUTION_MODE = "SINGLE_RUN"`, `METHOD = "Vanilla-SMC"`, `NUM_PARTICLES = 4`, `FK_LMBDA = 3.0`. Các biến khác **giữ nguyên** (bảng 🔧).
+3. Dùng notebook **đã cấu hình sẵn** ở thư mục gốc `RS-LiDAR/` (ngoài repo): `RS_SMC_E7_N4_VanillaSMC_FK3_Colab.ipynb` (`METHOD = "Vanilla-SMC"`, `NUM_PARTICLES = 4`, `FK_LMBDA = 3.0`, mọi biến khác như Table 2; tự ngắt máy khi xong). Không sửa gì.
 4. **Runtime → Run all**. Cho phép Google Drive.
 5. ⏸ **Mục 4:** kiểm tra các dòng `Phương pháp: Vanilla-SMC`, `Số hạt mục tiêu N: 4`, `Feynman-Kac λ: 3.0`, `Tập prompt: ALL (553 prompts)`, và dòng `Thư mục kết quả` có `_N4_` và `_lmbda3.0_`. Thư mục phải **khác** run λ = 10 của Table 2 (tên có `_lmbda10.0_`); dòng `Tiến độ sẵn có` phải là `0/553`. Chụp.
 6. ⏸ **Mục 6:** chờ đến dòng `✅ Hoàn thành thực nghiệm đơn lẻ trong … phút!`. Chụp (đây cũng là số đo thời gian SMC đầu tiên, dùng cho ngân sách).
 7. Mở `Target_samples/<RUN_NAME>/final_metrics.json` trên Drive: ghi `ImageReward.mean` (cột Mean của Table 2) và `ImageReward.max` (cột Best-of-N).
-8. Lặp bước 3–7 với `FK_LMBDA = 30.0`. **Dừng ở đây** nếu cả hai run có `mean` dưới 0.744 và run λ = 30 không cao hơn rõ run λ = 10 (0.563). Nếu run λ = 30 vẫn tăng rõ so với 0.563 (xu hướng chưa dừng), chạy thêm **đúng một** run `FK_LMBDA = 100.0` rồi dừng.
+8. Lặp bước 3–7 với `RS_SMC_E7_N4_VanillaSMC_FK30_Colab.ipynb` (`FK_LMBDA = 30.0`). **Dừng ở đây** nếu cả hai run có `mean` dưới 0.744 và run λ = 30 không cao hơn rõ run λ = 10 (0.563). Nếu run λ = 30 vẫn tăng rõ so với 0.563 (xu hướng chưa dừng), chạy thêm **đúng một** run `FK_LMBDA = 100.0` rồi dừng.
 9. **Chỉ khi** một trong hai run có `mean` ≥ **0.744**: chạy thêm `METHOD = "RS-SMC"`, `NUM_PARTICLES = 4`, `FK_LMBDA` = đúng giá trị đó; các biến smoothing giữ nguyên (`SMC_SIGMA = 0.25`, `SMC_ANNEAL_SIGMA = True`, `SMC_ANNEAL_SCHEDULE = "tweedie_analytical"`, `SMC_NUM_MC_SAMPLES = 4`, `SMC_USE_CRN = False`).
 
 **🔧 Tham số**
@@ -943,9 +953,9 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 | Tình huống | Quyết định |
 |---|---|
-| E4 ✅ | E4 thành contribution mới ở Section 6. T7 = **E5** |
+| E4 ✅ | E4 thành contribution mới ở Section 6. T7: không chạy gì (E5 đã bỏ) |
 | E4 ⚠️ hoặc kết quả cuối ❌ | T7 = **E4 dự phòng** (σ nhỏ hơn, M = 16) |
-| Chạy thử E4 ❌ (0–1 task có tín hiệu) | Dừng E4; cần viết code reward "mềm" trước khi chạy lại. T7 = E5 |
+| Chạy thử E4 ❌ (0–1 task có tín hiệu) | Dừng E4; cần viết code reward "mềm" trước khi chạy lại. T7: không chạy gì |
 
 Các kết quả khác (E1, E2, E3, E6) không chặn việc của ai; hướng xử lý nằm trong bảng 📊 của từng việc.
 
@@ -997,9 +1007,8 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 **Mục đích.** Đây là phản biện nguy hiểm nhất. Làm trơn kéo các điểm reward lại gần nhau, trông giống như hạ nhiệt độ λ của softmax LiDAR, hoặc như cắt bớt các điểm reward ngoại lai. Nếu LiDAR ở λ thích hợp, hoặc LiDAR với reward bị cắt, đạt được bằng RS-LiDAR, thì đóng góp của bài chỉ còn là "chỉnh siêu tham số". Lý thuyết (Prop 2, mục 4.3) nói hai thứ này khác nhau: hạ λ không đổi thứ tự ứng viên, còn làm trơn thì có. E1 kiểm chứng điều đó bằng thực nghiệm.
 
 **Thiết kế.** Cùng pool 50 ứng viên của Table 1, chạy Phase 2 với:
-- LiDAR ở λ ∈ {10, 30, 100, 300, 1000}. Trong trọng số LiDAR, λ·r không đứng một mình mà cạnh tranh với số hạng khoảng cách ‖xₜ − √ᾱₜ·zₖ‖²/2(1−ᾱₜ), cộng trên 4×64×64 chiều latent (`fkd_pipeline_sd.py`, hàm `get_sample_guide`). Vì vậy vùng chuyển từ "gần như không dẫn hướng" sang "bão hoà" nằm ở λ cỡ hàng chục đến hàng trăm; mô phỏng với latent ngẫu nhiên cho ‖wʳ − w‖₁ ≈ 0.5 ở λ = 10, ≈ 1.9 ở λ = 300 và gần bão hoà từ λ ≈ 1000. Mục 5 đo lại trên pool thật;
-- RS-LiDAR ở λ ∈ {30, 100}, giữa vùng chuyển tiếp, để so từng cặp ở cùng λ;
-- LiDAR-Clip: reward mỗi prompt bị cắt ở phân vị 90% (5 ứng viên đứng đầu hoà nhau), λ = 5000;
+- LiDAR ở λ ∈ {100, 1000} (bản gọn 17/11 vì giới hạn GPU; λ thấp hơn gần như không dẫn hướng, trích Figure 8 của bài LiDAR thay vì chạy lại). Trong trọng số LiDAR, λ·r không đứng một mình mà cạnh tranh với số hạng khoảng cách ‖xₜ − √ᾱₜ·zₖ‖²/2(1−ᾱₜ), cộng trên 4×64×64 chiều latent (`fkd_pipeline_sd.py`, hàm `get_sample_guide`). Vì vậy vùng chuyển từ "gần như không dẫn hướng" sang "bão hoà" nằm ở λ cỡ hàng chục đến hàng trăm; mô phỏng với latent ngẫu nhiên cho ‖wʳ − w‖₁ ≈ 0.5 ở λ = 10, ≈ 1.9 ở λ = 300 và gần bão hoà từ λ ≈ 1000. Mục 5 đo lại trên pool thật;
+- LiDAR-Clip: reward mỗi prompt bị cắt ở phân vị q ∈ {0.8, 0.95} (khoảng 10 và khoảng 2–3 ứng viên đứng đầu hoà nhau), λ = 5000; hai mức kẹp hai bên để kết luận không phụ thuộc ngưỡng;
 - mốc LiDAR và RS-LiDAR λ = 5000 của Table 1 (notebook tự tìm trên Drive, không thấy thì tự chạy).
 
 **Notebook làm gì, từng mục.**
@@ -1009,8 +1018,8 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 | 1–3 | Kiểm tra GPU, nối Google Drive, tải code mới nhất từ GitHub, cài thư viện, kiểm tra môi trường | Cell kiểm tra môi trường dừng thì: Runtime → Restart session, chạy lại từ đầu |
 | 4 | Nạp cấu hình chung (bảng cấu hình chung ở trên) | Đặt `PROMPT_MODE` |
 | 5 | Tìm hai pool ứng viên của Table 1 trên Drive (dừng nếu không thấy). Nếu pool RS không cùng 50 ứng viên với pool LiDAR, chấm lại chúng bằng reward làm trơn. In bảng độ mạnh dẫn hướng ‖wʳ − w‖₁ theo λ, đo trên pool thật có tính số hạng khoảng cách (vài phút CPU) | Đọc bảng, chụp màn hình |
-| 6 | Tạo pool LiDAR-Clip: cùng ứng viên, nhưng điểm của mỗi prompt bị cắt ở phân vị 90% (chỉ ghi lại file điểm, vài giây). In danh sách 8 run sẽ chạy | Sửa `LAMBDAS_LIDAR` nếu bảng ở mục 5 cho thấy dải λ chưa đúng |
-| 7 | Sinh ảnh cuối (Phase 2) cho 8 run, lần lượt. Mỗi run ghi vào `MyDrive/RS-LiDAR/Target_samples/E1_...`; run đã xong tự bỏ qua | Chờ. ~2.4 h mỗi run với 553 prompt trên A100 |
+| 6 | Tạo 2 pool LiDAR-Clip: cùng ứng viên, nhưng điểm của mỗi prompt bị cắt ở phân vị 0.8 và 0.95 (chỉ ghi lại file điểm, vài giây). In danh sách 4 run sẽ chạy | Sửa `LAMBDAS_LIDAR` nếu bảng ở mục 5 cho thấy dải λ chưa đúng |
+| 7 | Sinh ảnh cuối (Phase 2) cho 4 run, lần lượt. Mỗi run ghi vào `MyDrive/RS-LiDAR/Target_samples/E1_...`; run đã xong tự bỏ qua | Chờ. ~2.4 h mỗi run với 553 prompt trên A100 |
 | 8 | Chấm GenEval (Mask2Former) cho mọi run, kể cả hai run Table 1 | Chờ |
 | 9 | Lập bảng: mỗi run so với LiDAR λ = 5000 trên IR, CLIP, HPS, Aesthetic, GenEval, kèm khoảng tin cậy 95% | Gửi `E1_summary.csv` |
 
@@ -1049,7 +1058,7 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 
 **Mục đích.** RS-LiDAR gọi reward K × M = 50 × 4 = 200 lần, LiDAR chỉ 50 lần. Reviewer sẽ hỏi: nếu cho LiDAR cùng 200 lần gọi reward, tức 200 ứng viên, thì LiDAR có bắt kịp không?
 
-**Thiết kế.** Sinh thêm 3 pool 50 ứng viên (seed 200, 300, 400), ghép với pool seed 100 của Table 1 thành K = 100 và K = 200 (pool nhỏ nằm trong pool lớn). Chạy Phase 2 LiDAR λ = 5000 với `top_k` = K. So với RS-LiDAR K = 50, M = 4.
+**Thiết kế.** Sinh thêm 3 pool 50 ứng viên (seed 200, 300, 400), ghép với pool seed 100 của Table 1 thành K = 200 (bản gọn 17/11 bỏ K = 100). Chạy Phase 2 LiDAR λ = 5000 với `top_k` = 200. So với RS-LiDAR K = 50, M = 4.
 
 **Notebook làm gì, từng mục.**
 
@@ -1058,8 +1067,8 @@ Cấu hình chung của E1–E5 (khớp Table 1, đã khoá trong notebook):
 | 1–3 | Kiểm tra GPU, nối Google Drive, tải code mới nhất từ GitHub, cài thư viện, kiểm tra môi trường | Cell kiểm tra môi trường dừng thì: Runtime → Restart session, chạy lại từ đầu |
 | 4 | Nạp cấu hình chung | Không đổi gì |
 | 5 | Phase 1: sinh 3 bộ 50 ứng viên mới (seed 200, 300, 400), cùng cấu hình pool Table 1, ghi vào `MyDrive/RS-LiDAR/Lookahead_samples/`. Bộ nào đã có thì bỏ qua | Chờ (phần nặng nhất, nên dùng A100) |
-| 6 | Ghép: bộ 100 = seed 100 + 200; bộ 200 = cả bốn. Xếp theo điểm IR. Lưu trên **đĩa Colab**, không phải Drive, nên đổi máy thì phải chạy lại mục 5–6 | Chờ (vài phút) |
-| 7 | Phase 2 LiDAR λ = 5000 trên bộ 100 và bộ 200 ứng viên. Tìm hai run Table 1 làm mốc (không thấy thì tự chạy) | Chờ |
+| 6 | Ghép: bộ 200 = cả bốn pool. Xếp theo điểm IR. Lưu trên **đĩa Colab**, không phải Drive, nên đổi máy thì phải chạy lại mục 5–6 | Chờ (vài phút) |
+| 7 | Phase 2 LiDAR λ = 5000 trên bộ 200 ứng viên. Tìm hai run Table 1 làm mốc (không thấy thì tự chạy) | Chờ |
 | 8 | Chấm GenEval; bảng so mọi run với RS-LiDAR 50 ứng viên, M = 4 | Gửi `E3_summary.csv` |
 
 **Vị trí trong bài.** Gộp vào bảng E1 hoặc đoạn "Smoothing costs runtime, not memory" ở 6.1. Claim nếu đạt: *"At equal reward evaluations, RS-LiDAR (K = 50, M = 4) outperforms LiDAR with K = 200, which also needs 4× more lookahead sampling."*
