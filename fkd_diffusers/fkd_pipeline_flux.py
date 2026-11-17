@@ -212,6 +212,11 @@ class FluxPipeline_LiDAR(FluxPipeline):
                 raw_rew = subset.get("rewards", None)
                 if raw_rew is not None:
                     rewards = raw_rew[:fkd_args.get("top_k", 50)]
+            elif fkd_args.get("use_rag", False):
+                # Same contract as the SD pipeline: a prompt missing from the lookahead pool (e.g. an unreadable
+                # latent.pt) must not silently become an unguided sample in a guided run.
+                raise KeyError(f"Lookahead dataset missing prompt_idx {prompt_idx} ({len(rag_dataset.data)} prompts "
+                               "loaded). Ensure Phase 1 completed for this prompt before running Phase 2.")
 
         # Guidance strength.
         s_flow = fkd_args.get("s_flow", 12.5)

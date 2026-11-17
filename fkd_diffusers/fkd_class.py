@@ -45,6 +45,10 @@ class FKD:
         smc_anneal_sigma, smc_anneal_schedule, smc_sigma_min: sigma(t) schedule (see
             `get_effective_smc_sigma`); "sqrt_noise" and "tweedie_snr" are aliases of "tweedie_analytical".
         smc_terminal_resample: also resample at the last step.
+        fk_stable_weights: compute the "diff" weights as exp(lmbda * (d - max d)) instead of exp(lmbda * d)
+            clamped at 1e10. Both give the same normalized weights when no weight exceeds 1e10; when one does
+            (lmbda * d > ln 1e10 ~ 23, e.g. d > 0.77 at lmbda = 30), the clamp makes all such particles equally
+            likely, while the stable form keeps exp(lmbda * d). Default False keeps the original behavior.
         scheduler: diffusion scheduler (its `alphas_cumprod` / `timesteps` drive "tweedie_analytical").
         **kwargs: `FK_lmbda`, `FK_resample_t_start`, `FK_resample_t_end` override the corresponding
             arguments; `use_rs_smc`, `smc_M`, `sigma`, `num_mc_samples`, `terminal_resample` are aliases.
@@ -75,6 +79,7 @@ class FKD:
         smc_anneal_schedule: str = "tweedie_analytical",
         smc_sigma_min: Optional[float] = None,
         smc_terminal_resample: bool = True,
+        fk_stable_weights: bool = False,
         scheduler: Optional[Any] = None,
         **kwargs,
     ) -> None:
@@ -119,6 +124,9 @@ class FKD:
         self.smc_anneal_schedule = smc_anneal_schedule
         self.smc_sigma_min = smc_sigma_min
         self.smc_terminal_resample = kwargs.get("terminal_resample", smc_terminal_resample)
+        self.fk_stable_weights = bool(fk_stable_weights)
+        if self.fk_stable_weights and self.potential_type != PotentialType.DIFF:
+            raise ValueError("fk_stable_weights is implemented for the 'diff' potential only")
 
         self.device = device
         self.population_rs = torch.ones(self.num_particles, device=self.device) * reward_min_value
@@ -292,7 +300,12 @@ class FKD:
             w = torch.exp(self.lmbda * rs_candidates)
         elif self.potential_type == PotentialType.DIFF:
             diffs = rs_candidates - self.population_rs
-            w = torch.exp(self.lmbda * diffs)
+            if self.fk_stable_weights:
+                # exp(lmbda * (d - max d)): same normalized weights as exp(lmbda * d), without overflow or clamp
+                log_w = torch.nan_to_num(self.lmbda * diffs, nan=float("-inf"))
+                w = torch.exp(log_w - log_w.max())
+            else:
+                w = torch.exp(self.lmbda * diffs)
         elif self.potential_type == PotentialType.RT:
             w = torch.exp(self.lmbda * rs_candidates)
         else:
@@ -306,7 +319,12 @@ class FKD:
             ):
                 w = torch.exp(self.lmbda * rs_candidates) / self.product_of_potentials
 
-        w = torch.clamp(w, 0, 1e10)
+        if not self.fk_stable_weights:
+            n_clamped = int((w > 1e10).sum())
+            if n_clamped:
+                # the clamp below makes these particles equally likely: the potential is no longer exp(lmbda * d)
+                print(f"⚠️ FK weight clamp at step {sampling_idx}: {n_clamped}/{w.numel()} particles above 1e10")
+            w = torch.clamp(w, 0, 1e10)
         w[torch.isnan(w)] = 0.0
 
         if self.adaptive_resampling or sampling_idx == self.time_steps - 1:

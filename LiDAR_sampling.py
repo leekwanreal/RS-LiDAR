@@ -136,7 +136,7 @@ def main(args):
         if not any(arg.startswith("--num_particles") for arg in sys.argv):
             args.num_particles = 1
             print("FLUX protocol: using num_particles = 1 for Phase 2.")
-        if "--s_flow" not in sys.argv:
+        if not any(arg == "--s_flow" or arg.startswith("--s_flow=") for arg in sys.argv):
             args.s_flow = 40.0  # LiDAR FLUX setting (shared by LiDAR and RS-LiDAR)
 
     # FLUX guidance window in flow time t (1 = noise, 0 = data).
@@ -242,6 +242,7 @@ def main(args):
             smc_anneal_schedule=args.smc_anneal_schedule,
             smc_sigma_min=args.smc_sigma_min,
             smc_terminal_resample=args.smc_terminal_resample,
+            fk_stable_weights=args.fk_stable_weights,
             FK_lmbda=args.FK_lmbda,
             FK_resample_t_start=args.FK_resample_t_start,
             FK_resample_t_end=args.FK_resample_t_end,
@@ -377,6 +378,9 @@ def get_args():
                         help="Also resample at the terminal step (set False to keep particle diversity)")
     parser.add_argument("--terminal_resample", type=str2bool, nargs="?", const=True, default=None,
                         help="Alias for --smc_terminal_resample")
+    parser.add_argument("--fk_stable_weights", type=str2bool, nargs="?", const=True, default=False,
+                        help="SMC 'diff' weights as exp(FK_lmbda * (d - max d)) instead of exp(FK_lmbda * d) clamped "
+                             "at 1e10 (same weights unless the clamp is hit, e.g. d > 0.77 at FK_lmbda = 30)")
 
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--lmbda", type=float, default=5000)
