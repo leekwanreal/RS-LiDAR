@@ -561,6 +561,8 @@ Hai quy tắc chọn đã định trước khi chạy, nên không bị coi là 
 
 Mỗi phần có cùng mục 1–4 như bản gốc (GPU, Drive và repo, cài đặt, kiểm tra môi trường có `setup_runtime()`, cấu hình Table 1). Các phần nối với nhau qua file `E4_config.json` trên Drive: Phần 1 ghi lựa chọn (task, danh sách prompt, σ), Phần 2 và 3 chỉ đọc, nên không bao giờ lệch nhau. Mỗi phần tự kiểm tra phần trước đã xong; nếu chưa, in rõ phải chạy phần nào rồi tự ngắt máy.
 
+**Cấu hình đã chốt (18/11/2026):** Phần 1 giữ 4 task, σ = 0.25. Phần 2 và 3 chỉ chạy **two_object** (99 prompt) với **M = 4** (biến `RUN_TAGS`, `M_RUN` ở mục 5 của cả hai notebook, phải giống nhau). Lý do: chạy thử cho thấy colors gần trần (42/50 ứng viên đúng), color_attr gần như không có ứng viên đúng; two_object có 12/50 ứng viên đúng (trung vị) và bộ chấm ngưỡng 0.3 ổn định với nhiễu hơn counting (ngưỡng 0.9). M = 4 mô phỏng từ dữ liệu hiệu chỉnh giữ nguyên nhóm ứng viên dẫn đầu của M = 8 (Jaccard 0.93–0.98 trên two_object và counting). Phần 2 khoảng 6.5 giờ, Phần 3 khoảng 1–1.5 giờ trên L4.
+
 | Phần | Làm gì | GPU | Thời gian | Đọc kết quả trên Drive |
 |---|---|---|---|---|
 | 1 | Chạy thử 10 prompt mỗi task, chọn task, chọn σ | L4 (T4 được) | ~1–1.5 h | `E4_pilot.csv`, `E4_pilot_grid.png`, `E4_sigma_calibration_*.csv`, `E4_config.json` |
