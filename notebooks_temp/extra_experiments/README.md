@@ -543,7 +543,7 @@ Sau đó mục 8 in bảng so sánh và cell cuối tự ngắt máy.
 |---|---|
 | 👤 Người chạy | **Quân** |
 | 🧪 Thí nghiệm | E4 (xem [tham khảo](#ref-e4)) |
-| 📓 Notebook | [`E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb`](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) |
+| 📓 Notebook | **Khuyên dùng: 3 phần nối tiếp** (mỗi phần Run all, tự ngắt máy): [`E4_part1_pilot_select_Colab.ipynb`](E4_discrete_reward/E4_part1_pilot_select_Colab.ipynb) → [`E4_part2_score_Colab.ipynb`](E4_discrete_reward/E4_part2_score_Colab.ipynb) → [`E4_part3_phase2_tables_Colab.ipynb`](E4_discrete_reward/E4_part3_phase2_tables_Colab.ipynb). Bản một notebook vẫn giữ: [`E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb`](E4_discrete_reward/E4_DiscreteGenEvalReward_SD15_DDPM100_Colab.ipynb) |
 | 🖥️ GPU | **L4** |
 | ⏱️ Thời gian | ~8–12 h L4 (~4–6 h A100) |
 | 🔗 Cần xong trước | — |
@@ -557,7 +557,21 @@ Sau đó mục 8 in bảng so sánh và cell cuối tự ngắt máy.
 
 Hai quy tắc chọn đã định trước khi chạy, nên không bị coi là chọn sau khi xem kết quả.
 
-**▶ Các bước**
+**▶ Chạy theo 3 phần (khuyên dùng)**
+
+Mỗi phần có cùng mục 1–4 như bản gốc (GPU, Drive và repo, cài đặt, kiểm tra môi trường có `setup_runtime()`, cấu hình Table 1). Các phần nối với nhau qua file `E4_config.json` trên Drive: Phần 1 ghi lựa chọn (task, danh sách prompt, σ), Phần 2 và 3 chỉ đọc, nên không bao giờ lệch nhau. Mỗi phần tự kiểm tra phần trước đã xong; nếu chưa, in rõ phải chạy phần nào rồi tự ngắt máy.
+
+| Phần | Làm gì | GPU | Thời gian | Đọc kết quả trên Drive |
+|---|---|---|---|---|
+| 1 | Chạy thử 10 prompt mỗi task, chọn task, chọn σ | L4 (T4 được) | ~1–1.5 h | `E4_pilot.csv`, `E4_pilot_grid.png`, `E4_sigma_calibration_*.csv`, `E4_config.json` |
+| 2 | Chấm 0/1 và R̄σ cho mọi prompt đã chọn | L4 (hoặc T4 nếu đo thấy rẻ hơn) | vài giờ | `scores_sig<σ>_M8/`, `E4_scores_summary_*.csv` |
+| 3 | Pool dẫn xuất, 2 run Phase 2, bảng | L4 | vài giờ | `E4_summary_*.csv`, `E4_geneval_by_task_*.csv` |
+
+- Phần 1 kết luận dưới 2 task qua chạy thử: config ghi `status: stop`, Phần 2 và 3 sẽ báo dừng ngay. Gửi nhóm `E4_pilot.csv` và lưới ảnh.
+- Bị ngắt giữa chừng ở phần nào thì Run all lại đúng phần đó; điểm và ảnh đã lưu trên Drive được dùng lại.
+- Chạy lại Phần 1 sau khi đã có config thì dùng lại σ đã chọn, không hiệu chỉnh lại.
+
+**▶ Các bước (bản một notebook)**
 
 1. Lấy notebook, upload lên Colab, chọn **L4 GPU**.
 2. **Runtime → Run all**, không sửa gì.
