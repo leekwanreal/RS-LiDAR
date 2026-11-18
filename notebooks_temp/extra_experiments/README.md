@@ -139,7 +139,8 @@ Mọi notebook đọc và ghi vào `MyDrive/RS-LiDAR/`. E1–E4 **dùng lại po
 
 ### 2.4 Môi trường
 
-- Cell cài đặt của E1–E4 chép nguyên từ notebook Table 1 (đã chạy được trên Colab). Thông báo xung đột phụ thuộc của pip về TensorFlow/google-cloud là bình thường.
+- Cell cài đặt của E1–E4 chép nguyên từ notebook Table 1 (đã chạy được trên Colab). Thông báo xung đột phụ thuộc của pip (TensorFlow, google-cloud, protobuf, sentence-transformers, gradio, open-clip/timm) là bình thường, không cần xử lý.
+- **Colab bản mới (từ 11/2026: Python 3.13):** bản `peft` và `wandb` cài sẵn không tương thích với `transformers==4.38.2` và `protobuf` cũ mà notebook cài, nên `import ImageReward` lỗi (`cannot import name 'EncoderDecoderCache'` hoặc `cannot import name 'Imports' from 'wandb.proto…'`). Mọi notebook (E1–E6, E7, Table 2 SMC) đã gọi `setup_runtime()` của repo trước khi import ImageReward để xử lý hai lỗi này; script chạy thực nghiệm cũng gọi hàm này. **Không** tự `pip install` thêm hay đổi bản `peft`/`wandb`/`protobuf`. Nếu vẫn gặp lỗi: kiểm tra đang dùng bản notebook mới nhất trong repo, rồi **Runtime → Restart session** và **Run all**.
 - Ngay sau cài đặt có **cell kiểm tra môi trường**: phải in ✅ cho `hpsv2`, `clip`, `open_clip`, `ImageReward`, `timm`, `google.protobuf`. Có ❌ thì notebook dừng ở đó: **Runtime → Restart session** rồi **Run all** lại.
 - Code chấm điểm **báo lỗi** khi HPS/CLIP không chạy được (không âm thầm ghi 0). Cell GenEval dừng nếu `open_clip` không nạp được.
 - FLUX (E6): xem lưu ý ở [T2](#t2).
