@@ -6,6 +6,8 @@
 - `parse_prompt_indices` / `load_geneval_metadata` select GenEval prompts while keeping each
   prompt's original index (`original_idx`), so output folders always match GenEval metadata.
 - `str2bool` is the argparse converter used by boolean flags such as `--use_crn True`.
+- `read_smoothing_config` reads the smoothing metadata of a lookahead `results.json` written by any
+  version of `lookahead_sampling.py` and returns it in one normalized form.
 """
 import argparse
 import importlib.machinery
@@ -137,3 +139,36 @@ def load_geneval_metadata(prompt_path, max_prompts=None, prompt_indices=None):
     elif max_prompts is not None:
         data = data[:max_prompts]
     return data
+
+
+def read_smoothing_config(results):
+    """Smoothing configuration of a lookahead `results.json` dict, normalized across code versions.
+
+    `lookahead_sampling.py` has written three forms of `results["smoothing"]`:
+    - before 2026-10-27: `sigma`, `num_mc_samples`, `domain`, `use_crn` only. Perturbations were i.i.d.
+      (or shared across candidates when `use_crn` is true) and there was no entropic-risk term;
+    - from 2026-10-27: also `noise_mode` and `beta_risk` (defaults `independent_antithetic` and 0.5 until
+      2026-11-09, then `independent_iid` and 0.0).
+
+    Returns {} when the file has no usable smoothing metadata, otherwise a dict with `sigma` (float),
+    `num_mc_samples` (int), `domain`, `noise_mode`, `beta_risk` (float) and `legacy_metadata` (True for
+    the pre-2026-10-27 form, where `noise_mode` and `beta_risk` are inferred).
+    """
+    sm = (results or {}).get("smoothing") or {}
+    if "sigma" not in sm or "num_mc_samples" not in sm:
+        return {}
+    legacy = "noise_mode" not in sm
+    if legacy:
+        noise_mode = "coupled_crn" if sm.get("use_crn") else "independent_iid"
+        beta_risk = 0.0
+    else:
+        noise_mode = sm["noise_mode"]
+        beta_risk = float(sm.get("beta_risk", 0.0))
+    return {
+        "sigma": float(sm["sigma"]),
+        "num_mc_samples": int(sm["num_mc_samples"]),
+        "domain": sm.get("domain", "image"),
+        "noise_mode": noise_mode,
+        "beta_risk": beta_risk,
+        "legacy_metadata": legacy,
+    }
