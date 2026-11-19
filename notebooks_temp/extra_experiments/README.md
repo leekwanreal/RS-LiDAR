@@ -51,7 +51,7 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 
 | Thí nghiệm | Việc | Run Phase 2 mới | Gồm những gì |
 |---|---|---|---|
-| E2 | T1 | 0 | Chỉ phân tích hai pool Table 1 và chấm ứng viên thắng |
+| E2 | T1 | 0 hoặc 2 | Phân tích hai pool Table 1 và chấm ứng viên thắng; mục 8 tự chạy hai run mốc LiDAR / RS-LiDAR λ = 5000 nếu Drive không còn run Table 1 (lưu tên `E1_…`, E1 dùng lại) |
 | E1 | T3 | 4 | LiDAR λ = 100, λ = 1000; LiDAR-Clip q = 0.8, q = 0.95 |
 | E3 | T5 | 1 | LiDAR K = 200 (trước đó sinh 3 pool ứng viên mới: seed 200, 300, 400) |
 | E4 | T6 | 2 | LiDAR (reward 0/1) và RS-LiDAR (R̄σ); tự dừng trước Phase 2 nếu dưới 2 task qua chạy thử |
@@ -229,14 +229,15 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 
 **🌟 Kết quả lý tưởng**
 
-- **Mục 6:** `Số prompt phân tích: 553`; **flip rate ≥ 15%**; Spearman **dương rõ nhưng nhỏ hơn 1** (gần 0 nghĩa là R̄σ gần như ngẫu nhiên → báo nhóm); dòng `thắng theo R` **lớn hơn** `nền hoán vị` với Wilcoxon **p < 0.05** (ứng viên thắng theo R mong manh hơn mức may rủi, đúng câu chuyện "spike"); dòng `thắng theo R̄σ` **nhỏ hơn** dòng `thắng theo R`.
+- **Mục 6:** `Số prompt phân tích: 553`; **flip rate ≥ 15%**; Spearman **dương rõ nhưng nhỏ hơn 1** (gần 0 nghĩa là R̄σ gần như ngẫu nhiên → báo nhóm); ở prompt flip, ứng viên thắng theo R tụt sâu khi xếp theo R̄σ trong khi ứng viên thắng theo R̄σ vẫn ở gần đầu theo R. Các dòng phân vị gap, `nền hoán vị` và Wilcoxon chỉ để mô tả, **không** dùng làm bằng chứng spike: `thắng theo R̄σ` < `thắng theo R` luôn đúng theo đại số ở prompt flip, và nền hoán vị chỉ đo gap có gắn với R̄σ hay không.
 - **Mục 7:** HPS và GenEval có Δ dương, **cả hai cận của khoảng tin cậy đều dương**; cột `R̄σ thắng` trên 50%. Dòng `IR (tối ưu, thiên về R)` có Δ **âm** là **bình thường** (ứng viên thắng theo R luôn có IR cao nhất theo định nghĩa), không dùng để kết luận. CLIP và Aesthetic không giảm có ý nghĩa.
 - **Mục 8:** ΔIR và ΔGenEval ở nhóm **flip** lớn hơn rõ so với nhóm **không flip**; nhóm không flip có Δ gần 0. Cột `n` của nhóm flip khớp với flip rate × 553.
 
 **⚠️ Lưu ý**
 
 - Nếu mục 5 báo ⚠️, notebook tự chấm lại pool (thư mục `..._rescore`), chỉ tốn một lần vì E1 (T3) dùng lại. **Báo nhóm ngay**, vì khi đó câu "LiDAR and RS-LiDAR share the same candidates" ở appendix phải xem lại.
-- Mục 8 cần hai run Table 1 trên Drive. Nếu in `⚠️ Chưa có đủ hai run Table 1` thì bỏ qua; chạy lại riêng mục 8 sau khi xong T3.
+- Mục 8 dùng hai run Table 1 nếu còn trên Drive và khớp cấu hình. Nếu không, nó tự chạy hai run mốc λ = 5000 (khoảng 2 giờ A100, lâu hơn trên L4) với tên `E1_LiDAR_…` và `E1_RSLiDAR_…`; T3 (E1) chạy sau sẽ thấy "✅ Phase 2 đã đủ" và dùng lại. Hai run này dùng seed toàn cục: nếu bị ngắt giữa chừng, xoá thư mục dở dang trong `Target_samples/` rồi chạy lại mục 8.
+- Chỉ thiếu mục 8 (đã có `E2_per_prompt.csv` và `E2_flipped_winner_quality.csv`): chạy các cell từ đầu đến hết mục 6, ở mục 7 chỉ chạy cell `# GenEval chính thức`, rồi chạy mục 8.
 - Chạy T1 **trước** T3 để hai notebook không chấm lại pool RS cùng lúc.
 
 **📊 Đọc kết quả và làm gì tiếp**
