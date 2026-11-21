@@ -53,7 +53,7 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 |---|---|---|---|
 | E2 | T1 | 0 hoặc 2 | Phân tích hai pool Table 1 và chấm ứng viên thắng; mục 8 tự chạy hai run mốc LiDAR / RS-LiDAR λ = 5000 nếu Drive không còn run Table 1 (lưu tên `E1_…`, E1 dùng lại) |
 | E1 | T3 | 4 | LiDAR λ = 100, λ = 1000; LiDAR-Clip q = 0.8, q = 0.95 |
-| E3 | T5 | 1 | LiDAR K = 200 (trước đó sinh 3 pool ứng viên mới: seed 200, 300, 400) |
+| E3 | T5 | 1 (mốc dùng lại run `E1_…`) | Giai đoạn 1: LiDAR K = 200 (trước đó sinh 3 pool ứng viên mới: seed 200, 300, 400). Giai đoạn 2 (E3b, 2–3 run): LiDAR K = 65, RS-LiDAR K = 200, tuỳ chọn LiDAR K = 100; dùng lại các pool của giai đoạn 1 |
 | E4 | T6 | 2 | LiDAR (reward 0/1) và RS-LiDAR (R̄σ); tự dừng trước Phase 2 nếu dưới 2 task qua chạy thử |
 | E4 dự phòng | T7 | 0 hoặc 2 | Chỉ khi [cổng E4](#5-cổng-quyết-định) yêu cầu |
 | E5 | — | 0 | **Đã bỏ** (17/11) |
@@ -66,7 +66,7 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 |---|---|---|---|---|
 | [**T1**](#t1) | E2 · flip rate | L4 | ~1–2.5 h | — |
 | [**T3**](#t3) | E1 · nhiệt độ λ và cắt reward | L4 (hoặc A100) | ~15–25 h L4 (~6–10 h A100) | nên sau T1 |
-| [**T5**](#t5) | E3 · cùng số lần gọi reward | L4 | ~9–14 h | — |
+| [**T5**](#t5) | E3 · cùng số lần gọi reward, cùng thời gian | L4 | Giai đoạn 1 ~9–14 h (dùng lại mốc `E1_…`); giai đoạn 2 ~9–11 h | — |
 | [**T7**](#t7) | E4 dự phòng, **chỉ khi** cổng E4 yêu cầu | L4 | 0 hoặc ~8–12 h | T6 + [cổng E4](#5-cổng-quyết-định) |
 
 ### 👤 Quân: T2 → T4 → T6 → T8 → T9
@@ -321,19 +321,41 @@ Dòng của run mốc có cột Δ để trống (`NaN`), là bình thường.
 ---
 
 <a id="t5"></a>
-### T5 · Hiếu · E3: so sánh cùng số lần gọi reward
+### T5 · Hiếu · E3: so sánh cùng số lần gọi reward và cùng thời gian
 
 | | |
 |---|---|
 | 👤 Người chạy | **Hiếu** |
 | 🧪 Thí nghiệm | E3 (xem [tham khảo](#ref-e3)) |
-| 📓 Notebook | [`E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb`](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) (tên file giữ chữ K100 cho link không đổi; notebook chỉ chạy K = 200) |
+| 📓 Notebook | Giai đoạn 1: [`E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb`](E3_compute_matched/E3_ComputeMatched_K100_K200_SD15_DDPM100_Colab.ipynb) (tên file giữ chữ K100 cho link không đổi; notebook chỉ chạy K = 200). Giai đoạn 2: [`E3_compute_matched/E3b_EqualTime_K65_RSK200_SD15_DDPM100_Colab.ipynb`](E3_compute_matched/E3b_EqualTime_K65_RSK200_SD15_DDPM100_Colab.ipynb). Bước cứu (chỉ khi S4/S5): [`E3_compute_matched/E3c_SDXL_EqualTime_K118_vs_RSK100_Colab.ipynb`](E3_compute_matched/E3c_SDXL_EqualTime_K118_vs_RSK100_Colab.ipynb) |
 | 🖥️ GPU | **L4** |
-| ⏱️ Thời gian | ~9–14 h L4 (~4–5 h A100). Khoảng 18–27 unit |
+| ⏱️ Thời gian | Giai đoạn 1: ~9–14 h L4 (~4–5 h A100), khoảng 18–27 unit. Notebook dùng lại hai run mốc `E1_…` của E2/E1; chỉ khi không có mới phải chạy thêm ~5–8 h L4 (xem bước 3). Giai đoạn 2: ~9–11 h L4 (~4–5 h A100) |
 | 🔗 Cần xong trước | — |
-| 📤 Nộp lại | Ảnh chụp mục 5, 7, 8; `E3_summary.csv` |
+| 📤 Nộp lại | Giai đoạn 1: ảnh chụp mục 5, 7, 8; `E3_summary.csv`. Giai đoạn 2: `E3b_verdict.md`, `E3b_equal_time.csv`, `E3b_added_value.csv`, `E3b_quality_vs_time.csv`. Bước cứu: `E3c_verdict.md`, `E3c_equal_time.csv` |
 
-**🎯 Mục tiêu.** RS-LiDAR chấm mỗi ứng viên 4 lần (50 ứng viên × 4 = **200 lần gọi reward** mỗi prompt), còn LiDAR chỉ chấm 50 lần. Câu reviewer sẽ hỏi: *cho LiDAR cũng 200 lần gọi reward, tức 200 ứng viên, thì LiDAR có bắt kịp không?* Notebook tự làm 3 việc:
+**🎯 Mục tiêu.** RS-LiDAR chấm mỗi ứng viên 4 lần (50 ứng viên × 4 = **200 lần gọi reward** mỗi prompt), còn LiDAR chỉ chấm 50 lần. Reviewer sẽ hỏi hai câu:
+
+1. *Cho LiDAR cũng 200 lần gọi reward, tức 200 ứng viên, thì LiDAR có bắt kịp không?* Giai đoạn 1 trả lời câu này.
+2. *Nếu dùng phần thời gian thêm của RS-LiDAR để sinh thêm ứng viên cho LiDAR thì sao?* Đây là phép so sánh công bằng hơn, vì cùng số lần gọi reward **không** có nghĩa là cùng thời gian. Giai đoạn 2 trả lời câu này.
+
+**⏱️ Chi phí của từng cấu hình** (SD 1.5, DDPM-100, 4 ảnh mỗi prompt, A100; tính từ bảng thời gian ở Appendix E.2):
+- Sinh một ứng viên mất 5.69 / 50 = **0.114 s**; một lần gọi reward mất 0.65 / 50 = **0.013 s**; sinh 4 ảnh cuối mất **7.07 s** và gần như không đổi theo K.
+- LiDAR(K) ≈ 0.127·K + 7.07 s. RS-LiDAR(K, M = 4) ≈ (0.114 + 4 × 0.013)·K + 7.07 = 0.166·K + 7.07 s.
+
+| Cấu hình | Ứng viên phải sinh | Lần gọi reward | Thời gian (s) | So với RS-LiDAR K = 50 |
+|---|---|---|---|---|
+| LiDAR K = 50 (Table 1) | 50 | 50 | 13.41 | 0.87× |
+| **RS-LiDAR K = 50, M = 4** (Table 1) | 50 | 200 | **15.36** | 1× |
+| LiDAR K = 65 (giai đoạn 2) | 65 | 65 | ≈ 15.31 | **cùng thời gian** |
+| LiDAR K = 100 (giai đoạn 2, tuỳ chọn) | 100 | 100 | ≈ 19.75 | 1.29× |
+| LiDAR K = 200 (giai đoạn 1) | 200 | 200 | ≈ 32.43 | 2.11× |
+| RS-LiDAR K = 200, M = 4 (giai đoạn 2) | 200 | 800 | ≈ 40.23 | 2.62× |
+
+Thời gian trong bài sẽ tính theo công thức này, không lấy thời gian đo trên Colab, vì các run dùng lại pool có sẵn nên thời gian chạy thật không phản ánh chi phí.
+
+**🔮 Dự đoán để đọc kết quả** (chỉ dùng nội bộ, không đưa vào bài). Ở seed 100, RS-LiDAR hơn LiDAR K = 50 khoảng +0.036 IR và +0.012 GenEval. Nếu chất lượng của LiDAR tăng theo log K, thì K = 65 chỉ lấy được khoảng 19% phần lợi ích từ K = 50 lên K = 200 (log 1.3 / log 4). Khi đó RS-LiDAR vẫn thắng ở cùng thời gian, trừ khi LiDAR K = 200 hơn LiDAR K = 50 quá **0.19 IR** hoặc **0.065 GenEval**. Giai đoạn 2 chạy K = 65 thật để không phải dựa vào giả định này.
+
+**Giai đoạn 1** (notebook hiện có). Notebook tự làm 3 việc:
 
 | Việc | Ở mục | Nội dung | Thời gian (L4, ước lượng) |
 |---|---|---|---|
@@ -350,7 +372,7 @@ Sau đó mục 8 in bảng so sánh và cell cuối tự ngắt máy.
 3. Khi xong, xem lại và chụp:
    - ⏸ **Mục 3–4:** ✅ hết; dòng `E3_compute_matched: 553 prompt | …`.
    - ⏸ **Mục 5:** ba dòng `▶ Pool seed 200`, `▶ Pool seed 300`, `▶ Pool seed 400`; dòng cuối là danh sách 4 thư mục (seed 100, 200, 300, 400).
-   - ⏸ **Mục 7:** dòng đầu có `LiDAR K=50` và `RS-LiDAR K=50 M=4` trỏ tới thư mục (không phải `None`), sau đó là `▶ LiDAR K=200`.
+   - ⏸ **Mục 7:** dòng đầu in `LiDAR K=50` và `RS-LiDAR K=50 M=4`, sau đó là `▶ LiDAR K=200`. Notebook tìm run mốc theo thứ tự: run Table 1 mang tên gốc, rồi đến run λ = 5000 mà E2/E1 đã chạy (`E1_LiDAR_SD15_n50_DDPM100_lmbda5000_seed100` và `E1_RSLiDAR_SD15_n50_sig1.0_M4_DDPM100_lmbda5000_seed100`). Run nào cũng phải qua bước kiểm tra cấu hình (dòng `✅ Run mốc khớp cấu hình: …`). Bình thường mục 7 sẽ dùng hai run `E1_…`. Chỉ khi cả hai loại đều không có hoặc không khớp, mục 7 mới in `None` và notebook tự chạy lại hai mốc (`E3_LiDAR_…_K50`, `E3_RSLiDAR_…_K50_M4`). Trường hợp đó vẫn hợp lệ nhưng tốn thêm ~5–8 h L4.
    - ⏸ **Mục 8:** bảng kết quả.
 4. Gửi nhóm ảnh chụp và `MyDrive/RS-LiDAR/extra_experiments/E3_compute_matched/E3_summary.csv`.
 
@@ -364,21 +386,63 @@ Sau đó mục 8 in bảng so sánh và cell cuối tự ngắt máy.
 
 **🌟 Kết quả lý tưởng**
 
-- **Kiểm tra mốc:** `LiDAR K=50` có IR ≈ 0.350, GenEval ≈ 0.481; `RS-LiDAR K=50 M=4` có IR ≈ 0.383, GenEval ≈ 0.499.
+- **Kiểm tra mốc:** nếu mốc là hai run `E1_…` (hoặc notebook tự chạy lại với tên `E3_…`), kết quả phải bằng hoặc gần các run seed 100 của E1/E2: `LiDAR K=50` có IR ≈ 0.338, GenEval ≈ 0.476; `RS-LiDAR K=50 M=4` có IR ≈ 0.374, GenEval ≈ 0.488. Nếu notebook tìm được run Table 1 mang tên gốc, các giá trị là ≈ 0.350 / 0.481 và ≈ 0.383 / 0.499. Lệch xa cả hai bộ số thì báo nhóm trước khi đọc tiếp.
 - **Kiểm tra hợp lý:** IR của `LiDAR K=200` **cao hơn** `LiDAR K=50` (nhiều ứng viên hơn thì dẫn hướng tốt hơn). Nếu thấp hơn, có thể gộp sai: báo nhóm.
-- **Mong muốn:** dòng `LiDAR K=200` có `ΔIR` và `ΔGenEval` **âm hoặc bằng 0**.
+- **Ghi lại thêm một con số:** IR(`LiDAR K=200`) − IR(`LiDAR K=50`), tức lợi ích của việc tăng K. Con số này dùng cho phần dự đoán ở trên.
+- **Kết quả tốt nhất:** dòng `LiDAR K=200` có `ΔIR` và `ΔGenEval` **âm hoặc bằng 0**. Nếu dương thì **chưa phải thất bại**, vì LiDAR K = 200 tốn gấp 2.1 lần thời gian; khi đó chạy giai đoạn 2.
 
 **⚠️ Lưu ý**
 
 - Tổng thời gian dài nên có thể cần 2 phiên Colab. Phần sinh ứng viên bị ngắt thì Run all lại là chạy tiếp. Run `LiDAR K=200` dùng seed toàn cục: bị ngắt giữa run thì notebook in đường dẫn và dừng; xoá thư mục đó trên Drive rồi Run all lại. Chỉ bắt đầu phiên chạy Phase 2 khi còn ít nhất ~4–5 h.
 
-**📊 Đọc kết quả và làm gì tiếp**
+**📊 Đọc kết quả giai đoạn 1 và làm gì tiếp**
 
-| Kết quả của dòng `LiDAR K=200` | Nghĩa là | Làm gì tiếp |
+| Kết quả của dòng `LiDAR K=200` (Δ = LiDAR K=200 − RS-LiDAR K=50) | Nghĩa là | Làm gì tiếp |
 |---|---|---|
-| ✅ ΔIR ≤ 0 và ΔGenEval ≤ 0 | RS-LiDAR thắng ngay cả khi cùng số lần gọi reward | Claim: "At equal reward evaluations, RS-LiDAR outperforms LiDAR with K = 200" |
-| ⚠️ Ngang nhau (CI chứa 0) | Chất lượng như nhau, nhưng RS-LiDAR chỉ cần sinh 50 ứng viên thay vì 200 | Claim về chi phí: cùng chất lượng, sinh ứng viên rẻ hơn 4 lần, không tăng VRAM |
-| ❌ Dương, có `*` | Một phần lợi ích đến từ việc gọi reward nhiều hơn | Ghi trung thực; chỉ giữ claim về chi phí |
+| ✅ ΔIR ≤ 0 và ΔGenEval ≤ 0 | RS-LiDAR thắng cả khi LiDAR được cùng số lần gọi reward và tốn gấp 2.1 lần thời gian | Claim mạnh nhất. Giai đoạn 2 chỉ chạy RS-LiDAR K = 200 (tuỳ chọn, để có thông điệp "cộng thêm"); bỏ LiDAR K = 65 vì RS-LiDAR đã thắng một LiDAR tốn hơn |
+| ⚠️ Ngang nhau (CI chứa 0) | Cùng chất lượng với chi phí bằng 47% | Claim về chi phí. Chạy giai đoạn 2 đầy đủ để có phép so cùng thời gian |
+| ❌ Dương, có `*` | Đúng dự đoán: nhiều ứng viên hơn thì tốt hơn, nhưng tốn gấp 2.1 lần thời gian | **Chưa kết luận.** Chạy giai đoạn 2 đầy đủ; quyết định theo bảng cuối |
+
+**Giai đoạn 2 (E3b): cùng thời gian và cộng thêm.** Notebook: [`E3_compute_matched/E3b_EqualTime_K65_RSK200_SD15_DDPM100_Colab.ipynb`](E3_compute_matched/E3b_EqualTime_K65_RSK200_SD15_DDPM100_Colab.ipynb).
+
+▶ **Các bước**
+1. Chỉ chạy sau khi giai đoạn 1 xong (cần 4 pool, hai run mốc và run `E3_LiDAR_…_K200` trên Drive). Mục 6 sẽ dừng và báo nếu thiếu.
+2. Upload notebook, chọn **L4 GPU**, rồi **Runtime → Run all**. Mặc định chạy run 1 và 2. Muốn thêm run 3 thì đặt `RUN_K100 = True` ở mục 5. Nếu giai đoạn 1 ra ✅ thì đặt `RUN_K65 = False`.
+3. Bị ngắt giữa một Phase 2 thì xoá thư mục `E3b_…` đang dở trên Drive (notebook in đường dẫn) rồi Run all lại. Phần chấm R̄σ tự chạy tiếp.
+4. Mục 9 in hai bảng, bảng chất lượng theo thời gian và kết luận S1–S5, đồng thời lưu `E3b_verdict.md`. Gửi nhóm 4 file trong ô 📤.
+
+Notebook dùng lại 4 pool của giai đoạn 1, không sinh ứng viên mới. Các run, theo thứ tự:
+
+| Thứ tự | Run | Cách tạo | Thời gian (L4) | So với |
+|---|---|---|---|---|
+| 1 | **LiDAR K = 65** | Pool seed 100 (50 ứng viên) + 15 ứng viên **chọn ngẫu nhiên** (rng cố định) từ pool seed 200, rồi Phase 2 như Table 1 | ~3 h (chỉ Phase 2) | RS-LiDAR K = 50 (cùng thời gian) |
+| 2 | **RS-LiDAR K = 200, M = 4** | Chấm R̄σ (σ = 1, M = 4, i.i.d.) cho 150 ứng viên của pool seed 200, 300, 400 (pool seed 100 đã có điểm R̄σ), ghép theo R̄σ, rồi Phase 2 | ~6–7 h (chấm ~3–4 h + Phase 2 ~3 h) | LiDAR K = 200 (cùng 200 ứng viên, ghép cặp) |
+| 3 (tuỳ chọn) | LiDAR K = 100 | Pool seed 100 + 200, chỉ Phase 2 | ~3 h | Thêm một điểm cho hình chất lượng theo thời gian |
+
+Lưu ý khi tạo LiDAR K = 65: **không** dùng `top_k = 65` trên pool 200. Làm vậy sẽ lấy 65 ứng viên tốt nhất trong 200, tức đã trả chi phí sinh 200 ứng viên. Phải lấy 15 ứng viên ngẫu nhiên để đúng là "sinh 65 ứng viên".
+
+**📊 Bảng quyết định cuối** (sau giai đoạn 2; xét cả IR và GenEval, CI 95% bootstrap theo prompt):
+- **Thắng** = RS-LiDAR − LiDAR > 0 ở cả IR và GenEval, và CI của IR không chứa 0.
+- **Hoà** = có CI chứa 0, nhưng không chỉ số nào thua có `*`.
+- **Thua** = LiDAR hơn, có `*`, ở IR hoặc GenEval.
+
+| # | Cùng thời gian: RS K=50 vs LiDAR K=65 | Cộng thêm: RS K=200 vs LiDAR K=200 | Kết luận | Làm gì |
+|---|---|---|---|---|
+| S1 | Thắng | Thắng | Smoothing đáng giá hơn việc sinh thêm ứng viên, và vẫn có lợi khi đã có nhiều ứng viên | **Nộp ICML.** Một câu ở §6.1 + hình chất lượng theo thời gian ở appendix; rebuttal D1 dùng cả hai |
+| S2 | Thắng | Hoà hoặc Thua | Ở cùng thời gian RS-LiDAR thắng, nhưng lợi ích giảm khi K lớn | **Nộp ICML**, claim giới hạn ở "at equal wall-clock time"; ghi trung thực vào Limitations rằng lợi ích nhỏ dần khi K lớn |
+| S3 | Hoà | Thắng | Cùng thời gian thì ngang; nhưng trên cùng một pool, smoothing luôn cộng thêm | Nộp được, nhưng đổi cách viết: smoothing **bổ sung** cho việc tăng K chứ không thay thế. Cả nhóm bàn trước khi viết |
+| S4 | Hoà | Hoà hoặc Thua | Lợi ích của RS-LiDAR tương đương việc chi thêm thời gian cho ứng viên | Chưa nộp ICML với câu chuyện này → **bước cứu** bên dưới |
+| S5 | Thua | bất kỳ | Chi thời gian để sinh thêm ứng viên tốt hơn smoothing | Thất bại theo cổng của checklist → **bước cứu** bên dưới |
+
+**Bước cứu** (chỉ cho S4/S5; chỉ thử **một** lần, có giới hạn chi phí):
+1. **SDXL cùng thời gian** (F4 trong checklist). Notebook: [`E3_compute_matched/E3c_SDXL_EqualTime_K118_vs_RSK100_Colab.ipynb`](E3_compute_matched/E3c_SDXL_EqualTime_K118_vs_RSK100_Colab.ipynb). Chọn **A100**, Run all, không sửa gì.
+   - Notebook sinh 18 ứng viên mỗi prompt (seed 200), ghép với pool K = 100 của Table 1, chạy LiDAR K = 118, rồi so với RS-LiDAR K = 100 và in kết luận vào `E3c_verdict.md`.
+   - Notebook tự tìm hai run mốc SDXL seed 100 của Table 1 và kiểm tra cấu hình. Nếu không có hoặc không khớp, nó tự chạy lại hai mốc (thêm ~15 h A100); dòng `▶ Không có run mốc …` báo trường hợp này. Trên SDXL, phần thêm của RS-LiDAR chỉ là +7.5% thời gian (78.67 → 84.58 s), so với +14.5% trên SD 1.5. Vì vậy LiDAR cùng thời gian chỉ được K ≈ 118 so với K = 100 của RS-LiDAR. Chi phí khoảng 8 h A100 (sinh thêm 18 ứng viên mỗi prompt + Phase 2 SDXL). Phải báo cả kết quả SD 1.5, không được giấu.
+2. Nếu SDXL cũng không thắng: theo bảng quyết định của checklist, **không nộp ICML với câu chuyện hiện tại**. Chuyển sang TMLR hoặc workshop, viết thành bài phân tích về reward spike; E1, E2 và E4 vẫn đứng được độc lập với chi phí.
+
+Không nên thử thêm các phương án sau, vì số đã có cho thấy chúng không cứu được:
+- **Giảm M xuống 2 để rẻ hơn:** Appendix D.8 cho IR 0.349, gần như bằng LiDAR (0.346).
+- **Giảm δ để sinh ứng viên rẻ hơn:** RS-LiDAR ở δ = 2 thua xa LiDAR ở δ = 5.
 
 ---
 
@@ -782,7 +846,7 @@ Phần này giải thích **vì sao** chạy từng thí nghiệm và nó vào �
 |---|---|---|---|
 | [E1](#ref-e1) | Nhiệt độ λ và cắt reward | "Smoothing có chỉ là hạ λ hoặc cắt reward ngoại lai không?" | Section 6, bảng/hình mới |
 | [E2](#ref-e2) | Flip rate | "Smoothing có thật sự đổi ứng viên được chọn không, và đổi có đúng không?" | Section 6.3 |
-| [E3](#ref-e3) | Cùng ngân sách reward | "RS gọi reward nhiều hơn 4 lần, thắng là đương nhiên?" | Section 6.1, đoạn chi phí |
+| [E3](#ref-e3) | Cùng ngân sách reward và cùng thời gian | "RS gọi reward nhiều hơn 4 lần, thắng là đương nhiên? Sao không dùng phần thời gian đó để sinh thêm ứng viên?" | Section 6.1, đoạn chi phí + appendix |
 | [E4](#ref-e4) | Reward rời rạc | "Phương pháp làm được gì mà cách khác không làm được?" | Section 6, mục riêng + contribution mới |
 | [E5](#ref-e5) | Nhiều reward (IR + HPS) | "Chỉ một reward thì hẹp" | **Đã bỏ** (17/11) |
 | [E6](#ref-e6) | Flow matching (FLUX.1-dev) | "Có dùng được cho rectified flow không?" | Hàng FLUX hoặc bảng nhỏ ở Section 6 |
@@ -828,7 +892,9 @@ Cấu hình chung của E1–E4 (khớp Table 1, đã khoá trong notebook):
 
 **Thiết kế.** Sinh thêm 3 pool 50 ứng viên (seed 200, 300, 400), ghép với pool seed 100 của Table 1 thành 200 ứng viên mỗi prompt; Phase 2 LiDAR λ = 5000 với `top_k` = 200, cùng seed 100 với Table 1 (nhiễu khởi đầu của ảnh cuối giống hệt ở mọi run). So với RS-LiDAR K = 50, M = 4. Dùng lại pool Table 1 nên chỉ sinh mới 150 ứng viên mỗi prompt; sinh thẳng 200 ứng viên với một seed sẽ tốn hơn và không lấy lại được 50 ứng viên cũ (nhiễu được lấy nối tiếp qua các prompt). E3 chỉ cân bằng **số lần gọi reward**; LiDAR K = 200 vẫn tốn hơn ở phần sinh ứng viên.
 
-**Vị trí trong bài.** Đoạn chi phí ở Section 6.1 hoặc gộp vào bảng E1. Claim nếu đạt: *"At equal reward evaluations, RS-LiDAR (K = 50, M = 4) outperforms LiDAR with K = 200, which also needs 4× more lookahead sampling."*
+**Vì sao cần thêm giai đoạn 2 (21/11).** Cùng số lần gọi reward chưa phải cùng chi phí. Thời gian chủ yếu nằm ở việc sinh ứng viên (0.114 s mỗi ứng viên), còn mỗi lần gọi reward chỉ tốn 0.013 s. Vì vậy LiDAR K = 200 tốn khoảng 32.4 s cho 4 ảnh, **gấp 2.1 lần** RS-LiDAR K = 50 (15.36 s). LiDAR K = 200 thắng là điều dễ xảy ra và chưa bác bỏ được gì. Phép thử công bằng là so **cùng thời gian**: LiDAR K = 65 (≈ 15.3 s) với RS-LiDAR K = 50. Thêm RS-LiDAR K = 200 để xem smoothing có cộng thêm vào lợi ích của việc tăng K hay không. Chi tiết và cách quyết định ở [thẻ T5](#t5).
+
+**Vị trí trong bài.** Một câu ở đoạn chi phí của Section 6.1, kèm bảng hoặc hình chất lượng theo thời gian ở appendix. Claim tuỳ kết quả, xem bảng quyết định cuối của [thẻ T5](#t5). Ví dụ khi thắng cả hai: *"At equal wall-clock time, RS-LiDAR (K = 50, M = 4) outperforms LiDAR with K = 65, and smoothing still improves LiDAR when both use K = 200 candidates."*
 
 <a id="ref-e4"></a>
 ### E4 — Reward rời rạc: dẫn hướng bằng bộ chấm GenEval
