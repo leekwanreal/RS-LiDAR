@@ -59,6 +59,7 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 | E5 | — | 0 | **Đã bỏ** (17/11) |
 | E6 | T2, T4, T8, T9 | 2 hoặc 3 | FLUX LiDAR (kèm sinh pool), RS-FlowLiDAR σ = 0.25; Vanilla chỉ khi Drive chưa có; σ = 1.0 **đã bỏ**; T9 chỉ chấm điểm |
 | E7 | T10 | 2 (+ tối đa 1) | SMC N = 4, λ_FK = 3 và λ_FK = 30; thêm 1 run nếu đạt điều kiện ở thẻ T10 |
+| F1 | [T11](#t11) | 2 | LiDAR-Aug và LiDAR-LatentSmooth (σ_z = 0.3), cùng M = 4 lần gọi reward mỗi ứng viên, trên pool seed 100 của Table 1 |
 
 ### 👤 Hiếu: T1 → T3 → T5 → T7
 
@@ -847,6 +848,49 @@ Hai notebook bật thêm `--fk_stable_weights`. Code SMC mặc định kẹp tr�
 | ✅ SMC mean < 0.744 ở cả λ_FK = 3 và 30 | Đổi nhiệt độ không thay được smoothing trong SMC | Một câu ở Section 6.2 và một dòng ở appendix |
 | ⚠️ SMC mean ≥ 0.744 ở một λ | Ở λ đó SMC đuổi kịp mốc RS-SMC λ = 10 | Chạy RS-SMC ở λ đó (bước 6). Nếu RS-SMC vẫn hơn SMC ở cùng λ: vẫn là ✅, báo cả ba số |
 | ❌ RS-SMC không hơn SMC ở cùng λ tốt nhất | Lợi ích ở N = 4 có thể chỉ do λ_FK = 10 chưa tối ưu cho SMC | Xem lại cách trình bày RS-SMC trong bài |
+
+---
+
+## 4D. Việc mới sau E3 (T11)
+
+<a id="t11"></a>
+### T11 · (nhóm phân công) · F1: làm reward ổn định bằng cách khác, cùng số lần gọi reward
+
+| | |
+|---|---|
+| 👤 Người chạy | Quân hoặc Hiếu, nhóm phân công. Chạy sau E3b, hoặc song song nếu có hai tài khoản |
+| 🧪 Thí nghiệm | F1 (checklist F1) |
+| 📓 Notebook | 2 notebook đã cấu hình sẵn, xem bảng 📋 dưới |
+| 🖥️ GPU | **L4 + High-RAM** |
+| ⏱️ Thời gian | F1a ~5–7 h, F1b ~6–9 h trên L4 |
+| 🔗 Cần xong trước | Không cần gì mới: chỉ dùng pool seed 100 của Table 1 và hai run mốc `E1_…` đã có trên Drive |
+| 📤 Nộp lại | `F1_metrics.md` (bảng gọn, không CI) và `F1_summary.csv` (có CI) |
+
+**🎯 Mục tiêu.** Reviewer sẽ hỏi: *"Sao phải làm trơn bằng nhiễu Gaussian trên pixel? Lấy trung bình reward theo cách khác có được không?"* F1 so RS-LiDAR với hai cách khác. Cả hai cách đều gọi ImageReward **4 lần cho mỗi ứng viên**, như RS-LiDAR (M = 4), và đều chấm lại **đúng 50 ứng viên** của pool seed 100. Phase 2 cũng chạy với seed 100, nên so được ghép cặp với LiDAR và RS-LiDAR seed 100 đã có. F1 không sinh ứng viên mới và không sửa code trong repo.
+
+**📋 Kế hoạch chạy.** Mỗi notebook một phiên Colab: upload, chọn GPU, **Runtime → Run all**, không sửa gì.
+
+| Bước | Notebook (bấm để mở) | Chạy gì | Thời gian (L4) | Gửi lại |
+|---|---|---|---|---|
+| 1 | [`F1a_Aug_SD15_DDPM100_Colab.ipynb`](F1_augmentation/F1a_Aug_SD15_DDPM100_Colab.ipynb) | **LiDAR-Aug:** trung bình IR qua 4 biến đổi nhẹ, cố định (lật ngang; crop 90% rồi resize lại; JPEG q = 75; Gaussian blur r = 1) | ~5–7 h | `F1_metrics.md` |
+| 2 | [`F1b_LatentSmooth_sz0.3_SD15_DDPM100_Colab.ipynb`](F1_augmentation/F1b_LatentSmooth_sz0.3_SD15_DDPM100_Colab.ipynb) | **LiDAR-LatentSmooth:** cộng nhiễu N(0, 0.3²) vào latent, decode, chấm IR, lấy trung bình 4 lần | ~6–9 h | `F1_metrics.md`, `F1_summary.csv` |
+
+- Hai notebook độc lập, chạy theo thứ tự nào cũng được. Notebook chạy sau tự dùng lại run của notebook trước, nên `F1_metrics.md` cuối cùng có đủ 4 dòng: RS-LiDAR, LiDAR, LiDAR-Aug và LiDAR-LatentSmooth.
+- Phần chấm lại (mục 7) chạy tiếp được sau khi bị ngắt. Phase 2 (mục 8) phải chạy **một mạch**. Nếu bị ngắt giữa Phase 2: xoá thư mục `F1_…` đang dở trên Drive rồi Run all lại.
+
+**⏸ Kiểm tra trong 10–15 phút đầu:**
+- **Mục 5:** `VARIANT = "aug"` (F1a) hoặc `VARIANT = "latent"` với `SIGMA_Z = 0.3` (F1b).
+- **Mục 6:** `✅ Pool: Lookahead_SD15_…_seed100`, rồi 2 dòng `✅ Run mốc khớp cấu hình:` cho `E1_RSLiDAR_…` và `E1_LiDAR_…`.
+- **Mục 7:** thanh tiến trình `Chấm Aug` hoặc `Chấm Latent_sz0.3` chạy tới 553 prompt.
+- **Mục 9:** bảng có `RS-LiDAR K=50 M=4` (IR ≈ 0.374) và `LiDAR K=50` (IR ≈ 0.338). Lệch xa thì báo nhóm.
+
+**📊 Đọc kết quả** (`F1_metrics.md` ghi sẵn kết luận cho từng biến thể, dùng cùng tiêu chí một seed như E3b):
+
+| Kết luận "RS-LiDAR so với …" | Nghĩa là | Làm gì |
+|---|---|---|
+| ✅ Thắng ở cả hai biến thể | Lợi ích đến từ làm trơn Gaussian trên pixel, không phải từ việc lấy trung bình reward nói chung | Một câu ở §6.4 (Ablations) + bảng nhỏ ở appendix; rebuttal trả lời "why Gaussian pixel" |
+| ⚠️ Hoà ở một biến thể | Biến thể đó làm được gần như RS-LiDAR | Ghi trung thực ở appendix. Lập luận còn lại của bài: Prop 2 chỉ áp dụng cho nhiễu Gaussian, và biến thể đó không có bảo đảm lý thuyết |
+| ❌ Thua (biến thể kia hơn có `*`) | Cách làm ổn định khác tốt hơn | Cả nhóm bàn: báo trung thực, cân nhắc đổi cách trình bày |
 
 ---
 
