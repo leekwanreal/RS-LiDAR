@@ -902,9 +902,9 @@ Hai notebook bật thêm `--fk_stable_weights`. Code SMC mặc định kẹp tr�
 |---|---|
 | 👤 Người chạy | Quân |
 | 🧪 Thí nghiệm | F3 (checklist F3); chốt trước trong `experiment_outputs/results/F3_drawbench/F3_preregistration.json` (24/11/2026) |
-| 📓 Notebook | [`F3a_DrawBench_Generate_SD15_DDPM100_Colab.ipynb`](F3_drawbench/F3a_DrawBench_Generate_SD15_DDPM100_Colab.ipynb) (sinh ảnh, một seed mỗi lần), [`F3b_DrawBench_Score_PickScore_Colab.ipynb`](F3_drawbench/F3b_DrawBench_Score_PickScore_Colab.ipynb) (PickScore và bảng tổng hợp), [`F3c_DrawBench_Score_VQAScore_XXL_A100_Colab.ipynb`](F3_drawbench/F3c_DrawBench_Score_VQAScore_XXL_A100_Colab.ipynb) (VQAScore-XXL, chấm sau) |
-| 🖥️ GPU | F3a, F3b: **L4 + High-RAM**. F3c: **A100 + High-RAM** (mô hình 11B, nạp cần ~45 GB RAM) |
-| ⏱️ Thời gian | F3a khoảng 2.5–3 h mỗi seed; F3b khoảng 10 phút; F3c khoảng 15–30 phút mỗi seed, cộng 10–15 phút tải mô hình lần đầu |
+| 📓 Notebook | [`F3a_DrawBench_Generate_SD15_DDPM100_Colab.ipynb`](F3_drawbench/F3a_DrawBench_Generate_SD15_DDPM100_Colab.ipynb) (sinh ảnh, một seed mỗi lần), [`F3c_DrawBench_Score_VQAScore_XXL_A100_Colab.ipynb`](F3_drawbench/F3c_DrawBench_Score_VQAScore_XXL_A100_Colab.ipynb) (VQAScore-XXL và bảng tổng hợp, chấm sau) |
+| 🖥️ GPU | F3a: **L4 + High-RAM**. F3c: **A100 + High-RAM** (mô hình 11B, nạp cần ~45 GB RAM) |
+| ⏱️ Thời gian | F3a khoảng 2.5–3 h mỗi seed; F3c khoảng 15–30 phút mỗi seed, cộng 10–15 phút tải mô hình mỗi lần mở runtime |
 | 🔗 Cần xong trước | Không cần gì: pool ứng viên mới cho từng seed. Nếu bản clone chưa có `prompt_files/drawbench.jsonl`, F3a tự tạo từ bảng DrawBench chính thức và kiểm checksum |
 | 📤 Nộp lại | `F3_metrics.md` và `F3_summary.csv` (bản cuối do F3c ghi), cùng `F3_gen_seed<SEED>.json` (F3a) |
 
@@ -914,7 +914,6 @@ Hai notebook bật thêm `--fk_stable_weights`. Code SMC mặc định kẹp tr�
 - IR: reward dẫn hướng, chỉ báo, không dùng làm bằng chứng.
 - Held-out:
   - CLIPScore và HPSv2.1, như Table 1;
-  - PickScore, theo đúng README chính thức;
   - VQAScore với CLIP-FlanT5-XXL (mặc định của `t2v-metrics`), dùng thay GenEval vì DrawBench không có metadata đối tượng.
 - Báo cáo:
   - mean ± std qua các seed;
@@ -927,9 +926,9 @@ Hai notebook bật thêm `--fk_stable_weights`. Code SMC mặc định kẹp tr�
   - bảng theo 11 nhóm chỉ để mô tả.
 
 **📋 Chạy.**
-0. **Chạy thử cả chuỗi trước (nên làm):** F3a với `SMOKE_TEST = True` (2 prompt, khoảng 10 phút), rồi F3b và F3c với `INCLUDE_SMOKE = True`. Cách này kiểm môi trường `t2v-metrics` trên A100 trước khi chạy thật.
+0. **Chạy thử cả chuỗi trước (nên làm):** F3a với `SMOKE_TEST = True` (2 prompt, khoảng 10 phút), rồi F3c với `INCLUDE_SMOKE = True`. Cách này kiểm môi trường `t2v-metrics` trên A100 trước khi chạy thật.
 1. F3a với `SEED = 100`, `SMOKE_TEST = False`.
-2. Chạy F3b (PickScore). Bảng tổng hợp lúc này chưa có VQAScore và ghi "Chưa chấm". Muốn chấm các run thử thì đặt `INCLUDE_SMOKE = True`.
+2. Cuối F3a in bảng nhanh IR/CLIP/HPS của seed đó.
 3. Lặp lại với `SEED = 50`, rồi `SEED = 150`.
 4. Lúc nào có A100 thì chạy F3c trên runtime **A100 + High-RAM** mới. F3c chấm VQAScore-XXL cho mọi seed đã xong và ghi bảng đầy đủ. Không đổi sang bản XL hay lượng tử hoá.
 
