@@ -60,9 +60,10 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 | E6 | T2, T4, T8, T9 | 2 hoặc 3 | FLUX LiDAR (kèm sinh pool), RS-FlowLiDAR σ = 0.25; Vanilla chỉ khi Drive chưa có; σ = 1.0 **đã bỏ**; T9 chỉ chấm điểm |
 | E7 | T10 | 2 (+ tối đa 1) | SMC N = 4, λ_FK = 3 và λ_FK = 30; thêm 1 run nếu đạt điều kiện ở thẻ T10 |
 | F1 | [T11](#t11) | 3 | LiDAR-Aug và LiDAR-LatentSmooth (σ_z = 0.6, kiểm thêm 0.3), cùng M = 4 lần gọi reward mỗi ứng viên, trên pool seed 100 của Table 1 |
+| F8 | [T13](#t13) | 2 | Đối chứng thứ hạng: LiDAR dẫn theo ứng viên hạng 2 theo R (F8a) và theo một ứng viên ngẫu nhiên trong top-5 theo R (F8b), trên pool seed 100 của Table 1, không gọi reward lại |
 | F3 | [T12](#t12) | 2 mỗi seed | DrawBench (200 prompt), LiDAR và RS-LiDAR với cấu hình SD 1.5 DDPM-100 của Table 1 (σ = 1, M = 4 cố định), seed 100 rồi 50, 150 |
 
-### 👤 Hiếu: T1 → T3 → T5 → T7
+### 👤 Hiếu: T1 → T3 → T5 → T7 → T13
 
 | Việc | Thí nghiệm | GPU | Thời gian | Cần xong trước |
 |---|---|---|---|---|
@@ -70,6 +71,7 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 | [**T3**](#t3) | E1 · nhiệt độ λ và cắt reward | L4 (hoặc A100) | ~15–25 h L4 (~6–10 h A100) | nên sau T1 |
 | [**T5**](#t5) | E3 · cùng số lần gọi reward, cùng thời gian | L4 | Giai đoạn 1 ✅ xong 22/11. Giai đoạn 2: E3b-1 ~4–5 h → E3b-2 ~7–9 h → (tuỳ chọn) E3b-3 ~4–5 h; E3c là **phụ** (bước cứu, chỉ khi S4/S5 và nhóm quyết; ~10–12 h A100) | — |
 | [**T7**](#t7) | E4 dự phòng, **chỉ khi** cổng E4 yêu cầu | L4 | 0 hoặc ~8–12 h | T6 + [cổng E4](#5-cổng-quyết-định) |
+| [**T13**](#t13) | F8 · đối chứng thứ hạng (hạng 2, ngẫu nhiên top-5), **mới 24/11, làm ngay** | L4 (hoặc A100) | 2 notebook chạy song song, mỗi cái ~4–5.5 h L4 (~1.5 h A100) | — (dùng pool và run mốc seed 100 đã có) |
 
 ### 👤 Quân: T2 → T4 → T6 → T8 → T9
 
@@ -936,6 +938,50 @@ Hai notebook bật thêm `--fk_stable_weights`. Code SMC mặc định kẹp tr�
 - **Mục 4** in `F3 DrawBench | seed 100 | 200 prompt` và không báo lỗi checksum.
 - **Mục 5** chạy Phase 1, sau đó in `✅ Hai pool dùng chung 50 ứng viên`.
 - Phase 2 (mục 6) phải chạy một mạch. Nếu bị ngắt, xoá thư mục `F3DB_…` đang dở trên Drive rồi Run all lại.
+
+<a id="t13"></a>
+### T13 · Hiếu · F8: đối chứng thứ hạng (dẫn theo ứng viên hạng 2, hoặc ngẫu nhiên trong top-5)
+
+| | |
+|---|---|
+| 👤 Người chạy | Hiếu. **Hai notebook chạy song song được** (mỗi notebook một tab Colab) |
+| 🧪 Thí nghiệm | F8 (checklist "Việc còn lại" 24/11, mục (2)) |
+| 📓 Notebook | 2 notebook đã cấu hình sẵn, xem bảng 📋 dưới. Bản sao ở thư mục gốc `RS-LiDAR/` |
+| 🖥️ GPU | **L4 + High-RAM** (A100 cũng được, nhanh hơn khoảng 3 lần) |
+| ⏱️ Thời gian | Mỗi notebook ~4–5.5 h trên L4 (Phase 2 ~3–5 h + GenEval ~30 phút); ~1.5 h trên A100 |
+| 🔗 Cần xong trước | Không cần gì mới: chỉ dùng pool seed 100 của Table 1 và hai run mốc `E1_…` đã có trên Drive (như F1) |
+| 📤 Nộp lại | `F8_metrics_Rank2.md` (F8a) và `F8_metrics_RandTop5.md` (F8b), trong `MyDrive/RS-LiDAR/extra_experiments/F8_rank_control/`. Kèm `.csv` nếu được |
+
+**🎯 Mục tiêu.** Reviewer (mock review 24/11, R1 và R3) hỏi: *RS-LiDAR hơn LiDAR vì chọn **đúng** ứng viên khác, hay chỉ vì **tránh** ứng viên hạng 1 theo R?* Hai run đối chứng giữ nguyên mọi thứ của LiDAR, chỉ đổi ứng viên đứng đầu:
+- **F8a · LiDAR-Rank2:** ở mọi prompt, ứng viên hạng 2 theo R đổi điểm với hạng 1, nên LiDAR dẫn theo hạng 2;
+- **F8b · LiDAR-RandTop5:** ở mỗi prompt, chọn ngẫu nhiên đều một ứng viên hạng 1–5 theo R (rng cố định theo prompt), đổi điểm với hạng 1.
+
+Chỉ **hoán đổi điểm của hai ứng viên**: cùng 50 latent, cùng tập điểm R (độ nhọn của softmax λR giữ nguyên), λ = 5000, K = 50, DDPM-100, seed 100. Không gọi reward lại, không sinh ứng viên mới, không sửa code trong repo. So ghép cặp với run mốc LiDAR (IR ≈ 0.338) và RS-LiDAR (IR ≈ 0.374) seed 100.
+
+**📋 Kế hoạch chạy.** Mỗi notebook một phiên Colab: upload, chọn GPU, **Runtime → Run all**, không sửa gì.
+
+| Bước | Notebook (bấm để mở) | Chạy gì | Thời gian (L4) | Gửi lại |
+|---|---|---|---|---|
+| 1 | [`F8a_Rank2_SD15_DDPM100_Colab.ipynb`](F8_rank_control/F8a_Rank2_SD15_DDPM100_Colab.ipynb) | **LiDAR-Rank2:** dẫn theo ứng viên hạng 2 theo R ở mọi prompt | ~4–5.5 h | `F8_metrics_Rank2.md` |
+| 2 | [`F8b_RandTop5_SD15_DDPM100_Colab.ipynb`](F8_rank_control/F8b_RandTop5_SD15_DDPM100_Colab.ipynb) | **LiDAR-RandTop5:** dẫn theo một ứng viên ngẫu nhiên trong top-5 theo R | ~4–5.5 h | `F8_metrics_RandTop5.md` |
+
+- Hai notebook ghi file, run Phase 2 và cache GenEval **riêng** (đuôi `Rank2`, `RandTop5`), không ghi đè nhau.
+- Phase 2 (mục 8) phải chạy **một mạch**. Nếu bị ngắt giữa Phase 2: xoá thư mục `F8_…` đang dở trong `MyDrive/RS-LiDAR/Target_samples/` rồi Run all lại. Pool dẫn xuất nằm trên đĩa Colab và được tạo lại trong vài giây.
+
+**⏸ Kiểm tra trong 10–15 phút đầu:**
+- **Mục 5:** `VARIANT = "rank2"` (F8a) hoặc `VARIANT = "top5"` (F8b).
+- **Mục 6:** `✅ Pool: Lookahead_SD15_…_seed100`, rồi 2 dòng `✅ Run mốc khớp cấu hình:` cho `E1_RSLiDAR_…` và `E1_LiDAR_…`.
+- **Mục 7:** in `✅ Hàm hoán đổi sẵn sàng`.
+- **Mục 8:** in `✅ Pool dẫn xuất đúng. Hạng (theo R) của ứng viên được đưa lên đầu: {2: 553}` (F8a) hoặc khoảng 110 prompt cho mỗi hạng 1–5 (F8b), rồi Phase 2 chạy.
+- **Mục 9:** bảng có `RS-LiDAR K=50 M=4` (IR ≈ 0.374) và `LiDAR K=50` (IR ≈ 0.338). Lệch xa thì báo nhóm.
+
+**📊 Đọc kết quả** (mỗi `F8_metrics_<…>.md` ghi sẵn kết luận "RS-LiDAR so với …" theo tiêu chí một seed như E3b):
+
+| Kết quả | Nghĩa là | Làm gì |
+|---|---|---|
+| ✅ Hai run đối chứng không hơn LiDAR, RS-LiDAR thắng cả hai | Chỉ tránh ứng viên hạng 1 thì không đủ; lợi ích đến từ việc R̄σ chọn đúng ứng viên | Một câu ở §6.3 (cạnh đoạn clipping / M = 1) + một dòng ở D.13; rebuttal B4 |
+| ⚠️ Đối chứng hơn LiDAR nhưng RS-LiDAR vẫn thắng | Tránh hạng 1 có giúp một phần; R̄σ chọn tốt hơn chọn mù | Báo trung thực ở appendix, diễn đạt phần "chọn đúng" theo đúng mức chênh |
+| ❌ Đối chứng hoà hoặc hơn RS-LiDAR | Lợi ích chủ yếu do tránh ứng viên hạng 1 | Cả nhóm bàn: báo trung thực, viết lại lập luận cơ chế ở §6.3 |
 
 ---
 
