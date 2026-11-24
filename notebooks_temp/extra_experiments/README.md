@@ -60,6 +60,7 @@ Thời gian là **ước lượng**, chưa đo trên Colab. Cơ sở: bảng lat
 | E6 | T2, T4, T8, T9 | 2 hoặc 3 | FLUX LiDAR (kèm sinh pool), RS-FlowLiDAR σ = 0.25; Vanilla chỉ khi Drive chưa có; σ = 1.0 **đã bỏ**; T9 chỉ chấm điểm |
 | E7 | T10 | 2 (+ tối đa 1) | SMC N = 4, λ_FK = 3 và λ_FK = 30; thêm 1 run nếu đạt điều kiện ở thẻ T10 |
 | F1 | [T11](#t11) | 3 | LiDAR-Aug và LiDAR-LatentSmooth (σ_z = 0.6, kiểm thêm 0.3), cùng M = 4 lần gọi reward mỗi ứng viên, trên pool seed 100 của Table 1 |
+| F3 | [T12](#t12) | 2 mỗi seed | DrawBench (200 prompt), LiDAR và RS-LiDAR với cấu hình SD 1.5 DDPM-100 của Table 1 (σ = 1, M = 4 cố định), seed 100 rồi 50, 150 |
 
 ### 👤 Hiếu: T1 → T3 → T5 → T7
 
@@ -893,6 +894,49 @@ Hai notebook bật thêm `--fk_stable_weights`. Code SMC mặc định kẹp tr�
 | ✅ Thắng ở cả hai biến thể | Lợi ích đến từ làm trơn Gaussian trên pixel, không phải từ việc lấy trung bình reward nói chung | Một câu ở §6.4 (Ablations) + bảng nhỏ ở appendix; rebuttal trả lời "why Gaussian pixel" |
 | ⚠️ Hoà ở một biến thể | Biến thể đó làm được gần như RS-LiDAR | Ghi trung thực ở appendix. Lập luận còn lại của bài: Prop 2 chỉ áp dụng cho nhiễu Gaussian, và biến thể đó không có bảo đảm lý thuyết |
 | ❌ Thua (biến thể kia hơn có `*`) | Cách làm ổn định khác tốt hơn | Cả nhóm bàn: báo trung thực, cân nhắc đổi cách trình bày |
+
+<a id="t12"></a>
+### T12 · Quân · F3: bộ prompt thứ hai (DrawBench), σ cố định từ trước
+
+| | |
+|---|---|
+| 👤 Người chạy | Quân |
+| 🧪 Thí nghiệm | F3 (checklist F3); chốt trước trong `experiment_outputs/results/F3_drawbench/F3_preregistration.json` (24/11/2026) |
+| 📓 Notebook | [`F3a_DrawBench_Generate_SD15_DDPM100_Colab.ipynb`](F3_drawbench/F3a_DrawBench_Generate_SD15_DDPM100_Colab.ipynb) (sinh ảnh, một seed mỗi lần), [`F3b_DrawBench_Score_PickScore_Colab.ipynb`](F3_drawbench/F3b_DrawBench_Score_PickScore_Colab.ipynb) (PickScore và bảng tổng hợp), [`F3c_DrawBench_Score_VQAScore_XXL_A100_Colab.ipynb`](F3_drawbench/F3c_DrawBench_Score_VQAScore_XXL_A100_Colab.ipynb) (VQAScore-XXL, chấm sau) |
+| 🖥️ GPU | F3a, F3b: **L4 + High-RAM**. F3c: **A100 + High-RAM** (mô hình 11B, nạp cần ~45 GB RAM) |
+| ⏱️ Thời gian | F3a khoảng 2.5–3 h mỗi seed; F3b khoảng 10 phút; F3c khoảng 15–30 phút mỗi seed, cộng 10–15 phút tải mô hình lần đầu |
+| 🔗 Cần xong trước | Không cần gì: pool ứng viên mới cho từng seed. Nếu bản clone chưa có `prompt_files/drawbench.jsonl`, F3a tự tạo từ bảng DrawBench chính thức và kiểm checksum |
+| 📤 Nộp lại | `F3_metrics.md` và `F3_summary.csv` (bản cuối do F3c ghi), cùng `F3_gen_seed<SEED>.json` (F3a) |
+
+**🎯 Mục tiêu.** Cả ba reviewer mô phỏng (24/11) xếp yêu cầu này lên đầu: σ được chọn trên GenEval, vậy cấu hình đó có còn giúp trên một bộ prompt khác không. F3 chạy đúng dòng SD 1.5 DDPM-100 của Table 1 trên DrawBench, không chỉnh tham số nào.
+
+**Chỉ số (đã chốt trước).**
+- IR: reward dẫn hướng, chỉ báo, không dùng làm bằng chứng.
+- Held-out:
+  - CLIPScore và HPSv2.1, như Table 1;
+  - PickScore, theo đúng README chính thức;
+  - VQAScore với CLIP-FlanT5-XXL (mặc định của `t2v-metrics`), dùng thay GenEval vì DrawBench không có metadata đối tượng.
+- Báo cáo:
+  - mean ± std qua các seed;
+  - Δ ghép cặp theo từng seed;
+  - % prompt mà RS-LiDAR thắng.
+- Không có CI. Báo đủ mọi chỉ số, dù kết quả theo chiều nào.
+- Chốt trước:
+  - chỉ số chính là VQAScore;
+  - quy tắc diễn đạt: "cao hơn" hoặc "thấp hơn" chỉ khi đúng ở mọi seed, còn lại là "ngang nhau";
+  - bảng theo 11 nhóm chỉ để mô tả.
+
+**📋 Chạy.**
+0. **Chạy thử cả chuỗi trước (nên làm):** F3a với `SMOKE_TEST = True` (2 prompt, khoảng 10 phút), rồi F3b và F3c với `INCLUDE_SMOKE = True`. Cách này kiểm môi trường `t2v-metrics` trên A100 trước khi chạy thật.
+1. F3a với `SEED = 100`, `SMOKE_TEST = False`.
+2. Chạy F3b (PickScore). Bảng tổng hợp lúc này chưa có VQAScore và ghi "Chưa chấm". Muốn chấm các run thử thì đặt `INCLUDE_SMOKE = True`.
+3. Lặp lại với `SEED = 50`, rồi `SEED = 150`.
+4. Lúc nào có A100 thì chạy F3c trên runtime **A100 + High-RAM** mới. F3c chấm VQAScore-XXL cho mọi seed đã xong và ghi bảng đầy đủ. Không đổi sang bản XL hay lượng tử hoá.
+
+**⏸ Kiểm tra trong 10–15 phút đầu.**
+- **Mục 4** in `F3 DrawBench | seed 100 | 200 prompt` và không báo lỗi checksum.
+- **Mục 5** chạy Phase 1, sau đó in `✅ Hai pool dùng chung 50 ứng viên`.
+- Phase 2 (mục 6) phải chạy một mạch. Nếu bị ngắt, xoá thư mục `F3DB_…` đang dở trên Drive rồi Run all lại.
 
 ---
 
