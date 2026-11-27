@@ -983,6 +983,50 @@ Chỉ **hoán đổi điểm của hai ứng viên**: cùng 50 latent, cùng t�
 | ⚠️ Đối chứng hơn LiDAR nhưng RS-LiDAR vẫn thắng | Tránh hạng 1 có giúp một phần; R̄σ chọn tốt hơn chọn mù | Báo trung thực ở appendix, diễn đạt phần "chọn đúng" theo đúng mức chênh |
 | ❌ Đối chứng hoà hoặc hơn RS-LiDAR | Lợi ích chủ yếu do tránh ứng viên hạng 1 | Cả nhóm bàn: báo trung thực, viết lại lập luận cơ chế ở §6.3 |
 
+## 4E. Việc mới sau mock review 27/11 (T14–T16)
+
+Ba notebook trong [`G_mechanism/`](G_mechanism/), bản sao ở thư mục gốc `RS-LiDAR/`. Cả ba chỉ dùng pool seed 100 của Table 1 (`Lookahead_SD15_DPM5_n50_seed100`, `RSLookahead_SD15_DPM5_n50_sig1.0_M4_seed100`) và hai run mốc `E1_…` đã có trên Drive. Code: `experiments/pool_tools.py`, `perturbation_profile.py`, `copy_distance.py`, `rank_stability.py`, `ensemble_pool.py`. **Thứ tự ưu tiên: T14 → T16 → T15** (T15 và T16 chạy song song được).
+
+### T14 · (nhóm phân công) · G1: spike có thật không (hồ sơ nhiễu + khoảng cách copy)
+
+| | |
+|---|---|
+| 📓 Notebook | [`G1_Profile_CopyDistance_SD15_Colab.ipynb`](G_mechanism/G1_Profile_CopyDistance_SD15_Colab.ipynb) |
+| 🖥️ GPU | L4 + High-RAM |
+| ⏱️ Thời gian | ~1 h, chạy tiếp được |
+| 📤 Nộp lại | `G1_report.md` trong `MyDrive/RS-LiDAR/extra_experiments/G1_mechanism/` (kèm thư mục `profile/`, `copy_distance/`) |
+
+**🎯 Mục tiêu.** Cả 3 reviewer (27/11) hỏi bằng chứng trực tiếp cho spike. Trên 371 prompt A ≠ B: R(clip(x + εu)) của A và B, ε ∈ {0, 0.03, 0.1, 0.25, 0.5, 1}, 16 mẫu u dùng chung; đối chứng blur 0.5–4 px; khoảng cách từ ảnh cuối LiDAR / RS-LiDAR tới A, B và một ứng viên ngẫu nhiên.
+
+**⏸ Kiểm tra:** mục 5 in `✅ Pool LiDAR`, `✅ Pool RS (cùng latent)`, 2 dòng `✅ Run mốc khớp cấu hình`; mục 6 in số prompt A ≠ B ≈ 371 và `✅ Kiểm tra đạt` (điểm chấm lại ở ε = 0 khớp pool).
+
+| Kết quả (tiêu chí chốt trước) | Nghĩa là | Làm gì |
+|---|---|---|
+| ✅ Lợi thế R(A) − R(B) ở ε = 0.1 ≤ 50% ở ε = 0 | Lợi thế của A nằm trong lân cận nhỏ: bằng chứng trực tiếp cho spike | Thay cột 4 của Fig. 2 bằng đường trung bình theo ε (tác giả đã chọn), bảng ở D.12, 1 câu ở §6.3 |
+| ⚠️ Lợi thế giảm dần, đổi dấu gần ε ≈ 1 | R̄σ chọn theo thang σ, không phải loại spike mỏng | Báo trung thực ở D.12, sửa câu cơ chế ở §6.3 |
+
+### T15 · (nhóm phân công) · G2: ứng viên đứng đầu với M = 4 có ổn định không
+
+| | |
+|---|---|
+| 📓 Notebook | [`G2_RankStability_M64_SD15_Colab.ipynb`](G_mechanism/G2_RankStability_M64_SD15_Colab.ipynb) |
+| 🖥️ GPU | A100 (L4 ~3 lần lâu hơn) |
+| ⏱️ Thời gian | ~3–4 h, chạy tiếp được (prompt theo thứ tự ngẫu nhiên cố định) |
+| 📤 Nộp lại | `G2_report.md` trong `MyDrive/RS-LiDAR/extra_experiments/G2_rank_stability/` |
+
+**🎯 Mục tiêu.** R1 (27/11): cận Prop. 3 vô nghĩa ở M = 4. Mỗi ứng viên chấm 64 mẫu nhiễu; 16 nhóm M = 4 so với M = 64. Đọc: tỉ lệ top-1 trùng ≥ 0.8 thì ổn định (đoạn ở D.8 + một vế ở §6.4); 0.6–0.8 báo đúng số; < 0.6 báo nhóm, tác giả quyết có chạy Phase 2 với M = 64 không.
+
+### T16 · (nhóm phân công) · G3: baseline ensemble IR + HPS + CLIP
+
+| | |
+|---|---|
+| 📓 Notebook | [`G3_Ensemble_SD15_DDPM100_Colab.ipynb`](G_mechanism/G3_Ensemble_SD15_DDPM100_Colab.ipynb) |
+| 🖥️ GPU | A100 (hoặc L4 + High-RAM) |
+| ⏱️ Thời gian | Chấm pool ~30 phút + Phase 2 ~1.5 h (A100) / ~4–5 h (L4) + GenEval ~30 phút |
+| 📤 Nộp lại | `G3_metrics_Ensemble.md` trong `MyDrive/RS-LiDAR/extra_experiments/G3_ensemble/` |
+
+**🎯 Mục tiêu.** R2, R3 (27/11): so với một cách chống hack có sẵn. LiDAR dẫn theo trung bình z-score (trong prompt) của IR, HPS, CLIP trên cùng 50 ứng viên, cấu hình Table 1, seed 100. Phase 2 phải chạy một mạch. Với dòng này CLIP và HPS không còn held-out; GenEval là chỉ số chính. Kết quả vào D.13 (dòng "LiDAR-Ensemble") và rebuttal A5.
+
 ---
 
 <a id="5-cổng-quyết-định"></a>
