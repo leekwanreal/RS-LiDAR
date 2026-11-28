@@ -152,6 +152,8 @@ def pil_to_tensor(images, size=None):
 
 def load_vae(model_name=DEFAULT_MODEL, device="cuda", dtype=torch.float16):
     """The SD VAE alone (as in the F1 notebook), without loading the UNet or text encoder."""
+    from rslidar_utils import setup_runtime
+    setup_runtime()  # compatibility shims (e.g. EncoderDecoderCache for peft); must run before diffusers is imported
     from diffusers import AutoencoderKL
     vae = AutoencoderKL.from_pretrained(model_name, subfolder="vae", torch_dtype=dtype).to(device).eval()
     return vae
