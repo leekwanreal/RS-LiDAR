@@ -132,9 +132,9 @@ def main(argv=None):
     b_indices = None
     if args.rs_pool:
         pairs, info = pt.flip_pairs(args.raw_pool, args.rs_pool,
-                                    [i for i in order if i in set(pt.list_prompt_indices(args.rs_pool))])
+                                    [i for i in order if i in set(pt.list_prompt_indices(args.rs_pool))], log_every=100)
         b_indices = {i: v[1] for i, v in pairs.items()}
-        print(f"B located on {len(b_indices)} prompts (unmatched: {len(info['unmatched'])})")
+        print(f"B located on {len(b_indices)} prompts (unmatched: {len(info['unmatched'])})", flush=True)
 
     if not args.analyze:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -152,7 +152,7 @@ def main(argv=None):
                                  lambda t, _p=prompt: reward(_p, t)["ImageReward"])
             np.save(f, S.astype(np.float32))
             if n % 10 == 0:
-                print(f"[{n + 1}/{len(order)}] prompt {idx} done")
+                print(f"[{n + 1}/{len(order)}] prompt {idx} done", flush=True)
 
     scores = {}
     for idx in order:

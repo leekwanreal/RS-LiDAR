@@ -102,11 +102,11 @@ def main(argv=None):
     os.makedirs(args.out_dir, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     indices = sorted(set(pt.list_prompt_indices(args.raw_pool)) & set(pt.list_prompt_indices(args.rs_pool)))
-    pairs, info = pt.flip_pairs(args.raw_pool, args.rs_pool, indices)
+    pairs, info = pt.flip_pairs(args.raw_pool, args.rs_pool, indices, log_every=100)
     flips = [i for i, (a, b, _, _) in pairs.items() if a != b]
     if args.max_prompts:
         flips = flips[:args.max_prompts]
-    print(f"A != B on {len(flips)} prompts (unmatched pools: {len(info['unmatched'])})")
+    print(f"A != B on {len(flips)} prompts (unmatched pools: {len(info['unmatched'])})", flush=True)
 
     vae = pt.load_vae(args.model_name, device)
     lpips_fn = None

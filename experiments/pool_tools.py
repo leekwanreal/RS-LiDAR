@@ -8,9 +8,13 @@ written as notebook cells (E2, F1, F8); they live here so that the G experiments
 Model-dependent helpers (VAE, reward models) import their libraries lazily, so this module can be
 imported and tested on a CPU machine without downloading any model.
 """
+import glob
 import json
 import os
 import shutil
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
@@ -193,20 +197,85 @@ def make_reward_fn(metrics=("ImageReward",), chunk=64):
     return score
 
 
-def flip_pairs(raw_pool, rs_pool, indices):
+def flip_pairs(raw_pool, rs_pool, indices, workers=8, log_every=0):
     """Per prompt: index of A (top under the raw reward) and B (top under the smoothed reward), raw order.
 
     Returns {idx: (a, b, raw_rewards, smoothed_rewards_in_raw_order)}; prompts whose pools do not share
-    latents are skipped (reported under key "unmatched" of the second return value).
+    latents are skipped (reported under key "unmatched" of the second return value). Prompts are read
+    by `workers` threads (file reads dominate on a mounted Drive); the result does not depend on it.
     """
-    pairs, unmatched = {}, []
-    for idx in indices:
+    def one(idx):
         lat_a, r_raw = load_pool(raw_pool, idx)
         lat_b, r_rs = load_pool(rs_pool, idx)
         perm = match_candidates(lat_a, lat_b)
         if perm is None:
-            unmatched.append(int(idx))
-            continue
+            return int(idx), None
         s = reorder_to_ref(r_rs, perm)
-        pairs[int(idx)] = (int(np.argmax(r_raw)), int(np.argmax(s)), r_raw, s)
+        return int(idx), (int(np.argmax(r_raw)), int(np.argmax(s)), r_raw, s)
+
+    indices = list(indices)
+    pairs, unmatched = {}, []
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
+        for n, (idx, v) in enumerate(ex.map(one, indices), 1):
+            if v is None:
+                unmatched.append(idx)
+            else:
+                pairs[idx] = v
+            if log_every and (n % log_every == 0 or n == len(indices)):
+                print(f"  pairing pools: {n}/{len(indices)} prompts ({time.time() - t0:.0f} s)", flush=True)
     return pairs, {"unmatched": unmatched}
+
+
+def _copy_atomic(src, dst):
+    """Copy `src` to `dst` through a temporary file, so that an existing `dst` is always complete.
+
+    Returns the number of bytes copied (0 if `dst` already existed). Raises FileNotFoundError if `src` is missing.
+    """
+    if os.path.exists(dst):
+        return 0
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = f"{dst}.part{threading.get_ident()}"
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dst)
+    return os.path.getsize(dst)
+
+
+def stage_local(src_dir, dst_dir, rel_files=("results.json", "samples/latent.pt"), rel_globs=(), indices=None,
+                workers=32, log_every=100):
+    """Copy the per-prompt files of a pool or run folder to a local folder, many files at a time.
+
+    On Colab, reading a mounted Google Drive file by file is slow (about a second per file), so the
+    experiments read a local copy instead. `rel_files` are fixed paths inside each `<idx:05d>/` folder,
+    `rel_globs` are patterns expanded there (e.g. "samples/*.png"). Files already copied are kept, so an
+    interrupted copy resumes. Missing source files are reported, not raised. Returns `dst_dir`.
+    """
+    if indices is None:
+        indices = sorted(int(d) for d in os.listdir(src_dir) if d.isdigit())
+    indices = [int(i) for i in indices]
+
+    def job(idx):
+        s, d = prompt_dir(src_dir, idx), prompt_dir(dst_dir, idx)
+        n_bytes, missing = 0, []
+        for rel in rel_files:
+            try:
+                n_bytes += _copy_atomic(os.path.join(s, rel), os.path.join(d, rel))
+            except FileNotFoundError:
+                missing.append(f"{idx:05d}/{rel}")
+        for pattern in rel_globs:
+            for src in glob.glob(os.path.join(s, pattern)):
+                n_bytes += _copy_atomic(src, os.path.join(d, os.path.relpath(src, s)))
+        return n_bytes, missing
+
+    t0, total, missing = time.time(), 0, []
+    name = os.path.basename(os.path.normpath(src_dir))
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
+        for n, (b, m) in enumerate(ex.map(job, indices), 1):
+            total += b
+            missing += m
+            if log_every and (n % log_every == 0 or n == len(indices)):
+                print(f"  staging {name}: {n}/{len(indices)} prompts, {total / 2**20:.0f} MB copied "
+                      f"({time.time() - t0:.0f} s)", flush=True)
+    if missing:
+        print(f"  ⚠️ {len(missing)} missing source files in {name}, e.g. {missing[:3]}", flush=True)
+    return dst_dir

@@ -139,13 +139,13 @@ def main(argv=None):
     meta = pt.load_metadata(args.metadata)
 
     indices = sorted(set(pt.list_prompt_indices(args.raw_pool)) & set(pt.list_prompt_indices(args.rs_pool)))
-    pairs, info = pt.flip_pairs(args.raw_pool, args.rs_pool, indices)
+    pairs, info = pt.flip_pairs(args.raw_pool, args.rs_pool, indices, log_every=100)
     flips = [i for i, (a, b, _, _) in pairs.items() if a != b]
     todo = sorted(pairs) if args.include_no_flip else flips
     if args.max_prompts:
         todo = todo[:args.max_prompts]
     print(f"prompts: {len(indices)} | paired: {len(pairs)} | unmatched: {len(info['unmatched'])} | "
-          f"A != B: {len(flips)} | to profile: {len(todo)}")
+          f"A != B: {len(flips)} | to profile: {len(todo)}", flush=True)
 
     vae = pt.load_vae(args.model_name, device)
     reward = pt.make_reward_fn(("ImageReward",), chunk=args.chunk)
@@ -175,7 +175,7 @@ def main(argv=None):
         if n % 25 == 0:
             g0 = rec["profile"]["0.0"] if "0.0" in rec["profile"] else None
             print(f"[{n + 1}/{len(todo)}] prompt {idx}: stored R(A)={rec['stored_R_A']:.3f}"
-                  + (f", recomputed {np.mean(g0['A']):.3f}" if g0 else ""))
+                  + (f", recomputed {np.mean(g0['A']):.3f}" if g0 else ""), flush=True)
 
     records = []
     for idx in todo:
